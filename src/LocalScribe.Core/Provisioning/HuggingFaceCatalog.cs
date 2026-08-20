@@ -1,7 +1,36 @@
+using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace LocalScribe.Core.Provisioning;
+
+/// <summary>How a repository lookup turned out.</summary>
+public enum RepositoryLookup
+{
+    /// <summary>Hugging Face answered and described the repository.</summary>
+    Found,
+
+    /// <summary>Hugging Face answered, and no such repository is published.</summary>
+    NotFound,
+
+    /// <summary>
+    /// Hugging Face could not be reached: no network, a proxy in the way, or a firewall.
+    /// Distinct from <see cref="NotFound"/> because the remedies share nothing, and conflating
+    /// them sends people to rewrite a repository list when their connection is the problem.
+    /// </summary>
+    Unreachable,
+}
+
+/// <summary>What a repository holds, or why we could not find out.</summary>
+/// <param name="Outcome">Whether the lookup succeeded, and if not, why.</param>
+/// <param name="Files">Every file path in the repository. Empty unless <paramref name="Outcome"/> is Found.</param>
+public sealed record RepositoryContents(RepositoryLookup Outcome, IReadOnlyList<string> Files)
+{
+    public static RepositoryContents NotFound { get; } = new(RepositoryLookup.NotFound, []);
+
+    public static RepositoryContents Unreachable { get; } = new(RepositoryLookup.Unreachable, []);
+}
 
 /// <summary>
 /// Finds downloadable Whisper assets on Hugging Face.
@@ -43,23 +72,59 @@ public sealed class HuggingFaceCatalog
         _ => ["openai/whisper-base.en"],
     };
 
-    /// <summary>Lists every file in a repository. Returns an empty list when it does not exist.</summary>
-    public async Task<IReadOnlyList<string>> ListFilesAsync(
+    /// <summary>
+    /// Asks a repository what it contains.
+    /// <para>
+    /// The two ways this fails are kept apart deliberately. A repository that does not exist is
+    /// an ordinary outcome when walking a preference list and means try the next one. A network
+    /// that cannot be reached means every remaining entry will fail the same way, and the person
+    /// running setup needs to hear about their connection rather than about our model catalogue.
+    /// </para>
+    /// </summary>
+    public async Task<RepositoryContents> LookUpAsync(
         string repository,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var info = await _http
-                .GetFromJsonAsync<RepositoryInfo>(ApiRoot + repository, cancellationToken)
+            using var response = await _http
+                .GetAsync(ApiRoot + repository, cancellationToken)
                 .ConfigureAwait(false);
 
-            return info?.Siblings?.Select(s => s.FileName).Where(n => n.Length > 0).ToList() ?? [];
+            // A gated repository answers 401 or 403. From here that is indistinguishable in
+            // remedy from one that does not exist: either way this build is not available to us.
+            if (response.StatusCode is HttpStatusCode.NotFound
+                or HttpStatusCode.Unauthorized
+                or HttpStatusCode.Forbidden)
+            {
+                return RepositoryContents.NotFound;
+            }
+
+            response.EnsureSuccessStatusCode();
+
+            var info = await response.Content
+                .ReadFromJsonAsync<RepositoryInfo>(cancellationToken)
+                .ConfigureAwait(false);
+
+            var files = info?.Siblings?
+                .Select(s => s.FileName)
+                .Where(n => n.Length > 0)
+                .ToList() ?? [];
+
+            return new RepositoryContents(RepositoryLookup.Found, files);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // A missing repository is an ordinary outcome when walking a preference list.
-            return [];
+            // The user stopped setup. That is not a verdict on the network.
+            throw;
+        }
+        catch (Exception exception)
+            when (exception is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            // JsonException belongs here rather than with a malformed repository: a captive
+            // portal or proxy answering with an HTML error page is a connectivity problem
+            // wearing a 200.
+            return RepositoryContents.Unreachable;
         }
     }
 

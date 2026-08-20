@@ -13,8 +13,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.Core.Tests", "t
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.Onnx", "src\LocalScribe.Onnx\LocalScribe.Onnx.csproj", "{CDC887CC-11BB-4127-905F-1A12A1AC85A8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.Doctor", "src\LocalScribe.Doctor\LocalScribe.Doctor.csproj", "{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,15 +34,10 @@ Global
 		{CDC887CC-11BB-4127-905F-1A12A1AC85A8}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{CDC887CC-11BB-4127-905F-1A12A1AC85A8}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{CDC887CC-11BB-4127-905F-1A12A1AC85A8}.Release|Any CPU.Build.0 = Release|Any CPU
-		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{1D48D1BE-9E54-43BC-84AA-514C42E7C9FE} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
 		{5425209E-33C5-4056-885E-1CD1DA1D7232} = {D04DCCF5-8524-43D0-8FB3-FBA4F74CE0C6}
 		{CDC887CC-11BB-4127-905F-1A12A1AC85A8} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
-		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
 	EndGlobalSection
 EndGlobal

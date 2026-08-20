@@ -22,7 +22,52 @@ public sealed partial class MainWindow : Window
         _dispatcher = DispatcherQueue.GetForCurrentThread();
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
-        _ = _viewModel.InitialiseAsync();
+
+        // Probing waits for the content to load rather than starting in the constructor,
+        // because showing setup needs a XamlRoot and there is not one yet here.
+        if (Content is FrameworkElement root)
+        {
+            root.Loaded += OnRootLoaded;
+        }
+    }
+
+    private async void OnRootLoaded(object sender, RoutedEventArgs e)
+    {
+        ((FrameworkElement)sender).Loaded -= OnRootLoaded;
+
+        try
+        {
+            await _viewModel.InitialiseAsync();
+
+            // A machine that cannot transcribe yet gets setup up front. Anything else means a
+            // new user's first action fails for a reason the app knew about before they clicked.
+            if (!_viewModel.Setup.CanTranscribe)
+            {
+                await SetupDialog.ShowAsync(_viewModel.Setup, Content.XamlRoot);
+            }
+        }
+        catch (Exception exception)
+        {
+            // Nothing above is allowed to close the window. This is an async void handler, so
+            // an exception escaping here terminates the process rather than showing an error.
+            StatusText.Text = $"Startup check failed: {exception.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Sends the user to setup instead of into a failure they cannot act on. Setup is the only
+    /// place that can fix a missing model, so an action that needs one goes there first rather
+    /// than surfacing a file path in the status bar.
+    /// </summary>
+    private async Task<bool> EnsureReadyAsync()
+    {
+        if (_viewModel.Setup.CanTranscribe)
+        {
+            return true;
+        }
+
+        await SetupDialog.ShowAsync(_viewModel.Setup, Content.XamlRoot);
+        return _viewModel.Setup.CanTranscribe;
     }
 
     /// <summary>
@@ -70,6 +115,11 @@ public sealed partial class MainWindow : Window
 
     private async void OnOpenFile(object sender, RoutedEventArgs e)
     {
+        if (!await EnsureReadyAsync())
+        {
+            return;
+        }
+
         var picker = new FileOpenPicker();
 
         // A picker created in an unpackaged app has no window of its own and must be told which
@@ -94,7 +144,7 @@ public sealed partial class MainWindow : Window
         {
             await _viewModel.StopRecordingAsync();
         }
-        else
+        else if (await EnsureReadyAsync())
         {
             await _viewModel.StartRecordingAsync();
         }

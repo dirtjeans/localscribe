@@ -38,7 +38,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel(string? modelRoot = null)
     {
         _modelRoot = modelRoot ?? Path.Combine(AppContext.BaseDirectory, "models");
+        Setup = new SetupViewModel(_modelRoot);
     }
+
+    /// <summary>
+    /// What this machine is missing and how to get it. Owned here rather than by the window so
+    /// the probe runs once and transcription reads the same answer setup reported.
+    /// </summary>
+    public SetupViewModel Setup { get; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -102,18 +109,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Status = "Checking hardware…";
 
-        var capabilities = await Task.Run(() => DeviceProbe.Probe(_modelRoot));
+        await Setup.RefreshAsync();
 
-        using var foundry = new FoundryLocalClient();
-        capabilities = capabilities with { FoundryLocalPresent = await foundry.IsAvailableAsync() };
+        _capabilities = Setup.Capabilities;
+        _plan = Setup.Plan;
 
-        _capabilities = capabilities;
-        _plan = AcceleratorPlanner.Plan(capabilities);
+        HardwareSummary = _plan?.Summary ?? "Could not read this machine's hardware.";
 
-        HardwareSummary = _plan.Summary;
-        Status = _plan.Warnings.Count == 0
+        Status = Setup.CanTranscribe
             ? "Ready."
-            : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
+            : "Setup needed before LocalScribe can transcribe.";
     }
 
     /// <summary>Transcribes a file from disk.</summary>
@@ -140,7 +145,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             // The refiner borrows the client, so the client has to outlive the run and be closed
             // by whoever opened it. It holds an HttpClient, which a per-file leak does notice.
             using FoundryLocalClient? languageModel = _capabilities?.FoundryLocalPresent == true
-                ? new FoundryLocalClient()
+                ? new FoundryLocalClient(endpoint: Setup.FoundryEndpoint)
                 : null;
 
             var refiner = languageModel is null ? null : new TranscriptRefiner(languageModel);

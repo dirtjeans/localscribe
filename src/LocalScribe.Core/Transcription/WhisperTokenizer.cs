@@ -79,7 +79,7 @@ public sealed class WhisperTokenizer
         {
             throw new FileNotFoundException(
                 "vocab.json is required to decode model output. It ships alongside the Whisper " +
-                "weights; the doctor tool downloads it with --fetch-models.",
+                "weights, and LocalScribe downloads it with them during setup.",
                 vocabularyPath);
         }
 

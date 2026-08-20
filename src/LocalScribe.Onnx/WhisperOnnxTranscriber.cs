@@ -20,8 +20,9 @@ namespace LocalScribe.Onnx;
 /// Qualcomm AI Hub exports: the encoder takes one mel input, and the decoder takes
 /// <c>input_ids</c> plus <c>encoder_hidden_states</c>. Input names are discovered from the model
 /// metadata rather than assumed, but an export with a different <em>shape</em> contract — for
-/// instance one requiring explicit key/value cache tensors — needs its own binding. The doctor
-/// tool prints the discovered signature so a mismatch is visible immediately.
+/// instance one requiring explicit key/value cache tensors — needs its own binding. A mismatch
+/// throws naming every input the export actually declares, so the binding it wants is legible
+/// from the error rather than needing a separate tool to dump it.
 /// </para>
 /// </summary>
 public sealed class WhisperOnnxTranscriber : ITranscriber
@@ -72,8 +73,8 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
 
         var layout = ModelLayout.Discover(modelDirectory)
             ?? throw new FileNotFoundException(
-                $"No usable Whisper model in {modelDirectory}. Run 'localscribe-doctor --install' "
-                + "to download one, or see docs/setup-snapdragon.md to place files by hand.",
+                $"No usable Whisper model in {modelDirectory}. Run setup in LocalScribe to "
+                + "download one, or see docs/setup-snapdragon.md to place files by hand.",
                 Path.Combine(modelDirectory, ModelLayout.FileName));
 
         var encoder = OnnxSessionFactory.Create(layout.EncoderPath(modelDirectory), plan.Encoder, plan);

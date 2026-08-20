@@ -39,6 +39,7 @@ public sealed class WhisperModelInstaller
 
         var repositories = HuggingFaceCatalog.RepositoriesFor(whisperModel);
         var attempts = new List<string>();
+        var unreachable = 0;
 
         foreach (var repository in repositories)
         {
@@ -46,14 +47,28 @@ public sealed class WhisperModelInstaller
 
             progress?.Report(new InstallProgress("whisper-model", $"Looking in {repository}…"));
 
-            var files = await _catalog.ListFilesAsync(repository, cancellationToken).ConfigureAwait(false);
-            if (files.Count == 0)
+            var contents = await _catalog.LookUpAsync(repository, cancellationToken).ConfigureAwait(false);
+
+            if (contents.Outcome == RepositoryLookup.Unreachable)
             {
-                attempts.Add($"{repository}: not found or empty");
+                unreachable++;
+                attempts.Add($"{repository}: could not reach Hugging Face");
                 continue;
             }
 
-            var selected = HuggingFaceCatalog.SelectAssets(files, chipsetSlug);
+            if (contents.Outcome == RepositoryLookup.NotFound)
+            {
+                attempts.Add($"{repository}: no such repository");
+                continue;
+            }
+
+            if (contents.Files.Count == 0)
+            {
+                attempts.Add($"{repository}: published no files");
+                continue;
+            }
+
+            var selected = HuggingFaceCatalog.SelectAssets(contents.Files, chipsetSlug);
             var layout = ModelLayout.Infer(selected, repository);
 
             if (layout is null)
@@ -73,6 +88,18 @@ public sealed class WhisperModelInstaller
                 "whisper-model",
                 true,
                 $"Installed {whisperModel} from {repository} ({selected.Count} files).");
+        }
+
+        // Every lookup failing the same way points at the connection, not the catalogue. Saying
+        // "not found" here is what sends someone to rewrite a repository list that was fine.
+        if (unreachable == repositories.Count)
+        {
+            return new InstallResult(
+                "whisper-model",
+                false,
+                "Could not reach Hugging Face, so the speech model could not be downloaded. "
+                + "Check this machine's internet connection and try again. On a work network, "
+                + "a proxy or firewall may be blocking huggingface.co.");
         }
 
         return new InstallResult(

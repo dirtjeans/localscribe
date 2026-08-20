@@ -21,7 +21,6 @@ jobs:
         run: |
           dotnet build src/LocalScribe.Core/LocalScribe.Core.csproj -c Release
           dotnet build src/LocalScribe.Onnx/LocalScribe.Onnx.csproj -c Release
-          dotnet build src/LocalScribe.Doctor/LocalScribe.Doctor.csproj -c Release
 
       - name: Test
         run: dotnet test tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj -c Release

@@ -199,7 +199,7 @@ public sealed class AcceleratorPlannerTests
     [Fact]
     public void EveryStagePlanExplainsItself()
     {
-        // These strings are shown to the user in the doctor tool, so an empty one is a bug.
+        // These strings are shown to the user in the app, so an empty one is a bug.
         var plan = AcceleratorPlanner.Plan(SnapdragonXElite());
 
         Assert.NotEmpty(plan.Encoder.Reason);
