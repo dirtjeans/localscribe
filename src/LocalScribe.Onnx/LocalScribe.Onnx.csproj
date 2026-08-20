@@ -30,12 +30,18 @@
     on Microsoft.ML.OnnxRuntime.Managed, so it brings the managed assembly with it and nothing
     is lost by dropping the base reference on arm64.
   -->
+  <!--
+    Pinned deliberately. Precompiled QNN context binaries are tied to the QAIRT and ONNX Runtime
+    versions they were built against, and a mismatch fails at load with "Failed to create context
+    from binary" — which names neither version. 1.22.0 is what the published large-v3-turbo build
+    for X Elite asks for; 1.20.1 got as far as opening the file and no further.
+  -->
   <ItemGroup Condition="'$(UseQnnRuntime)' == 'true'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.QNN" Version="1.20.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.QNN" Version="1.22.0" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(UseQnnRuntime)' != 'true'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0" />
   </ItemGroup>
 
 </Project>

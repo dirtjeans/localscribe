@@ -82,19 +82,26 @@ public sealed record WhisperModelSignature(
             throw new InvalidOperationException("The encoder declares no inputs.");
         }
 
-        var melBands = MelBandsFrom(encoderInputs[0]);
-
         var cachedLayers = decoderInputs.Count(spec => SelfCacheInput.IsMatch(spec.Name));
 
         if (cachedLayers == 0)
         {
+            var vocabulary = LastDimension(Find(decoderOutputs, "logits") ?? decoderOutputs[0]);
+
             return new WhisperModelSignature(
                 WhisperDecoderContract.Portable,
-                melBands,
+                MelBandsFrom(encoderInputs[0]) ?? MelBandsFromVocabulary(vocabulary),
                 DecoderLayers: 0,
                 PortableMaxDecodeLength,
-                VocabularySize: LastDimension(Find(decoderOutputs, "logits") ?? decoderOutputs[0]));
+                vocabulary);
         }
+
+        var melBands = MelBandsFrom(encoderInputs[0])
+            ?? throw new InvalidOperationException(
+                $"Cannot read the mel band count from the encoder input '{encoderInputs[0].Name}' "
+                + $"with shape [{string.Join(", ", encoderInputs[0].Shape)}]. A precompiled QNN "
+                + "graph is built for one fixed input shape, so a dynamic one here means this is "
+                + "not the export it claims to be.");
 
         var crossLayers = encoderOutputs.Count(spec => CrossCache.IsMatch(spec.Name));
 
@@ -122,22 +129,40 @@ public sealed record WhisperModelSignature(
     }
 
     /// <summary>
-    /// Band count comes from the encoder's own input, because Whisper is not consistent about
-    /// it: 80 through large-v2, 128 for large-v3 and turbo.
+    /// Band count from the encoder's own input where it is stated, because Whisper is not
+    /// consistent about it: 80 through large-v2, 128 for large-v3 and turbo.
     /// </summary>
-    private static int MelBandsFrom(TensorSpec encoderInput)
+    /// <returns>The count, or null when the model leaves that dimension dynamic.</returns>
+    private static int? MelBandsFrom(TensorSpec encoderInput)
     {
-        // (batch, bands, frames). A dynamic batch is normal; a dynamic band count is not, since
-        // the filterbank has to be built before the model is ever called.
+        // (batch, bands, frames). A dynamic batch is normal. Optimum leaves all three dynamic,
+        // which says nothing at all; QNN graphs are built for one fixed shape and always state it.
         if (encoderInput.Shape.Count < 2 || encoderInput.Shape[1] <= 0)
         {
-            throw new InvalidOperationException(
-                $"Cannot read the mel band count from the encoder input '{encoderInput.Name}' "
-                + $"with shape [{string.Join(", ", encoderInput.Shape)}].");
+            return null;
         }
 
         return encoderInput.Shape[1];
     }
+
+    /// <summary>
+    /// Last resort for exports that declare nothing. The 128-band filterbank arrived with
+    /// large-v3, which also grew the vocabulary to 51866, so the two travel together and the
+    /// vocabulary is stated even when the input shape is not.
+    /// </summary>
+    private static int MelBandsFromVocabulary(int vocabularySize) =>
+        vocabularySize >= LargeV3VocabularySize
+            ? LargeV3MelBands
+            : StandardMelBands;
+
+    /// <summary>Band count for Whisper tiny through large-v2.</summary>
+    public const int StandardMelBands = 80;
+
+    /// <summary>Band count for large-v3 and its turbo derivative.</summary>
+    public const int LargeV3MelBands = 128;
+
+    /// <summary>large-v3 added a token, and the extra mel bands, at the same time.</summary>
+    public const int LargeV3VocabularySize = 51866;
 
     /// <summary>
     /// Cached exports emit logits as (1, vocabulary, 1, 1) rather than (batch, sequence,

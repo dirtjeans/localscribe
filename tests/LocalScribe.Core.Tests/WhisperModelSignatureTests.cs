@@ -69,8 +69,11 @@ public class WhisperModelSignatureTests
 
     private static class Optimum
     {
+        // Verbatim from onnx-community/whisper-*.en: Optimum leaves every dimension dynamic,
+        // including the band count. The first version of this fixture claimed [-1, 80, 3000] and
+        // the real export failed to load against it.
         public static List<TensorSpec> EncoderInputs() =>
-            [new("input_features", [-1, 80, 3000])];
+            [new("input_features", [-1, -1, -1])];
 
         public static List<TensorSpec> EncoderOutputs() =>
             [new("last_hidden_state", [-1, 1500, 512])];
@@ -117,7 +120,7 @@ public class WhisperModelSignatureTests
     [Theory]
     [InlineData(80)]
     [InlineData(128)]
-    public void TheMelBandCountIsReadFromTheEncoder(int bands)
+    public void ACachedEncoderStatesItsBandCountAndItIsUsed(int bands)
     {
         var signature = WhisperModelSignature.Detect(
             [new TensorSpec("input_features", [1, bands, 3000])],
@@ -168,13 +171,35 @@ public class WhisperModelSignatureTests
                 AiHub.EncoderInputs(), AiHub.EncoderOutputs(), inputs, AiHub.DecoderOutputs()));
     }
 
+    /// <summary>
+    /// A QNN graph is compiled for one fixed input shape, so it always states the band count.
+    /// A dynamic one means the export is not what it claims, and guessing would be worse than
+    /// refusing.
+    /// </summary>
     [Fact]
-    public void AnEncoderWithADynamicBandCountIsRejectedRatherThanGuessed()
+    public void ACachedEncoderWithADynamicBandCountIsRejected()
     {
         Assert.Throws<InvalidOperationException>(() =>
             WhisperModelSignature.Detect(
-                [new TensorSpec("input_features", [-1, -1, 3000])],
+                [new TensorSpec("input_features", [-1, -1, -1])],
                 AiHub.EncoderOutputs(), AiHub.DecoderInputs(), AiHub.DecoderOutputs()));
+    }
+
+    /// <summary>
+    /// Portable exports state nothing, so the band count falls back to the vocabulary. The 128
+    /// band filterbank and the 51866th token arrived together in large-v3.
+    /// </summary>
+    [Theory]
+    [InlineData(51864, 80)]
+    [InlineData(51865, 80)]
+    [InlineData(51866, 128)]
+    public void ADynamicPortableEncoderInfersBandsFromTheVocabulary(int vocabulary, int expectedBands)
+    {
+        var signature = WhisperModelSignature.Detect(
+            Optimum.EncoderInputs(), Optimum.EncoderOutputs(), Optimum.DecoderInputs(),
+            [new TensorSpec("logits", [-1, -1, vocabulary])]);
+
+        Assert.Equal(expectedBands, signature.MelBands);
     }
 
     [Fact]

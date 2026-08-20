@@ -85,7 +85,8 @@ internal static class Program
         var plan = AcceleratorPlanner.Plan(
             capabilities,
             maximum ? PerformanceProfile.Maximum : PerformanceProfile.Considerate,
-            live ? WorkloadMode.Live : WorkloadMode.Batch);
+            live ? WorkloadMode.Live : WorkloadMode.Batch,
+            strictProviderCheck: args.Contains("--strict"));
 
         Report("Whisper model", plan.WhisperModel);
         Report("Encoder", $"{plan.Encoder.Device} — {plan.Encoder.Reason}");
@@ -132,6 +133,18 @@ internal static class Program
             }
         }
 
+        var audio = ArgumentValue(args, "--transcribe");
+        if (audio is not null)
+        {
+            return await TranscribeCommand.RunAsync(
+                    audio,
+                    modelDirectory,
+                    capabilities,
+                    plan,
+                    ArgumentValue(args, "--model-dir"))
+                .ConfigureAwait(false);
+        }
+
         if (fetch)
         {
             return await FetchModels.RunAsync(
@@ -170,6 +183,9 @@ internal static class Program
         Console.WriteLine("  --fetch-models   Download the portable Whisper export this machine will use.");
         Console.WriteLine("  --model <size>   Size to fetch. Defaults to the one the plan chose.");
         Console.WriteLine("  --force          Re-download files that are already present.");
+        Console.WriteLine("  --transcribe <f> Transcribe a PCM WAV file and report what happened.");
+        Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
+        Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
         Console.WriteLine("  --max            Plan for maximum speed rather than a considerate CPU share.");
         Console.WriteLine("  --help, -h       This text.");

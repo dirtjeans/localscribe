@@ -124,9 +124,18 @@ public static class DeviceProbe
         return Directory.EnumerateDirectories(directory).Any(HasPair);
     }
 
+    /// <summary>
+    /// True when a directory holds both halves, in either layout the transcriber accepts:
+    /// <c>encoder.onnx</c> beside <c>decoder.onnx</c>, or AI Hub's <c>encoder/model.onnx</c>
+    /// and <c>decoder/model.onnx</c>. The two must agree, or a correctly laid out AI Hub set
+    /// reports as missing and the planner routes around weights that are sitting right there.
+    /// </summary>
     private static bool HasPair(string directory) =>
-        File.Exists(Path.Combine(directory, "encoder.onnx"))
-        && File.Exists(Path.Combine(directory, "decoder.onnx"));
+        HasHalf(directory, "encoder") && HasHalf(directory, "decoder");
+
+    private static bool HasHalf(string directory, string half) =>
+        File.Exists(Path.Combine(directory, $"{half}.onnx"))
+        || File.Exists(Path.Combine(directory, half, "model.onnx"));
 
     /// <summary>
     /// Looks for the Hexagon NPU runtime. The library shipping beside the app is the strongest
