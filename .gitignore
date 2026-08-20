@@ -3,7 +3,15 @@ obj/
 .vs/
 *.user
 
+# Build output from "dotnet publish". Self-contained, several hundred MB.
+publish/
+
 # Model weights are large and licensed separately. The doctor tells you where to put them.
 models/
 *.onnx
 *.bin
+
+# Windows sets core.ignorecase, which makes "*.onnx" match the LocalScribe.Onnx *directory*
+# as well as the weight files it was meant for. On Linux it does not, so the whole project
+# silently drops out of git on Windows and nowhere else. Put the source tree back.
+!src/LocalScribe.Onnx/

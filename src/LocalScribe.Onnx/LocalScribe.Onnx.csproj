@@ -9,10 +9,6 @@
     <ProjectReference Include="../LocalScribe.Core/LocalScribe.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
-  </ItemGroup>
-
   <!--
     The QNN package carries the Qualcomm AI Engine Direct libraries and only ships for
     win-arm64. Referencing it unconditionally would break builds and CI on every other
@@ -20,8 +16,26 @@
     the QNN provider simply fails to register and the planner falls back, which is the
     behaviour we want anyway.
   -->
-  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-arm64' Or '$(Platform)' == 'arm64'">
+  <PropertyGroup>
+    <UseQnnRuntime Condition="'$(RuntimeIdentifier)' == 'win-arm64' Or '$(Platform)' == 'arm64'">true</UseQnnRuntime>
+    <UseQnnRuntime Condition="'$(UseQnnRuntime)' == ''">false</UseQnnRuntime>
+  </PropertyGroup>
+
+  <!--
+    These two are alternatives, never companions. Both ship their own
+    runtimes/win-arm64/native/onnxruntime.dll, and when both are referenced the base package's
+    copy wins the file conflict. That build looks correct — the Qnn*.dll helper libraries are
+    all present — but the runtime beside them was compiled without the QNN provider, so it
+    never registers and every session silently falls back to the CPU. The QNN package depends
+    on Microsoft.ML.OnnxRuntime.Managed, so it brings the managed assembly with it and nothing
+    is lost by dropping the base reference on arm64.
+  -->
+  <ItemGroup Condition="'$(UseQnnRuntime)' == 'true'">
     <PackageReference Include="Microsoft.ML.OnnxRuntime.QNN" Version="1.20.1" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseQnnRuntime)' != 'true'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
   </ItemGroup>
 
 </Project>
