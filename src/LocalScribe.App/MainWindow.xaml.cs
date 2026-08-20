@@ -53,6 +53,10 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.IsBusy):
                     OpenFileButton.IsEnabled = !_viewModel.IsBusy;
                     CancelButton.IsEnabled = _viewModel.IsBusy;
+                    // Listening during a file run would open a second transcriber and put two
+                    // workloads on one NPU, which is the contention the pipeline avoids by
+                    // transcribing windows one at a time.
+                    RecordButton.IsEnabled = !_viewModel.IsBusy;
                     break;
                 case nameof(MainViewModel.IsRecording):
                     RecordLabel.Text = _viewModel.IsRecording ? "Stop listening" : "Start listening";
