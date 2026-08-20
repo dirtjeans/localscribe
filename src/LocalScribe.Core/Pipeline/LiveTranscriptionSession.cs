@@ -48,6 +48,13 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     private readonly List<TranscriptSegment> _committed = [];
     private readonly SemaphoreSlim _passLock = new(1, 1);
 
+    /// <summary>
+    /// Guards the rolling window. Audio arrives on the capture thread while a pass reads the
+    /// window on a worker, so these genuinely overlap.
+    /// </summary>
+    private readonly object _windowLock = new();
+
+    private volatile bool _disposed;
     private double _windowStartSeconds;
     private double _sessionSeconds;
     private int _samplesSinceLastPass;
@@ -69,19 +76,33 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
         ReadOnlyMemory<float> samples,
         CancellationToken cancellationToken = default)
     {
-        _window.AddRange(samples.Span);
-        _samplesSinceLastPass += samples.Length;
-        _sessionSeconds += samples.Length / (double)_sampleRate;
-
-        TrimWindow();
-
-        if (_samplesSinceLastPass < PassIntervalSeconds * _sampleRate)
+        // Audio keeps arriving for a moment after the user stops: the capture thread has buffers
+        // already queued, and a handler that is mid-await is still running. Dropping those
+        // quietly is the whole contract here — throwing at one of them surfaces as a failure of
+        // the transcription rather than of the shutdown.
+        if (_disposed)
         {
             return null;
         }
 
-        _samplesSinceLastPass = 0;
-        return await RunPassAsync(cancellationToken).ConfigureAwait(false);
+        bool due;
+
+        lock (_windowLock)
+        {
+            _window.AddRange(samples.Span);
+            _samplesSinceLastPass += samples.Length;
+            _sessionSeconds += samples.Length / (double)_sampleRate;
+
+            TrimWindow();
+
+            due = _samplesSinceLastPass >= PassIntervalSeconds * _sampleRate;
+            if (due)
+            {
+                _samplesSinceLastPass = 0;
+            }
+        }
+
+        return due ? await RunPassAsync(cancellationToken).ConfigureAwait(false) : null;
     }
 
     /// <summary>
@@ -90,33 +111,56 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     /// </summary>
     public async Task<IReadOnlyList<TranscriptSegment>> FinishAsync(CancellationToken cancellationToken = default)
     {
-        await RunPassAsync(cancellationToken, commitEverything: true).ConfigureAwait(false);
+        // Unlike a streaming pass this one waits its turn rather than skipping. A pass is very
+        // likely already running when the user hits stop, and skipping here would drop exactly
+        // the trailing words this method exists to keep.
+        await RunPassAsync(cancellationToken, commitEverything: true, waitForTurn: true)
+            .ConfigureAwait(false);
+
         return _committed;
     }
 
     private async Task<LiveUpdate?> RunPassAsync(
         CancellationToken cancellationToken,
-        bool commitEverything = false)
+        bool commitEverything = false,
+        bool waitForTurn = false)
     {
-        // If a pass is already running, skip rather than queue. Audio keeps arriving whether or
-        // not we keep up, and a backlog of stale passes helps nobody.
-        if (!await _passLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        if (_disposed && !waitForTurn)
+        {
+            return null;
+        }
+
+        // A streaming pass skips rather than queues when one is already running. Audio keeps
+        // arriving whether or not we keep up, and a backlog of stale passes helps nobody.
+        if (waitForTurn)
+        {
+            await _passLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else if (!await _passLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
             return null;
         }
 
         try
         {
-            if (_window.Count == 0)
+            float[] padded;
+            int count;
+            double windowStart;
+
+            lock (_windowLock)
             {
-                return null;
+                if (_window.Count == 0)
+                {
+                    return null;
+                }
+
+                padded = new float[(int)(WindowSeconds * _sampleRate)];
+                count = Math.Min(_window.Count, padded.Length);
+                _window.CopyTo(0, padded, 0, count);
+                windowStart = _windowStartSeconds;
             }
 
-            var padded = new float[(int)(WindowSeconds * _sampleRate)];
-            var count = Math.Min(_window.Count, padded.Length);
-            _window.CopyTo(0, padded, 0, count);
-
-            var chunk = new AudioChunk(padded, _windowStartSeconds, count / (double)_sampleRate);
+            var chunk = new AudioChunk(padded, windowStart, count / (double)_sampleRate);
             var segments = await _transcriber
                 .TranscribeChunkAsync(chunk, cancellationToken)
                 .ConfigureAwait(false);
@@ -150,7 +194,7 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
             return new LiveUpdate(
                 string.Join(" ", provisional),
                 IsFinal: commitEverything,
-                _windowStartSeconds);
+                windowStart);
         }
         finally
         {
@@ -197,9 +241,28 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
         _windowStartSeconds += excess / (double)_sampleRate;
     }
 
-    public ValueTask DisposeAsync()
+    /// <summary>
+    /// Stops accepting audio and waits for any pass still running.
+    /// <para>
+    /// The semaphore is deliberately not disposed. <see cref="SemaphoreSlim"/> only requires
+    /// disposal once its <c>AvailableWaitHandle</c> has been touched, which this never does, and
+    /// disposing it turned every late audio callback into an <c>ObjectDisposedException</c>
+    /// surfacing as "live transcription failed". Draining the pass and refusing further work is
+    /// what shutdown actually needs.
+    /// </para>
+    /// </summary>
+    public async ValueTask DisposeAsync()
     {
-        _passLock.Dispose();
-        return ValueTask.CompletedTask;
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        // Waiting rather than abandoning: a pass in flight is reading the window and appending
+        // to the committed list.
+        await _passLock.WaitAsync().ConfigureAwait(false);
+        _passLock.Release();
     }
 }

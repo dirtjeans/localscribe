@@ -206,18 +206,39 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         IsRecording = false;
-        _microphone!.Stop();
-        _microphone.SamplesAvailable -= OnSamplesAvailable;
+
+        // Unsubscribe before stopping. StopRecording does not promise that no further buffers
+        // arrive — ones already captured still raise the event — and a handler that is mid-await
+        // is running regardless.
+        _microphone!.SamplesAvailable -= OnSamplesAvailable;
+        _microphone.Stop();
         _microphone.Dispose();
         _microphone = null;
 
-        var committed = await _liveSession.FinishAsync();
-        Transcript = new Transcript(committed).FullText;
-        ProvisionalText = string.Empty;
+        var session = _liveSession;
 
-        await _liveSession.DisposeAsync();
+        // Cleared first so any callback still in flight sees no session and returns rather than
+        // pushing audio into one that is being torn down.
         _liveSession = null;
-        Status = "Stopped.";
+
+        try
+        {
+            var committed = await session.FinishAsync();
+            Transcript = new Transcript(committed).FullText;
+            ProvisionalText = string.Empty;
+            Status = "Stopped.";
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Stopped.";
+        }
+        finally
+        {
+            await session.DisposeAsync();
+
+            _cancellation?.Dispose();
+            _cancellation = null;
+        }
     }
 
     private async void OnSamplesAvailable(float[] samples)
