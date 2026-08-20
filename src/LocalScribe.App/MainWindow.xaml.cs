@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using LocalScribe.Core.Transcription;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -18,6 +20,13 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueue _dispatcher;
     private IReadOnlyList<ParagraphView> _paragraphs = [];
 
+    /// <summary>
+    /// True while the scrubber is being moved by playback rather than by the user. The same
+    /// slider carries both, and treating a playback update as a seek would restart the audio
+    /// ten times a second.
+    /// </summary>
+    private bool _suppressScrub;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -27,11 +36,13 @@ public sealed partial class MainWindow : Window
 
         _viewModel.Player.PositionChanged += OnPlaybackPosition;
         _viewModel.Player.Stopped += OnPlaybackStopped;
+        _viewModel.Player.Failed += OnPlaybackFailed;
 
         Closed += (_, _) =>
         {
             _viewModel.Player.PositionChanged -= OnPlaybackPosition;
             _viewModel.Player.Stopped -= OnPlaybackStopped;
+            _viewModel.Player.Failed -= OnPlaybackFailed;
             _viewModel.Dispose();
         };
 
@@ -181,25 +192,167 @@ public sealed partial class MainWindow : Window
         var following = _viewModel.IsRecording || _viewModel.IsBusy;
 
         _paragraphs = _viewModel.Paragraphs.Select(p => new ParagraphView(p)).ToList();
-        TranscriptList.ItemsSource = _paragraphs;
+        ApplySearch();
 
         if (following && _paragraphs.Count > 0)
         {
             TranscriptList.ScrollIntoView(_paragraphs[^1]);
         }
+
+        ShowTransport();
+    }
+
+    /// <summary>
+    /// Shows the transport once there is something to play, and sizes the scrubber to it.
+    /// </summary>
+    private void ShowTransport()
+    {
+        var player = _viewModel.Player;
+
+        if (!player.HasAudio || player.DurationSeconds <= 0)
+        {
+            TransportBar.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        TransportBar.Visibility = Visibility.Visible;
+        Scrubber.Maximum = player.DurationSeconds;
+        UpdateClock(Scrubber.Value);
     }
 
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is not ParagraphView paragraph || !_viewModel.Player.HasAudio)
+        if (e.ClickedItem is not ParagraphView paragraph)
         {
             return;
         }
 
-        _viewModel.Player.PlayFrom(paragraph.StartSeconds);
-
-        StopPlaybackButton.Visibility = Visibility.Visible;
         TranscriptList.SelectedItem = paragraph;
+
+        // Said rather than done silently. Clicking a line and getting nothing is the failure
+        // this whole feature is supposed to avoid.
+        if (!_viewModel.Player.HasAudio)
+        {
+            StatusText.Text = "No audio is loaded for this transcript, so there is nothing to play.";
+            return;
+        }
+
+        Seek(paragraph.StartSeconds, play: true);
+    }
+
+    /// <summary>
+    /// Moves both views at once. The transcript and the recording are the same thing seen two
+    /// ways, so a position set from either has to land in both.
+    /// </summary>
+    private void Seek(double seconds, bool play)
+    {
+        _suppressScrub = true;
+        Scrubber.Value = Math.Clamp(seconds, 0, Scrubber.Maximum);
+        _suppressScrub = false;
+
+        UpdateClock(seconds);
+        HighlightAt(seconds);
+
+        if (play)
+        {
+            _viewModel.Player.PlayFrom(seconds);
+            StopPlaybackButton.Visibility = Visibility.Visible;
+            PlayIcon.Glyph = "";        // pause
+        }
+    }
+
+    /// <summary>Selects the paragraph covering a position, without disturbing the reader otherwise.</summary>
+    private void HighlightAt(double seconds)
+    {
+        var playing = _paragraphs.FirstOrDefault(p => p.Contains(seconds))
+            ?? _paragraphs.LastOrDefault(p => p.StartSeconds <= seconds);
+
+        if (playing is not null && !ReferenceEquals(TranscriptList.SelectedItem, playing))
+        {
+            TranscriptList.SelectedItem = playing;
+            TranscriptList.ScrollIntoView(playing);
+        }
+    }
+
+    private void UpdateClock(double seconds) =>
+        TransportClock.Text =
+            $"{TranscriptFormatter.Clock(seconds)} / {TranscriptFormatter.Clock(_viewModel.Player.DurationSeconds)}";
+
+    /// <summary>
+    /// Scrubbing. Only acts on changes the user made: the same slider is moved by playback, and
+    /// treating that as a seek would restart the audio ten times a second.
+    /// </summary>
+    private void OnScrub(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (_suppressScrub)
+        {
+            return;
+        }
+
+        UpdateClock(e.NewValue);
+        HighlightAt(e.NewValue);
+
+        if (_viewModel.Player.IsPlaying)
+        {
+            _viewModel.Player.PlayFrom(e.NewValue);
+        }
+    }
+
+    private void OnPlayPause(object sender, RoutedEventArgs e)
+    {
+        if (!_viewModel.Player.HasAudio)
+        {
+            StatusText.Text = "No audio is loaded for this transcript, so there is nothing to play.";
+            return;
+        }
+
+        if (_viewModel.Player.IsPlaying)
+        {
+            _viewModel.Player.Stop();
+            return;
+        }
+
+        Seek(Scrubber.Value, play: true);
+    }
+
+    private void OnPlaybackFailed(string message) =>
+        _dispatcher.TryEnqueue(() =>
+        {
+            StatusText.Text = message;
+            PlayIcon.Glyph = "";
+            StopPlaybackButton.Visibility = Visibility.Collapsed;
+        });
+
+    /// <summary>
+    /// Narrows the list to paragraphs containing the search text. Filtering rather than
+    /// highlighting in place, because the thing people do with a transcript is find the moment
+    /// something was said and then listen to it, and every row keeps its timestamp.
+    /// </summary>
+    private void OnSearchChanged(object sender, TextChangedEventArgs e) => ApplySearch();
+
+    private void ApplySearch()
+    {
+        var query = SearchBox.Text.Trim();
+
+        if (query.Length == 0)
+        {
+            TranscriptList.ItemsSource = _paragraphs;
+            SearchCount.Text = string.Empty;
+            return;
+        }
+
+        var matches = _paragraphs
+            .Where(p => p.Text.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || p.Speaker.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        TranscriptList.ItemsSource = matches;
+        SearchCount.Text = matches.Count switch
+        {
+            0 => "no matches",
+            1 => "1 match",
+            _ => $"{matches.Count} matches",
+        };
     }
 
     /// <summary>
@@ -209,17 +362,20 @@ public sealed partial class MainWindow : Window
     private void OnPlaybackPosition(double seconds) =>
         _dispatcher.TryEnqueue(() =>
         {
-            var playing = _paragraphs.FirstOrDefault(p => p.Contains(seconds));
+            _suppressScrub = true;
+            Scrubber.Value = Math.Clamp(seconds, 0, Scrubber.Maximum);
+            _suppressScrub = false;
 
-            if (playing is not null && !ReferenceEquals(TranscriptList.SelectedItem, playing))
-            {
-                TranscriptList.SelectedItem = playing;
-                TranscriptList.ScrollIntoView(playing);
-            }
+            UpdateClock(seconds);
+            HighlightAt(seconds);
         });
 
     private void OnPlaybackStopped() =>
-        _dispatcher.TryEnqueue(() => StopPlaybackButton.Visibility = Visibility.Collapsed);
+        _dispatcher.TryEnqueue(() =>
+        {
+            StopPlaybackButton.Visibility = Visibility.Collapsed;
+            PlayIcon.Glyph = "";
+        });
 
     private void OnStopPlayback(object sender, RoutedEventArgs e) => _viewModel.Player.Stop();
 

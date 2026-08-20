@@ -28,6 +28,13 @@ public sealed class TranscriptPlayer : IDisposable
     /// <summary>Raised when playback reaches the end or is stopped.</summary>
     public event Action? Stopped;
 
+    /// <summary>
+    /// Raised when playback could not start, with something worth showing the user. Audio output
+    /// fails for ordinary reasons — no device, a device in exclusive use — and a play button that
+    /// does nothing at all is the worst way to report any of them.
+    /// </summary>
+    public event Action<string>? Failed;
+
     /// <summary>True while sound is coming out.</summary>
     public bool IsPlaying => _output?.PlaybackState == PlaybackState.Playing;
 
@@ -69,19 +76,35 @@ public sealed class TranscriptPlayer : IDisposable
         {
             if (_samples.Length == 0)
             {
+                Failed?.Invoke("There is no audio loaded to play.");
                 return;
             }
 
-            Teardown();
+            try
+            {
+                Teardown();
 
-            _source = new PositionedSampleProvider(_samples, _sampleRate);
-            _source.Seek(seconds);
-            _source.PositionChanged += OnPositionChanged;
+                _source = new PositionedSampleProvider(_samples, _sampleRate);
+                _source.Seek(seconds);
+                _source.PositionChanged += OnPositionChanged;
 
-            _output = new WaveOutEvent();
-            _output.PlaybackStopped += (_, _) => Stopped?.Invoke();
-            _output.Init(_source);
-            _output.Play();
+                _output = new WaveOutEvent();
+                _output.PlaybackStopped += (_, _) => Stopped?.Invoke();
+
+                // Converted to 16-bit rather than handed over as float. The samples are float
+                // and WaveOutEvent will accept an ISampleProvider directly, but that hands the
+                // legacy waveOut API a 32-bit IEEE float format, which plenty of drivers simply
+                // refuse. It fails at Play with nothing audible and nothing thrown that reaches
+                // a click handler, which is exactly how this looked: a transcript that could be
+                // clicked all day and never made a sound.
+                _output.Init(_source.ToWaveProvider16());
+                _output.Play();
+            }
+            catch (Exception exception)
+            {
+                Teardown();
+                Failed?.Invoke($"Could not start playback: {exception.Message}");
+            }
         }
     }
 

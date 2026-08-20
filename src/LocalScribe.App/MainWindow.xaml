@@ -161,7 +161,9 @@
         <Grid Grid.Row="3" RowSpacing="12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <!-- What the cleanup model made of the recording, kept apart from the recording. -->
@@ -181,6 +183,27 @@
                     Style="{ThemeResource BodyTextBlockStyle}" />
             </Border>
 
+            <!-- Finding a moment in a long transcript, then clicking it to hear it. -->
+            <Grid Grid.Row="1" ColumnSpacing="12" Margin="0,0,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBox
+                    x:Name="SearchBox"
+                    Grid.Column="0"
+                    PlaceholderText="Search the transcript"
+                    TextChanged="OnSearchChanged" />
+
+                <TextBlock
+                    x:Name="SearchCount"
+                    Grid.Column="1"
+                    VerticalAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Style="{ThemeResource CaptionTextBlockStyle}" />
+            </Grid>
+
             <!--
                 One item per paragraph rather than one long block of text. Paragraphs are what
                 make a transcript readable, and giving each its own item is also what lets a
@@ -189,7 +212,7 @@
             -->
             <ListView
                 x:Name="TranscriptList"
-                Grid.Row="1"
+                Grid.Row="2"
                 SelectionMode="Single"
                 IsItemClickEnabled="True"
                 ItemClick="OnParagraphClick"
@@ -229,7 +252,7 @@
             <!-- Words still moving. Dimmed, because showing them as settled is a small lie. -->
             <TextBlock
                 x:Name="ProvisionalTextBlock"
-                Grid.Row="1"
+                Grid.Row="2"
                 Text=""
                 TextWrapping="Wrap"
                 FontStyle="Italic"
@@ -238,6 +261,51 @@
                 Foreground="{ThemeResource TextFillColorTertiaryBrush}"
                 Style="{ThemeResource BodyTextBlockStyle}" />
         </Grid>
+
+        <Border
+            x:Name="TransportBar"
+            Grid.Row="3"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="12,8"
+            Margin="0,8,0,0"
+            Visibility="Collapsed">
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button x:Name="PlayButton" Grid.Column="0" Click="OnPlayPause" Width="44">
+                    <FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="16" />
+                </Button>
+
+                <!--
+                    Dragging this moves the highlight in the transcript, playing or not. The
+                    transcript and the recording are two views of one thing, so moving either
+                    should move the other.
+                -->
+                <Slider
+                    x:Name="Scrubber"
+                    Grid.Column="1"
+                    Minimum="0"
+                    Maximum="100"
+                    StepFrequency="0.05"
+                    VerticalAlignment="Center"
+                    ValueChanged="OnScrub" />
+
+                <TextBlock
+                    x:Name="TransportClock"
+                    Grid.Column="2"
+                    VerticalAlignment="Center"
+                    FontFamily="Consolas"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Style="{ThemeResource CaptionTextBlockStyle}" />
+            </Grid>
+        </Border>
 
         <StackPanel Grid.Row="4" Spacing="8">
             <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />
