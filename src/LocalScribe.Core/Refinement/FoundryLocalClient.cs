@@ -15,8 +15,15 @@ namespace LocalScribe.Core.Refinement;
 /// </summary>
 public sealed class FoundryLocalClient : ILanguageModel, IDisposable
 {
-    /// <summary>Foundry Local's default port.</summary>
-    public const int DefaultPort = 5273;
+    /// <summary>
+    /// A fallback port, used only when the service could not be asked where it is listening.
+    /// <para>
+    /// Foundry Local binds to a <em>dynamic</em> loopback port, so this constant is a last
+    /// resort rather than a default. Prefer passing the endpoint from
+    /// <c>FoundryLocalManager.DiscoverEndpointAsync</c>, which asks the CLI for the real one.
+    /// </para>
+    /// </summary>
+    public const int FallbackPort = 5273;
 
     /// <summary>
     /// An alias rather than a specific model id, on purpose. Passing an alias lets Foundry pick
@@ -38,7 +45,7 @@ public sealed class FoundryLocalClient : ILanguageModel, IDisposable
         _model = model;
         _ownsHttpClient = httpClient is null;
         _http = httpClient ?? new HttpClient();
-        _http.BaseAddress ??= endpoint ?? new Uri($"http://localhost:{DefaultPort}");
+        _http.BaseAddress ??= NormaliseEndpoint(endpoint) ?? new Uri($"http://localhost:{FallbackPort}");
 
         // Cleanup on a small local model is quick, but a cold start has to load weights first.
         if (_http.Timeout == TimeSpan.FromSeconds(100))
@@ -102,6 +109,17 @@ public sealed class FoundryLocalClient : ILanguageModel, IDisposable
 
     private static string Truncate(string value, int limit) =>
         value.Length <= limit ? value : value[..limit] + "…";
+
+    /// <summary>
+    /// Trims a discovered endpoint back to its origin and gives it a trailing slash.
+    /// <para>
+    /// The CLI's status text sometimes includes an API path such as <c>/v1</c>. Left in place
+    /// that produces requests to <c>/v1/v1/chat/completions</c>, because a relative request URI
+    /// is resolved against the base address rather than appended to it.
+    /// </para>
+    /// </summary>
+    internal static Uri? NormaliseEndpoint(Uri? endpoint) =>
+        endpoint is null ? null : new Uri(endpoint.GetLeftPart(UriPartial.Authority) + "/");
 
     public void Dispose()
     {

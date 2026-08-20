@@ -34,6 +34,20 @@ After installing, re-run the doctor. `Hexagon NPU runtime driver` should read `o
 
 ## 3. Get Whisper model assets for your exact chip
 
+The doctor can do this for you:
+
+```powershell
+dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --install
+```
+
+It queries Hugging Face for a build matching your chipset, downloads the files, and writes a
+small `localscribe-model.json` recording which file is the encoder, the decoder, and the
+vocabulary. Files keep their published names rather than being renamed, because ONNX models
+above 2 GB reference their weight sidecars by name from inside the graph.
+
+The rest of this section is for doing it by hand, or for when the automatic search comes up
+empty.
+
 Precompiled QNN binaries are **chipset-specific**. A build for Snapdragon X Elite will not load
 on X Plus or X2. The doctor prints which folder it is looking in.
 
@@ -72,6 +86,7 @@ version mismatch is the first thing to check.
 ## 4. Optional: Foundry Local for the cleanup pass
 
 Transcription works without this. Punctuation repair, glossary correction, and summaries do not.
+`--install` sets it up; by hand it is:
 
 ```powershell
 winget install Microsoft.FoundryLocal
@@ -81,6 +96,17 @@ foundry model run qwen2.5-1.5b-instruct
 
 Pass a model **alias** rather than a fully qualified id. Foundry then picks the QNN NPU build on
 Snapdragon and falls back to CPU elsewhere, which is exactly the behaviour we want.
+
+### The port is dynamic
+
+Foundry Local binds to a **dynamic** loopback port, so do not hard-code one. Ask the CLI:
+
+```powershell
+foundry service status
+```
+
+The app does this automatically. It matters because a hard-coded port makes a perfectly healthy
+service look absent, and the app then silently skips the cleanup pass.
 
 Note that Foundry Local has had open bugs affecting NPU generation on Snapdragon X Elite. If
 generation crashes, drop back to a CPU variant — the cleanup model is small enough that the

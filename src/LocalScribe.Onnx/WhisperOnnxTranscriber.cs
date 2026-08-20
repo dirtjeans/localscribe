@@ -1,5 +1,6 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
+using LocalScribe.Core.Provisioning;
 using LocalScribe.Core.Transcription;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -54,8 +55,13 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     }
 
     /// <summary>
-    /// Opens both sessions from a model directory containing <c>encoder.onnx</c>,
-    /// <c>decoder.onnx</c>, and <c>vocab.json</c>.
+    /// Opens both sessions from a model directory.
+    /// <para>
+    /// Which file is the encoder, the decoder, and the vocabulary comes from the directory's
+    /// <see cref="ModelLayout"/> manifest, falling back to conventional names. Downloaded assets
+    /// keep whatever names their publisher gave them, because large ONNX models reference their
+    /// weight sidecars by name from inside the graph and renaming breaks that link.
+    /// </para>
     /// </summary>
     public static WhisperOnnxTranscriber Load(
         string modelDirectory,
@@ -64,18 +70,18 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     {
         ArgumentNullException.ThrowIfNull(plan);
 
-        var encoder = OnnxSessionFactory.Create(
-            Path.Combine(modelDirectory, "encoder.onnx"),
-            plan.Encoder,
-            plan);
+        var layout = ModelLayout.Discover(modelDirectory)
+            ?? throw new FileNotFoundException(
+                $"No usable Whisper model in {modelDirectory}. Run 'localscribe-doctor --install' "
+                + "to download one, or see docs/setup-snapdragon.md to place files by hand.",
+                Path.Combine(modelDirectory, ModelLayout.FileName));
+
+        var encoder = OnnxSessionFactory.Create(layout.EncoderPath(modelDirectory), plan.Encoder, plan);
 
         InferenceSession decoder;
         try
         {
-            decoder = OnnxSessionFactory.Create(
-                Path.Combine(modelDirectory, "decoder.onnx"),
-                plan.Decoder,
-                plan);
+            decoder = OnnxSessionFactory.Create(layout.DecoderPath(modelDirectory), plan.Decoder, plan);
         }
         catch
         {
@@ -85,7 +91,7 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
 
         try
         {
-            var tokenizer = WhisperTokenizer.LoadFromDirectory(modelDirectory);
+            var tokenizer = WhisperTokenizer.LoadFromFile(layout.VocabPath(modelDirectory));
             return new WhisperOnnxTranscriber(encoder, decoder, tokenizer, plan, maxTokensPerWindow);
         }
         catch

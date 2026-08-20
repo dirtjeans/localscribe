@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using LocalScribe.Core.Hardware;
+using LocalScribe.Core.Provisioning;
 
 namespace LocalScribe.Onnx;
 
@@ -103,9 +104,16 @@ public static class DeviceProbe
         // Snapdragon is worse than none: it fails to load at the least convenient moment.
         var chipsetDirectory = Path.Combine(modelDirectory, AssetFolderFor(family));
 
-        return Directory.Exists(chipsetDirectory)
-            && File.Exists(Path.Combine(chipsetDirectory, "encoder.onnx"))
-            && File.Exists(Path.Combine(chipsetDirectory, "decoder.onnx"));
+        if (!Directory.Exists(chipsetDirectory))
+        {
+            return false;
+        }
+
+        // Model sizes each get their own directory beneath the chipset, so any complete one
+        // counts. Which size gets loaded is the planner's decision, not this probe's.
+        return Directory
+            .EnumerateDirectories(chipsetDirectory)
+            .Any(directory => ModelLayout.Discover(directory) is not null);
     }
 
     /// <summary>

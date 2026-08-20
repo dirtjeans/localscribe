@@ -29,12 +29,21 @@ three while the machine stutters.
 # Build native arm64. This is not optional: under x64 emulation the NPU is unreachable.
 dotnet build -c Release -r win-arm64
 
-# Find out what your machine can do
+# See what your machine has, and what is missing
 dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
+
+# Download the missing models and install the local inference engine
+dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --install
 ```
 
-The doctor tells you exactly which pieces are missing and how to get them. Work through
-[docs/setup-snapdragon.md](docs/setup-snapdragon.md) before expecting the NPU path to light up.
+Without `--install` the doctor changes nothing and downloads nothing — it only reports. With it,
+it fetches Whisper weights matched to your chipset and installs Foundry Local through winget.
+
+One thing it deliberately will not do is install the Hexagon NPU driver. That is a signed kernel
+driver behind a Qualcomm account, so it needs you; the doctor names it and links you to it.
+Everything else on the list it handles.
+
+Setup reaches the network, to Hugging Face and Microsoft. Audio never does.
 
 ## Layout
 
@@ -81,7 +90,7 @@ The rules it encodes:
 
 ## Status
 
-The core library and its 94 tests are verified. The doctor tool runs.
+The core library and its 135 tests are verified. The doctor tool runs.
 
 **The WinUI app and the ONNX layer have not been run on real Snapdragon hardware.** They were
 written on Linux, where Windows targets cannot be compiled and no NPU exists. Expect to fix
