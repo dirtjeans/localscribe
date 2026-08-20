@@ -37,8 +37,16 @@ internal static class TranscribeCommand
         }
 
         var directory = explicitModelDirectory
-            ?? Core.Models.ModelLayout.Resolve(
+            ?? Core.Models.ModelLayout.Locate(
                 modelDirectory, capabilities.Family, plan.Encoder.Device, plan.WhisperModel);
+
+        if (directory is null)
+        {
+            Console.Error.WriteLine(
+                $"No Whisper weights under {modelDirectory}. Run --fetch-models for a portable "
+                + "set, or pass --model-dir to point at one.");
+            return 1;
+        }
 
         Heading("Transcribe");
         Console.WriteLine($"  Audio      {audioPath}");

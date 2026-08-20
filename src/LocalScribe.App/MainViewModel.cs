@@ -253,7 +253,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         // Keyed on the planned device, not the chip. A Snapdragon that ended up on the CPU
         // needs the portable export, not the chipset binaries it does not have.
-        var directory = ModelLayout.Resolve(_modelRoot, family, plan.Encoder.Device, plan.WhisperModel);
+        //
+        // Locate rather than Resolve: the plan names a Whisper size, but what is installed is
+        // whatever the user obtained, and NPU builds arrive under their own names. Demanding an
+        // exact match hides a working model and sends the work to the CPU.
+        var directory = ModelLayout.Locate(_modelRoot, family, plan.Encoder.Device, plan.WhisperModel)
+            ?? throw new DirectoryNotFoundException(
+                $"No Whisper weights under {Path.Combine(_modelRoot, ModelLayout.FolderFor(family, plan.Encoder.Device))}. "
+                + "Run 'localscribe-doctor --fetch-models' to download a portable set.");
+
         return WhisperOnnxTranscriber.Load(directory, plan);
     }
 

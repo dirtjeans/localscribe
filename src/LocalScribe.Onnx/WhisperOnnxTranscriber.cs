@@ -1,5 +1,6 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
+using LocalScribe.Core.Models;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Onnx.Decoding;
 using Microsoft.ML.OnnxRuntime;
@@ -136,31 +137,13 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     private static IReadOnlyList<TensorSpec> Describe(IReadOnlyDictionary<string, NodeMetadata> metadata) =>
         metadata.Select(pair => new TensorSpec(pair.Key, pair.Value.Dimensions)).ToList();
 
-    /// <summary>
-    /// Finds one half's graph, accepting either layout.
-    /// </summary>
-    private static string ResolveGraph(string modelDirectory, string half)
-    {
-        var flat = Path.Combine(modelDirectory, $"{half}.onnx");
-        if (File.Exists(flat))
-        {
-            return flat;
-        }
-
-        var nested = Path.Combine(modelDirectory, half, "model.onnx");
-        if (File.Exists(nested))
-        {
-            return nested;
-        }
-
-        // Naming the paths tried is worth the words: the AI Hub layout is the one people get
-        // wrong, usually by flattening it and breaking the model.bin reference.
-        throw new FileNotFoundException(
+    private static string ResolveGraph(string modelDirectory, string half) =>
+        ModelLayout.GraphPath(modelDirectory, half)
+        ?? throw new FileNotFoundException(
             $"No {half} graph in {modelDirectory}. Looked for '{half}.onnx' and "
             + $"'{half}/model.onnx'. Run 'localscribe-doctor --fetch-models' for a portable set, "
             + "or see docs/setup-snapdragon.md for the AI Hub layout.",
-            flat);
-    }
+            Path.Combine(modelDirectory, $"{half}.onnx"));
 
     public string Description =>
         $"Whisper {_plan.WhisperModel}: encoder on {_plan.Encoder.Device}, "
