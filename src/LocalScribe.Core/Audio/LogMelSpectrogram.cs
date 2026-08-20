@@ -3,10 +3,15 @@ namespace LocalScribe.Core.Audio;
 /// <summary>
 /// Converts audio into the log-mel spectrogram Whisper's encoder expects.
 /// <para>
-/// These constants are not tunable. They match OpenAI's reference implementation exactly, and
-/// the QNN encoder graph is compiled for an input of shape (1, 80, 3000). Change any of them
-/// and the model still runs, but it produces confident nonsense, which is a much harder bug to
-/// notice than a crash.
+/// The timing constants are not tunable. They match OpenAI's reference implementation exactly,
+/// and an encoder graph is compiled for one input shape. Change any of them and the model still
+/// runs, but it produces confident nonsense, which is a much harder bug to notice than a crash.
+/// </para>
+/// <para>
+/// The band count is the one exception, because Whisper itself is not consistent about it: every
+/// model through large-v2 uses 80, and large-v3 and its turbo derivative use 128. Getting this
+/// wrong is precisely the confident-nonsense failure above, so the caller reads it off the
+/// encoder's own input shape rather than assuming.
 /// </para>
 /// </summary>
 public sealed class LogMelSpectrogram
@@ -17,8 +22,14 @@ public sealed class LogMelSpectrogram
     /// <summary>Hop between frames: 10 ms at 16 kHz.</summary>
     public const int HopLength = 160;
 
-    /// <summary>Number of mel filterbank channels.</summary>
-    public const int MelBands = 80;
+    /// <summary>Band count for Whisper tiny through large-v2.</summary>
+    public const int DefaultMelBands = 80;
+
+    /// <summary>Band count for large-v3 and large-v3-turbo.</summary>
+    public const int LargeV3MelBands = 128;
+
+    /// <summary>Number of mel filterbank channels this instance produces.</summary>
+    public int MelBands { get; }
 
     /// <summary>Frames produced from one 30-second window.</summary>
     public const int FramesPerWindow = 3000;
@@ -28,10 +39,18 @@ public sealed class LogMelSpectrogram
     private readonly double[] _window;
     private readonly double[][] _melFilters;
 
-    public LogMelSpectrogram(int sampleRate = PcmAudio.WhisperSampleRate)
+    /// <param name="sampleRate">Input rate. Whisper expects 16 kHz.</param>
+    /// <param name="melBands">
+    /// Filterbank channels. Must match the encoder being fed; see
+    /// <see cref="DefaultMelBands"/> and <see cref="LargeV3MelBands"/>.
+    /// </param>
+    public LogMelSpectrogram(int sampleRate = PcmAudio.WhisperSampleRate, int melBands = DefaultMelBands)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(melBands, 1);
+
+        MelBands = melBands;
         _window = BuildHannWindow(FftSize);
-        _melFilters = BuildMelFilterbank(sampleRate, FftSize, MelBands);
+        _melFilters = BuildMelFilterbank(sampleRate, FftSize, melBands);
     }
 
     /// <summary>
@@ -39,7 +58,7 @@ public sealed class LogMelSpectrogram
     /// </summary>
     /// <returns>
     /// A flat array of <see cref="MelBands"/> × frames values in mel-major order, ready to be
-    /// reshaped into the encoder's (1, 80, N) input tensor.
+    /// reshaped into the encoder's (1, MelBands, N) input tensor.
     /// </returns>
     public float[] Compute(ReadOnlySpan<float> samples)
     {

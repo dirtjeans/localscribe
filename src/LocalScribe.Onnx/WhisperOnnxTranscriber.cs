@@ -1,8 +1,8 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Transcription;
+using LocalScribe.Onnx.Decoding;
 using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace LocalScribe.Onnx;
 
@@ -10,17 +10,18 @@ namespace LocalScribe.Onnx;
 /// Runs Whisper through ONNX Runtime, placing each half where the plan says it should go.
 /// <para>
 /// Whisper is exported as two graphs because the NPU cannot run the decoder's loop. The encoder
-/// takes a fixed 30-second mel spectrogram and produces hidden states; the decoder then emits
-/// tokens one at a time, attending to those states. Only the encoder is worth accelerating,
-/// which is why the two get separate sessions and separate execution providers.
+/// takes a fixed 30-second mel spectrogram; the decoder then emits tokens one at a time. Only
+/// the encoder is worth accelerating, which is why the two get separate sessions and separate
+/// execution providers.
 /// </para>
 /// <para>
-/// <b>Export compatibility.</b> This binds to the signature used by Hugging Face Optimum and
-/// Qualcomm AI Hub exports: the encoder takes one mel input, and the decoder takes
-/// <c>input_ids</c> plus <c>encoder_hidden_states</c>. Input names are discovered from the model
-/// metadata rather than assumed, but an export with a different <em>shape</em> contract — for
-/// instance one requiring explicit key/value cache tensors — needs its own binding. The doctor
-/// tool prints the discovered signature so a mismatch is visible immediately.
+/// <b>Export compatibility.</b> Two contracts are supported and the right one is detected from
+/// the loaded models rather than assumed. Hugging Face Optimum produces a stateless decoder
+/// taking <c>input_ids</c> and <c>encoder_hidden_states</c>. Qualcomm AI Hub's precompiled QNN
+/// builds produce a stateful one taking a single token plus explicit attention caches. They are
+/// not interchangeable, and both load without complaint, so
+/// <see cref="WhisperModelSignature"/> reads the difference off the metadata. The doctor prints
+/// what it found.
 /// </para>
 /// </summary>
 public sealed class WhisperOnnxTranscriber : ITranscriber
@@ -30,32 +31,52 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     private readonly WhisperTokenizer _tokenizer;
     private readonly LogMelSpectrogram _spectrogram;
     private readonly ExecutionPlan _plan;
-    private readonly int _maxTokensPerWindow;
+    private readonly IWhisperDecodeStrategy _strategy;
 
     /// <summary>
     /// Whisper never emits more than 448 tokens for a 30-second window, so this is a safety net
-    /// against a runaway loop rather than a real limit.
+    /// against a runaway loop rather than a real limit. Cached exports carry their own, smaller,
+    /// cap and ignore this.
     /// </summary>
-    public const int DefaultMaxTokensPerWindow = 448;
+    public const int DefaultMaxTokensPerWindow = WhisperModelSignature.PortableMaxDecodeLength;
+
+    /// <summary>What the loaded pair of graphs turned out to be.</summary>
+    public WhisperModelSignature Signature { get; }
 
     private WhisperOnnxTranscriber(
         InferenceSession encoder,
         InferenceSession decoder,
         WhisperTokenizer tokenizer,
         ExecutionPlan plan,
+        WhisperModelSignature signature,
         int maxTokensPerWindow)
     {
         _encoder = encoder;
         _decoder = decoder;
         _tokenizer = tokenizer;
         _plan = plan;
-        _spectrogram = new LogMelSpectrogram();
-        _maxTokensPerWindow = maxTokensPerWindow;
+        Signature = signature;
+
+        // Band count comes from the encoder itself. large-v3 and its turbo derivative use 128
+        // where everything before them uses 80, and feeding the wrong one produces fluent
+        // nonsense rather than an error.
+        _spectrogram = new LogMelSpectrogram(melBands: signature.MelBands);
+
+        _strategy = signature.Contract == WhisperDecoderContract.QnnCached
+            ? new QnnCachedDecodeStrategy(encoder, decoder, tokenizer, signature, signature.MelBands)
+            : new PortableDecodeStrategy(
+                encoder, decoder, tokenizer, signature, signature.MelBands, maxTokensPerWindow);
     }
 
     /// <summary>
-    /// Opens both sessions from a model directory containing <c>encoder.onnx</c>,
-    /// <c>decoder.onnx</c>, and <c>vocab.json</c>.
+    /// Opens both sessions from a model directory.
+    /// <para>
+    /// Two layouts are accepted. <c>encoder.onnx</c> and <c>decoder.onnx</c> side by side is the
+    /// portable one. AI Hub ships <c>encoder/model.onnx</c> and <c>decoder/model.onnx</c>
+    /// instead, each beside a <c>model.bin</c> holding the actual context binary — those two
+    /// files have to stay together and keep their names, because the wrapper references the
+    /// binary by relative path.
+    /// </para>
     /// </summary>
     public static WhisperOnnxTranscriber Load(
         string modelDirectory,
@@ -65,7 +86,7 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         ArgumentNullException.ThrowIfNull(plan);
 
         var encoder = OnnxSessionFactory.Create(
-            Path.Combine(modelDirectory, "encoder.onnx"),
+            ResolveGraph(modelDirectory, "encoder"),
             plan.Encoder,
             plan);
 
@@ -73,7 +94,7 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         try
         {
             decoder = OnnxSessionFactory.Create(
-                Path.Combine(modelDirectory, "decoder.onnx"),
+                ResolveGraph(modelDirectory, "decoder"),
                 plan.Decoder,
                 plan);
         }
@@ -85,8 +106,11 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
 
         try
         {
+            var signature = DetectSignature(encoder, decoder);
             var tokenizer = WhisperTokenizer.LoadFromDirectory(modelDirectory);
-            return new WhisperOnnxTranscriber(encoder, decoder, tokenizer, plan, maxTokensPerWindow);
+
+            return new WhisperOnnxTranscriber(
+                encoder, decoder, tokenizer, plan, signature, maxTokensPerWindow);
         }
         catch
         {
@@ -96,8 +120,51 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         }
     }
 
+    /// <summary>Reads both graphs' metadata and works out which contract they implement.</summary>
+    public static WhisperModelSignature DetectSignature(InferenceSession encoder, InferenceSession decoder)
+    {
+        ArgumentNullException.ThrowIfNull(encoder);
+        ArgumentNullException.ThrowIfNull(decoder);
+
+        return WhisperModelSignature.Detect(
+            Describe(encoder.InputMetadata),
+            Describe(encoder.OutputMetadata),
+            Describe(decoder.InputMetadata),
+            Describe(decoder.OutputMetadata));
+    }
+
+    private static IReadOnlyList<TensorSpec> Describe(IReadOnlyDictionary<string, NodeMetadata> metadata) =>
+        metadata.Select(pair => new TensorSpec(pair.Key, pair.Value.Dimensions)).ToList();
+
+    /// <summary>
+    /// Finds one half's graph, accepting either layout.
+    /// </summary>
+    private static string ResolveGraph(string modelDirectory, string half)
+    {
+        var flat = Path.Combine(modelDirectory, $"{half}.onnx");
+        if (File.Exists(flat))
+        {
+            return flat;
+        }
+
+        var nested = Path.Combine(modelDirectory, half, "model.onnx");
+        if (File.Exists(nested))
+        {
+            return nested;
+        }
+
+        // Naming the paths tried is worth the words: the AI Hub layout is the one people get
+        // wrong, usually by flattening it and breaking the model.bin reference.
+        throw new FileNotFoundException(
+            $"No {half} graph in {modelDirectory}. Looked for '{half}.onnx' and "
+            + $"'{half}/model.onnx'. Run 'localscribe-doctor --fetch-models' for a portable set, "
+            + "or see docs/setup-snapdragon.md for the AI Hub layout.",
+            flat);
+    }
+
     public string Description =>
-        $"Whisper {_plan.WhisperModel}: encoder on {_plan.Encoder.Device}, decoder on {_plan.Decoder.Device}";
+        $"Whisper {_plan.WhisperModel}: encoder on {_plan.Encoder.Device}, "
+        + $"decoder on {_plan.Decoder.Device} ({Signature.Describe()})";
 
     public Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
         AudioChunk chunk,
@@ -114,95 +181,11 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     private IReadOnlyList<TranscriptSegment> TranscribeChunk(AudioChunk chunk, CancellationToken cancellationToken)
     {
         var mel = _spectrogram.Compute(chunk.Samples);
-        var frames = mel.Length / LogMelSpectrogram.MelBands;
+        var frames = mel.Length / _spectrogram.MelBands;
 
-        var melTensor = new DenseTensor<float>(
-            mel,
-            [1, LogMelSpectrogram.MelBands, frames]);
-
-        var encoderInput = SingleInputName(_encoder);
-        using var encoderOutputs = _encoder.Run(
-            [NamedOnnxValue.CreateFromTensor(encoderInput, melTensor)]);
-
-        var hiddenStates = encoderOutputs.First().AsTensor<float>();
-        var tokens = DecodeGreedily(hiddenStates, cancellationToken);
+        var tokens = _strategy.Decode(mel, frames, cancellationToken);
 
         return BuildSegments(tokens, chunk);
-    }
-
-    /// <summary>
-    /// Greedy decoding: take the highest-scoring token at each step and feed the sequence back.
-    /// <para>
-    /// This re-runs the decoder over the whole prefix each step rather than carrying a key/value
-    /// cache. That is the slower option, and deliberately so — cache tensor names and layouts
-    /// differ between exports, and a decode loop that is correct everywhere is worth more than
-    /// one that is fast against a single export and wrong against the rest. The decoder is also
-    /// the cheaper half of Whisper, so the cost lands where it hurts least.
-    /// </para>
-    /// </summary>
-    private List<int> DecodeGreedily(Tensor<float> encoderHiddenStates, CancellationToken cancellationToken)
-    {
-        var tokens = new List<int>(_tokenizer.BuildPrompt(withTimestamps: true));
-        var promptLength = tokens.Count;
-
-        var decoderTokenInput = InputNameContaining(_decoder, "input_ids", fallbackIndex: 0);
-        var decoderStateInput = InputNameContaining(_decoder, "encoder_hidden_states", fallbackIndex: 1);
-
-        for (var step = 0; step < _maxTokensPerWindow; step++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var idTensor = new DenseTensor<long>([1, tokens.Count]);
-            for (var i = 0; i < tokens.Count; i++)
-            {
-                idTensor[0, i] = tokens[i];
-            }
-
-            using var outputs = _decoder.Run(
-            [
-                NamedOnnxValue.CreateFromTensor(decoderTokenInput, idTensor),
-                NamedOnnxValue.CreateFromTensor(decoderStateInput, encoderHiddenStates),
-            ]);
-
-            var logits = outputs.First().AsTensor<float>();
-            var next = ArgMaxOverLastPosition(logits);
-
-            if (next == _tokenizer.Special.EndOfText)
-            {
-                break;
-            }
-
-            tokens.Add(next);
-        }
-
-        return tokens.Skip(promptLength).ToList();
-    }
-
-    /// <summary>
-    /// Picks the highest-scoring token for the final position. Logits arrive shaped
-    /// (batch, sequence, vocabulary) and only the last sequence position is a prediction.
-    /// </summary>
-    private static int ArgMaxOverLastPosition(Tensor<float> logits)
-    {
-        var dimensions = logits.Dimensions;
-        var sequenceLength = dimensions.Length == 3 ? dimensions[1] : 1;
-        var vocabularySize = dimensions[^1];
-        var offset = (sequenceLength - 1) * vocabularySize;
-
-        var best = 0;
-        var bestScore = float.NegativeInfinity;
-
-        for (var token = 0; token < vocabularySize; token++)
-        {
-            var score = logits.GetValue(offset + token);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = token;
-            }
-        }
-
-        return best;
     }
 
     /// <summary>
@@ -273,32 +256,6 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
             text,
             chunk.StartSeconds + startInWindow,
             chunk.StartSeconds + Math.Min(endInWindow, chunk.ContentSeconds)));
-    }
-
-    private static string SingleInputName(InferenceSession session) => session.InputMetadata.Keys.First();
-
-    /// <summary>
-    /// Finds an input by name, tolerating the naming differences between exports and falling
-    /// back to position when nothing matches.
-    /// </summary>
-    private static string InputNameContaining(InferenceSession session, string fragment, int fallbackIndex)
-    {
-        var names = session.InputMetadata.Keys.ToList();
-
-        var match = names.FirstOrDefault(name => name.Contains(fragment, StringComparison.OrdinalIgnoreCase));
-        if (match is not null)
-        {
-            return match;
-        }
-
-        if (fallbackIndex < names.Count)
-        {
-            return names[fallbackIndex];
-        }
-
-        throw new InvalidOperationException(
-            $"The decoder has no input matching '{fragment}'. Found: {string.Join(", ", names)}. " +
-            "This export uses a different signature and needs its own binding.");
     }
 
     public void Dispose()

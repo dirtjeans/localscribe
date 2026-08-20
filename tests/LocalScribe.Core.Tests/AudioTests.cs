@@ -101,7 +101,7 @@ public sealed class LogMelSpectrogramTests
         var spectrogram = new LogMelSpectrogram();
         var output = spectrogram.Compute(Sine(440, 30.0));
 
-        Assert.Equal(LogMelSpectrogram.MelBands * LogMelSpectrogram.FramesPerWindow, output.Length);
+        Assert.Equal(LogMelSpectrogram.DefaultMelBands * LogMelSpectrogram.FramesPerWindow, output.Length);
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public sealed class LogMelSpectrogramTests
         var spectrogram = new LogMelSpectrogram();
         var frames = 200;
         var output = spectrogram.Compute(Sine(440, frames * LogMelSpectrogram.HopLength / (double)SampleRate));
-        var actualFrames = output.Length / LogMelSpectrogram.MelBands;
+        var actualFrames = output.Length / LogMelSpectrogram.DefaultMelBands;
 
         var peakBand = PeakBand(output, actualFrames);
 
@@ -136,7 +136,7 @@ public sealed class LogMelSpectrogramTests
     {
         var spectrogram = new LogMelSpectrogram();
         var output = spectrogram.Compute(Sine(6000, 2.0));
-        var actualFrames = output.Length / LogMelSpectrogram.MelBands;
+        var actualFrames = output.Length / LogMelSpectrogram.DefaultMelBands;
 
         var peakBand = PeakBand(output, actualFrames);
 
@@ -153,7 +153,7 @@ public sealed class LogMelSpectrogramTests
         foreach (var frequency in new double[] { 200, 500, 1000, 2000, 4000, 7000 })
         {
             var output = spectrogram.Compute(Sine(frequency, 1.0));
-            var band = PeakBand(output, output.Length / LogMelSpectrogram.MelBands);
+            var band = PeakBand(output, output.Length / LogMelSpectrogram.DefaultMelBands);
 
             Assert.True(
                 band > previousBand,
@@ -191,7 +191,7 @@ public sealed class LogMelSpectrogramTests
         var from = Math.Min(5, frames / 4);
         var to = Math.Max(from + 1, frames - from);
 
-        for (var band = 0; band < LogMelSpectrogram.MelBands; band++)
+        for (var band = 0; band < LogMelSpectrogram.DefaultMelBands; band++)
         {
             var energy = 0f;
             for (var frame = from; frame < to; frame++)
@@ -285,5 +285,33 @@ public sealed class AudioChunkerTests
 
         var exception = Assert.Throws<InvalidOperationException>(audio.EnsureWhisperFormat);
         Assert.Contains("16000", exception.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// large-v3 and its turbo derivative want 128 bands where everything before them wants 80.
+    /// The filterbank has to actually be built for the count asked for, not padded to it.
+    /// </summary>
+    [Theory]
+    [InlineData(LogMelSpectrogram.DefaultMelBands)]
+    [InlineData(LogMelSpectrogram.LargeV3MelBands)]
+    public void TheBandCountIsHonoured(int bands)
+    {
+        var spectrogram = new LogMelSpectrogram(melBands: bands);
+        var samples = new float[PcmAudio.WhisperSampleRate];
+
+        for (var i = 0; i < samples.Length; i++)
+        {
+            samples[i] = MathF.Sin(2 * MathF.PI * 440 * i / PcmAudio.WhisperSampleRate);
+        }
+
+        var output = spectrogram.Compute(samples);
+
+        Assert.Equal(bands, spectrogram.MelBands);
+        Assert.Equal(0, output.Length % bands);
+
+        // A filterbank that collapsed would give every band the same value, which would look
+        // like a valid spectrogram and decode to nothing.
+        var frames = output.Length / bands;
+        Assert.True(output.Take(frames * 4).Distinct().Count() > 1);
     }
 }

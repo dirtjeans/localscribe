@@ -89,22 +89,28 @@ The rules it encodes:
 
 ## Status
 
-The core library and its 112 tests are verified. The doctor tool runs.
+The core library and its 134 tests are verified. The doctor tool runs.
 
 **The WinUI app and the ONNX layer have had only a first run on real Snapdragon hardware.** They
 were written on Linux, where Windows targets cannot be compiled and no NPU exists. The app now
 builds and launches on a Snapdragon X Elite and the QNN provider registers, but transcription
 against real weights is still unproven. Expect to fix things.
 
-The most likely rough edge is the decoder's input signature: exports differ between Hugging Face
-Optimum and Qualcomm AI Hub, and the binding here discovers input names but assumes a shape
-contract. The doctor prints the discovered signature so a mismatch is obvious.
+The rough edge the first draft predicted turned out to be real, and is now handled. Optimum and
+AI Hub do not merely rename tensors: they disagree about the shape of the decode loop. Optimum
+gives a stateless decoder re-read over its whole prefix; AI Hub gives a stateful one taking a
+single token plus every attention cache explicitly, capped at a fixed window. Both load without
+complaint and only the output tells you which you got, so the contract is detected from the
+metadata and each gets its own binding. **The cached path has not been run against real
+weights.**
 
 ## Known limitations
 
 - **No speaker labels.** Diarization needs a separate model; pyannote is the usual choice.
 - **Greedy decoding only.** No beam search, so accuracy is a little below reference Whisper.
-- **No key/value cache in the decode loop.** The decoder re-runs over the whole prefix each
-  step. Correct against every export, slower than it needs to be against any particular one.
+- **No key/value cache on the portable path.** Against an Optimum export the decoder re-runs
+  over the whole prefix each step. Correct against every such export, slower than it needs to
+  be against any particular one. AI Hub's cached exports carry their own caches and use them.
 - **English-focused.** The tokenizer handles multilingual models, but model selection assumes
-  the `.en` variants.
+  the `.en` variants. The published QNN build is large-v3-turbo, which is multilingual, so its
+  vocabulary and model naming do not line up with what the planner asks for.

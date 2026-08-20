@@ -48,20 +48,23 @@ It picks the size the plan chose; pass `--model base.en` to override. These land
 NPU.
 
 **Precompiled QNN context binaries** are the NPU path, and they are chipset-specific: a build
-for Snapdragon X Elite will not load on X Plus or X2. Nothing downloads these for you. They are
-not published as files anywhere — Qualcomm's Hugging Face repositories under the `qualcomm`
-organisation are deprecated and now contain only a pointer to AI Hub. You export your own, which
-needs a free AI Hub account:
+for Snapdragon X Elite will not load on X Plus or X2. Nothing downloads these for you.
+
+Qualcomm's own Hugging Face repositories under the `qualcomm` organisation are deprecated and
+now contain only a pointer to AI Hub, so ignore older instructions that send you there. Two
+routes work:
+
+Export your own from Qualcomm AI Hub, which needs a free account:
 
 ```bash
 pip install qai-hub-models
-python -m qai_hub_models.models.whisper_base_en.export \
-  --chipset qualcomm-snapdragon-x-elite \
-  --target-runtime precompiled_qnn_onnx \
-  --components HfWhisperEncoder HfWhisperDecoder
+python -m qai_hub_models.models.whisper_base_en.export   --chipset qualcomm-snapdragon-x-elite   --target-runtime precompiled_qnn_onnx   --components HfWhisperEncoder HfWhisperDecoder
 ```
 
-Lay the files out like this, where the folder name matches your chip:
+Or take someone else's export of the same pipeline. `FluidInference/whisper-large-v3-turbo-qnn`
+on Hugging Face is ungated and Apache-2.0, and carries a `snapdragon-x-elite/` set.
+
+Either way you get a pair of directories rather than two loose files:
 
 ```
 models/
@@ -70,15 +73,34 @@ models/
       encoder.onnx
       decoder.onnx
       vocab.json
-  snapdragon-x-elite/      <- precompiled QNN, from AI Hub
-    base.en/
-      encoder.onnx
-      decoder.onnx
+  snapdragon-x-elite/      <- precompiled QNN
+    large-v3-turbo/
+      encoder/
+        model.onnx         <- a ~1 KB wrapper
+        model.bin          <- the actual context binary, ~1.5 GB
+      decoder/
+        model.onnx
+        model.bin
       vocab.json
 ```
 
+The `model.onnx` files are tiny. Each is an `EPContext` node whose `ep_cache_context` points at
+`./model.bin` by relative path, so the two must stay in the same directory and keep those exact
+names. Flattening the layout is the usual way to break this, and it fails at load with a context
+binary error rather than anything that mentions paths.
+
 `vocab.json` is the same file either way and comes from the Hugging Face Whisper repo, not from
-AI Hub. `--fetch-models` fetches one; copy it across.
+AI Hub. `--fetch-models` fetches one; copy it across, taking it from the repo matching your
+model — large-v3-turbo is multilingual and has a different vocabulary from the `.en` builds.
+
+What to expect from a cached export:
+
+- **The decode window is fixed at export time**, 200 tokens for the published builds. That is a
+  hard cap, not a safety net: the attention caches are sized for it.
+- **large-v3 and turbo use 128 mel bands**, where everything before them uses 80. The band count
+  is read off the encoder's input shape, so this is handled, but it is why the two kinds of
+  weights cannot be mixed.
+- **They run in float16 throughout.**
 
 Keeping the two apart is not tidiness. The doctor treats the presence of chipset weights as part
 of deciding the NPU is usable, so a portable export dropped into the chipset folder would send
