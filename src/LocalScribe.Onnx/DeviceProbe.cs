@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using LocalScribe.Core.Hardware;
+using LocalScribe.Core.Models;
 
 namespace LocalScribe.Onnx;
 
@@ -84,13 +85,7 @@ public static class DeviceProbe
     }
 
     /// <summary>The directory name model assets for a given family are expected under.</summary>
-    public static string AssetFolderFor(SocFamily family) => family switch
-    {
-        SocFamily.SnapdragonXElite => "snapdragon-x-elite",
-        SocFamily.SnapdragonXPlus => "snapdragon-x-plus",
-        SocFamily.SnapdragonX2 => "snapdragon-x2",
-        _ => "cpu",
-    };
+    public static string AssetFolderFor(SocFamily family) => ModelLayout.ChipsetFolder(family);
 
     private static bool HasWhisperAssets(string? modelDirectory, SocFamily family)
     {
@@ -101,12 +96,37 @@ public static class DeviceProbe
 
         // Precompiled QNN binaries are chipset-specific, so a set built for a different
         // Snapdragon is worse than none: it fails to load at the least convenient moment.
+        // A non-Qualcomm machine has no chipset folder of its own and must not be told it
+        // has NPU weights just because portable ones were fetched.
+        if (ModelLayout.ChipsetFolder(family) == ModelLayout.PortableFolder)
+        {
+            return false;
+        }
+
         var chipsetDirectory = Path.Combine(modelDirectory, AssetFolderFor(family));
 
-        return Directory.Exists(chipsetDirectory)
-            && File.Exists(Path.Combine(chipsetDirectory, "encoder.onnx"))
-            && File.Exists(Path.Combine(chipsetDirectory, "decoder.onnx"));
+        return Directory.Exists(chipsetDirectory) && ContainsWeights(chipsetDirectory);
     }
+
+    /// <summary>
+    /// True when a directory holds a Whisper pair, either directly or in a per-size
+    /// subdirectory. Both layouts are accepted because the size a plan will ask for is not
+    /// known here: it depends on where the encoder lands, which in turn depends on this
+    /// answer. Asking only whether any usable set exists breaks that circle.
+    /// </summary>
+    private static bool ContainsWeights(string directory)
+    {
+        if (HasPair(directory))
+        {
+            return true;
+        }
+
+        return Directory.EnumerateDirectories(directory).Any(HasPair);
+    }
+
+    private static bool HasPair(string directory) =>
+        File.Exists(Path.Combine(directory, "encoder.onnx"))
+        && File.Exists(Path.Combine(directory, "decoder.onnx"));
 
     /// <summary>
     /// Looks for the Hexagon NPU runtime. The library shipping beside the app is the strongest

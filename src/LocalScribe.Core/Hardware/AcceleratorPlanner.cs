@@ -171,7 +171,9 @@ public static class AcceleratorPlanner
         {
             warnings.Add(
                 $"No Whisper QNN model assets found for {caps.SocName}. Precompiled binaries are " +
-                "chipset-specific. Run 'localscribe-doctor --fetch-models' to download a matching set.");
+                "chipset-specific and are not published for download; export a set from Qualcomm " +
+                "AI Hub. See docs/setup-snapdragon.md. To run on the CPU meanwhile, " +
+                "'localscribe-doctor --fetch-models' fetches a portable export.");
         }
     }
 

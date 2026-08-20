@@ -33,8 +33,9 @@ public static class OnnxSessionFactory
         if (!File.Exists(modelPath))
         {
             throw new FileNotFoundException(
-                $"Model file not found. Run the doctor tool with --fetch-models to download a set " +
-                $"matching this machine.",
+                "Model file not found. Run 'localscribe-doctor --fetch-models' to download a "
+                + "portable set for the CPU and GPU paths. NPU weights are chipset-specific and "
+                + "come from Qualcomm AI Hub; see docs/setup-snapdragon.md.",
                 modelPath);
         }
 

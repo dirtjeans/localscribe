@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using LocalScribe.Core.Hardware;
+using LocalScribe.Core.Models;
 using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Refinement;
 using LocalScribe.Core.Transcription;
@@ -249,7 +250,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private ITranscriber OpenTranscriber(ExecutionPlan plan)
     {
         var family = _capabilities?.Family ?? SocFamily.Unknown;
-        var directory = Path.Combine(_modelRoot, DeviceProbe.AssetFolderFor(family), plan.WhisperModel);
+
+        // Keyed on the planned device, not the chip. A Snapdragon that ended up on the CPU
+        // needs the portable export, not the chipset binaries it does not have.
+        var directory = ModelLayout.Resolve(_modelRoot, family, plan.Encoder.Device, plan.WhisperModel);
         return WhisperOnnxTranscriber.Load(directory, plan);
     }
 

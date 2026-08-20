@@ -33,8 +33,16 @@ dotnet build -c Release -r win-arm64
 dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
 ```
 
-The doctor tells you exactly which pieces are missing and how to get them. Work through
-[docs/setup-snapdragon.md](docs/setup-snapdragon.md) before expecting the NPU path to light up.
+The doctor tells you exactly which pieces are missing and how to get them. It also fetches the
+weights for the CPU and GPU paths, which is enough to get the app running end to end:
+
+```powershell
+dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --fetch-models
+```
+
+The NPU path needs precompiled QNN binaries built for your exact chipset, which are not
+published for download and have to be exported from Qualcomm AI Hub. Work through
+[docs/setup-snapdragon.md](docs/setup-snapdragon.md) before expecting it to light up.
 
 ## Layout
 
@@ -81,13 +89,16 @@ The rules it encodes:
 
 ## Status
 
-The core library and its 94 tests are verified. The doctor tool runs.
+The core library and its 112 tests are verified. The doctor tool runs.
 
-**The WinUI app and the ONNX layer have not been run on real Snapdragon hardware.** They were
-written on Linux, where Windows targets cannot be compiled and no NPU exists. Expect to fix
-things on first run. The most likely rough edge is the decoder's input signature: exports differ
-between Hugging Face Optimum and Qualcomm AI Hub, and the binding here discovers input names but
-assumes a shape contract. The doctor prints the discovered signature so a mismatch is obvious.
+**The WinUI app and the ONNX layer have had only a first run on real Snapdragon hardware.** They
+were written on Linux, where Windows targets cannot be compiled and no NPU exists. The app now
+builds and launches on a Snapdragon X Elite and the QNN provider registers, but transcription
+against real weights is still unproven. Expect to fix things.
+
+The most likely rough edge is the decoder's input signature: exports differ between Hugging Face
+Optimum and Qualcomm AI Hub, and the binding here discovers input names but assumes a shape
+contract. The doctor prints the discovered signature so a mismatch is obvious.
 
 ## Known limitations
 

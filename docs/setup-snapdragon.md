@@ -32,18 +32,29 @@ should.
 
 After installing, re-run the doctor. `Hexagon NPU runtime driver` should read `ok`.
 
-## 3. Get Whisper model assets for your exact chip
+## 3. Get Whisper model assets
 
-Precompiled QNN binaries are **chipset-specific**. A build for Snapdragon X Elite will not load
-on X Plus or X2. The doctor prints which folder it is looking in.
+There are two kinds of weights here and they are not interchangeable.
 
-Qualcomm publishes pre-exported Whisper assets on Hugging Face under the `qualcomm`
-organisation (`Whisper-Tiny`, `Whisper-Base`, `Whisper-Small`). Look for the
-`PRECOMPILED_QNN_ONNX` asset for your chipset.
+**Portable ONNX exports** run on the CPU and through DirectML on the Adreno GPU. The doctor
+downloads them for you:
 
-To export a different size yourself, use Qualcomm AI Hub:
+```powershell
+localscribe-doctor --fetch-models
+```
+
+It picks the size the plan chose; pass `--model base.en` to override. These land in
+`models/cpu/<size>/` and are enough to make the app work end to end. They cannot run on the
+NPU.
+
+**Precompiled QNN context binaries** are the NPU path, and they are chipset-specific: a build
+for Snapdragon X Elite will not load on X Plus or X2. Nothing downloads these for you. They are
+not published as files anywhere — Qualcomm's Hugging Face repositories under the `qualcomm`
+organisation are deprecated and now contain only a pointer to AI Hub. You export your own, which
+needs a free AI Hub account:
 
 ```bash
+pip install qai-hub-models
 python -m qai_hub_models.models.whisper_base_en.export \
   --chipset qualcomm-snapdragon-x-elite \
   --target-runtime precompiled_qnn_onnx \
@@ -54,14 +65,24 @@ Lay the files out like this, where the folder name matches your chip:
 
 ```
 models/
-  snapdragon-x-elite/
+  cpu/                     <- portable, from --fetch-models
+    small.en/
+      encoder.onnx
+      decoder.onnx
+      vocab.json
+  snapdragon-x-elite/      <- precompiled QNN, from AI Hub
     base.en/
       encoder.onnx
       decoder.onnx
       vocab.json
 ```
 
-`vocab.json` comes from the matching Hugging Face Whisper repo, not from AI Hub.
+`vocab.json` is the same file either way and comes from the Hugging Face Whisper repo, not from
+AI Hub. `--fetch-models` fetches one; copy it across.
+
+Keeping the two apart is not tidiness. The doctor treats the presence of chipset weights as part
+of deciding the NPU is usable, so a portable export dropped into the chipset folder would send
+the encoder to the NPU, where it would either refuse to load or quietly relocate to the CPU.
 
 ### Version pinning
 

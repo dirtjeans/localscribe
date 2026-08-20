@@ -6,12 +6,15 @@ obj/
 # Build output from "dotnet publish". Self-contained, several hundred MB.
 publish/
 
-# Model weights are large and licensed separately. The doctor tells you where to put them.
-models/
+# Model weights are large and licensed separately. The doctor fetches or places them.
+# Anchored to the repo root on purpose. Windows sets core.ignorecase, so an unanchored
+# "models/" also matches src/LocalScribe.Core/Models/ and drops the source silently.
+/models/
 *.onnx
 *.bin
 
-# Windows sets core.ignorecase, which makes "*.onnx" match the LocalScribe.Onnx *directory*
-# as well as the weight files it was meant for. On Linux it does not, so the whole project
-# silently drops out of git on Windows and nowhere else. Put the source tree back.
+# For the same reason "*.onnx" matches the LocalScribe.Onnx *directory*. These two put back
+# source that the weight patterns above swept up. On Linux neither line is needed, which is
+# exactly why the collision survived this long.
 !src/LocalScribe.Onnx/
+!src/LocalScribe.Core/Models/

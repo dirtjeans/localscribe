@@ -22,6 +22,13 @@ internal static class Program
 
         var live = args.Contains("--live");
         var maximum = args.Contains("--max");
+        var fetch = args.Contains("--fetch-models");
+
+        if (args.Contains("--help") || args.Contains("-h"))
+        {
+            PrintUsage();
+            return 0;
+        }
 
         Heading("Machine");
 
@@ -91,6 +98,17 @@ internal static class Program
             }
         }
 
+        if (fetch)
+        {
+            return await FetchModels.RunAsync(
+                    modelDirectory,
+                    capabilities,
+                    plan,
+                    ArgumentValue(args, "--model"),
+                    args.Contains("--force"))
+                .ConfigureAwait(false);
+        }
+
         Heading("Verdict");
 
         if (plan.IsCpuOnly)
@@ -108,6 +126,19 @@ internal static class Program
                 : "Running on the GPU. The NPU would be quieter still; see the findings above.");
 
         return 0;
+    }
+
+    private static void PrintUsage()
+    {
+        Console.WriteLine("localscribe-doctor — reports what this machine can do, and why.");
+        Console.WriteLine();
+        Console.WriteLine("  --models <dir>   Where model weights live. Defaults to ./models.");
+        Console.WriteLine("  --fetch-models   Download the portable Whisper export this machine will use.");
+        Console.WriteLine("  --model <size>   Size to fetch. Defaults to the one the plan chose.");
+        Console.WriteLine("  --force          Re-download files that are already present.");
+        Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
+        Console.WriteLine("  --max            Plan for maximum speed rather than a considerate CPU share.");
+        Console.WriteLine("  --help, -h       This text.");
     }
 
     private static string? ArgumentValue(string[] args, string name)
