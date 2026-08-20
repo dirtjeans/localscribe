@@ -46,7 +46,14 @@ public sealed partial class MainWindow : Window
             _viewModel.Dispose();
         };
 
-        _ = _viewModel.InitialiseAsync();
+        // Probe, then warm the model while the user is still reading the hardware line.
+        _ = InitialiseAsync();
+    }
+
+    private async Task InitialiseAsync()
+    {
+        await _viewModel.InitialiseAsync();
+        await _viewModel.PreloadAsync();
     }
 
     /// <summary>

@@ -29,8 +29,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// sessions takes about five seconds, and the session does not own it, so re-creating it per
     /// recording both leaked the old one and paid that cost again every time.
     /// </summary>
-    private ITranscriber? _liveTranscriber;
-    private string? _liveTranscriberKey;
+    private ITranscriber? _transcriber;
+    private string? _transcriberKey;
+    private readonly SemaphoreSlim _transcriberLock = new(1, 1);
+    private bool _modelReady;
     private SessionDiagnostics? _diagnostics;
 
     /// <summary>
@@ -62,6 +64,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>True once the model is loaded and a recording can start immediately.</summary>
+    public bool IsModelReady
+    {
+        get => _modelReady;
+        private set => Set(ref _modelReady, value);
+    }
 
     /// <summary>Summary and action items from the cleanup model, empty when there was none.</summary>
     public string Summary
@@ -231,8 +240,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // these samples, not to the file, which is why the decoded audio is what is kept.
             Player.Load(audio);
 
-            Status = "Loading the model…";
-            using var transcriber = await Task.Run(() => OpenTranscriber(_plan), _cancellation.Token);
+            Status = IsModelReady ? "Preparing…" : "Loading the model…";
+            var transcriber = await Task.Run(() => TranscriberFor(_plan), _cancellation.Token);
             var pipeline = new TranscriptionPipeline(transcriber, BuildRefiner());
 
             Status = $"Transcribing with {transcriber.Description}…";
@@ -315,7 +324,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
-            transcriber = await Task.Run(() => LiveTranscriber(livePlan));
+            transcriber = await Task.Run(() => TranscriberFor(livePlan));
         }
         catch (Exception exception)
         {
@@ -347,20 +356,115 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// The cached live transcriber, rebuilt only when the placement or model size changes.
     /// Called on a worker thread; opening ONNX sessions is slow and blocking.
     /// </summary>
-    private ITranscriber LiveTranscriber(ExecutionPlan plan)
+    /// <summary>
+    /// The loaded transcriber for a plan, opening it only if what is already loaded will not do.
+    /// <para>
+    /// One slot rather than a cache. Holding a second model would double the memory a QNN
+    /// context binary occupies, which is over a gigabyte, to save a load that only happens when
+    /// the user switches between recording and transcribing a file.
+    /// </para>
+    /// <para>
+    /// Keyed on the resolved model directory rather than the plan's requested size. The plan
+    /// asks for small.en when listening and medium.en for a file, and both may well resolve to
+    /// the same weights on disk — reloading a gigabyte because a string differed would be a poor
+    /// reason.
+    /// </para>
+    /// </summary>
+    private ITranscriber TranscriberFor(ExecutionPlan plan)
     {
-        var key = $"{plan.Encoder.Device}/{plan.Decoder.Device}/{plan.WhisperModel}";
+        var directory = ModelDirectoryFor(plan);
+        var key = $"{directory}|{plan.Encoder.Device}|{plan.Decoder.Device}|"
+            + $"{plan.CpuBudget.IntraOpThreads}|{plan.StrictProviderCheck}";
 
-        if (_liveTranscriber is not null && _liveTranscriberKey == key)
+        // Two callers can arrive at once — a preload running while the user clicks record — and
+        // opening the same model twice wastes both the time and the memory.
+        _transcriberLock.Wait();
+
+        try
         {
-            return _liveTranscriber;
+            if (_transcriber is not null && _transcriberKey == key)
+            {
+                return _transcriber;
+            }
+
+            _transcriber?.Dispose();
+            _transcriber = null;
+            _transcriberKey = null;
+
+            var opened = WhisperOnnxTranscriber.Load(directory, plan);
+
+            _transcriber = opened;
+            _transcriberKey = key;
+
+            return opened;
+        }
+        finally
+        {
+            _transcriberLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Opens the model this machine will use before anything asks for it.
+    /// <para>
+    /// A QNN context binary takes several seconds to load, and doing it on the click meant the
+    /// first recording of a session began with a wait, and the first words after it were spoken
+    /// into a microphone that was not running yet. Startup has that time going spare.
+    /// </para>
+    /// <para>
+    /// The cost is memory: the model stays resident from launch rather than from first use. Set
+    /// LOCALSCRIBE_NO_PRELOAD to trade the seconds back.
+    /// </para>
+    /// </summary>
+    public async Task PreloadAsync()
+    {
+        if (_plan is null || Environment.GetEnvironmentVariable("LOCALSCRIBE_NO_PRELOAD") is { Length: > 0 })
+        {
+            return;
         }
 
-        _liveTranscriber?.Dispose();
-        _liveTranscriber = OpenTranscriber(plan);
-        _liveTranscriberKey = key;
+        // The listening plan, because that is the path where waiting costs words rather than
+        // patience. A file transcription reuses it when the weights resolve the same.
+        var livePlan = AcceleratorPlanner.Plan(
+            _capabilities ?? DeviceCapabilities.Unknown,
+            PerformanceProfile.Considerate,
+            WorkloadMode.Live);
 
-        return _liveTranscriber;
+        Status = "Warming up the model…";
+
+        try
+        {
+            var transcriber = await Task.Run(() => TranscriberFor(livePlan));
+
+            IsModelReady = true;
+            Status = $"Ready. {transcriber.Description}";
+        }
+        catch (Exception exception)
+        {
+            // Not fatal. The model will be opened on demand, slowly, and the failure will be
+            // reported then with the context of what the user was trying to do.
+            Status = $"Ready, but the model could not be preloaded: {exception.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Where this plan's weights live.
+    /// <para>
+    /// Keyed on the planned device, not the chip: a Snapdragon that ended up on the CPU needs
+    /// the portable export, not the chipset binaries it does not have. And located rather than
+    /// resolved, because the plan names a Whisper size while what is installed is whatever the
+    /// user obtained — NPU builds arrive under their own names, and demanding an exact match
+    /// hides a working model and sends the work to the CPU.
+    /// </para>
+    /// </summary>
+    private string ModelDirectoryFor(ExecutionPlan plan)
+    {
+        var family = _capabilities?.Family ?? SocFamily.Unknown;
+
+        return ModelLayout.Locate(_modelRoot, family, plan.Encoder.Device, plan.WhisperModel)
+            ?? throw new DirectoryNotFoundException(
+                $"No Whisper weights under {Path.Combine(_modelRoot, ModelLayout.FolderFor(family, plan.Encoder.Device))}. "
+                + "Run 'localscribe-doctor --fetch-models' to download a portable set.");
     }
 
     /// <summary>Stops listening and commits the trailing words.</summary>
@@ -458,24 +562,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private ITranscriber OpenTranscriber(ExecutionPlan plan)
-    {
-        var family = _capabilities?.Family ?? SocFamily.Unknown;
-
-        // Keyed on the planned device, not the chip. A Snapdragon that ended up on the CPU
-        // needs the portable export, not the chipset binaries it does not have.
-        //
-        // Locate rather than Resolve: the plan names a Whisper size, but what is installed is
-        // whatever the user obtained, and NPU builds arrive under their own names. Demanding an
-        // exact match hides a working model and sends the work to the CPU.
-        var directory = ModelLayout.Locate(_modelRoot, family, plan.Encoder.Device, plan.WhisperModel)
-            ?? throw new DirectoryNotFoundException(
-                $"No Whisper weights under {Path.Combine(_modelRoot, ModelLayout.FolderFor(family, plan.Encoder.Device))}. "
-                + "Run 'localscribe-doctor --fetch-models' to download a portable set.");
-
-        return WhisperOnnxTranscriber.Load(directory, plan);
-    }
-
     /// <summary>
     /// The backend found at startup, reused rather than reconnected per pass. Null when none is
     /// running, which disables the cleanup stage without disabling transcription.
@@ -528,9 +614,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _microphone?.Dispose();
         _microphone = null;
 
-        _liveTranscriber?.Dispose();
-        _liveTranscriber = null;
-        _liveTranscriberKey = null;
+        _transcriber?.Dispose();
+        _transcriber = null;
+        _transcriberKey = null;
+        _transcriberLock.Dispose();
 
         _cancellation?.Dispose();
         _cancellation = null;
