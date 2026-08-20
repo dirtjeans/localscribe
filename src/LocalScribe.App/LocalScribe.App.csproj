@@ -8,6 +8,12 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <!--
+      Embedded in the exe so Explorer, the taskbar and any shortcut pick it up without the file
+      having to travel alongside. Regenerate with tools/make-icon.py.
+    -->
+    <ApplicationIcon>Assets\localscribe.ico</ApplicationIcon>
+
+    <!--
       arm64 first: this app exists for Snapdragon laptops, and an x64 build running under
       emulation cannot load the QNN provider at all. x64 stays available so the UI can be
       worked on from an ordinary desktop, where it falls back to the CPU.
@@ -27,6 +33,11 @@
 
     <!-- WASAPI capture and audio file decoding. Ships arm64-compatible managed assemblies. -->
     <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\localscribe.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\localscribe.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

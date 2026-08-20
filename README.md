@@ -40,9 +40,18 @@ weights for the CPU and GPU paths, which is enough to get the app running end to
 dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --fetch-models
 ```
 
-The NPU path needs precompiled QNN binaries built for your exact chipset, which are not
-published for download and have to be exported from Qualcomm AI Hub. Work through
+The NPU path needs precompiled QNN binaries built for your exact chipset. Work through
 [docs/setup-snapdragon.md](docs/setup-snapdragon.md) before expecting it to light up.
+
+To run the app itself, publish it and put it in the Start Menu:
+
+```powershell
+dotnet publish src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm64 --self-contained true -p:Platform=arm64 -o publish/win-arm64
+./tools/install-shortcut.ps1
+```
+
+Then search the Start Menu for LocalScribe. Add `-Desktop` for a desktop shortcut too, or
+`-Remove` to take them away again. The shortcut is per-user and needs no administrator.
 
 ## Layout
 
@@ -89,7 +98,7 @@ The rules it encodes:
 
 ## Status
 
-The core library and its 134 tests are verified. The doctor tool runs.
+The core library and its 150 tests are verified. The doctor tool runs.
 
 **The WinUI app and the ONNX layer have had only a first run on real Snapdragon hardware.** They
 were written on Linux, where Windows targets cannot be compiled and no NPU exists. The app now
