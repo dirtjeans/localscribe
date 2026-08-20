@@ -24,7 +24,8 @@ internal sealed class PortableDecodeStrategy(
     WhisperTokenizer tokenizer,
     WhisperModelSignature signature,
     int melBands,
-    int maxTokensPerWindow) : IWhisperDecodeStrategy
+    int maxTokensPerWindow,
+    DecodeSession session) : IWhisperDecodeStrategy
 {
     public List<int> Decode(float[] mel, int frames, CancellationToken cancellationToken)
     {
@@ -45,7 +46,15 @@ internal sealed class PortableDecodeStrategy(
         var stateInput = InputNameContaining("encoder_hidden_states", fallbackIndex: 1);
         var tokenType = OnnxTensors.ElementTypeOf(decoder, tokenInput);
 
-        var tokens = new List<int>(tokenizer.BuildPrompt(withTimestamps: true));
+        // One step with nothing but the start token scores every language at once. Done once
+        // per session: the language does not change between passes over the same audio, and
+        // asking again is what let the answer wobble.
+        session.Language ??= DetectLanguage(hiddenStates, tokenInput, stateInput, tokenType);
+
+        var tokens = new List<int>(tokenizer.BuildPrompt(
+            withTimestamps: true,
+            languageToken: session.Language ?? -1));
+
         var promptLength = tokens.Count;
         var limit = Math.Min(maxTokensPerWindow, signature.MaxDecodeLength);
 
@@ -71,6 +80,38 @@ internal sealed class PortableDecodeStrategy(
         }
 
         return tokens.Skip(promptLength).ToList();
+    }
+
+    /// <summary>
+    /// Runs a single step over just the start token and reads the language off the result.
+    /// </summary>
+    private int DetectLanguage(
+        DisposableNamedOnnxValue hiddenStates,
+        string tokenInput,
+        string stateInput,
+        TensorElementType tokenType)
+    {
+        if (tokenizer.Languages.Count == 0)
+        {
+            return -1;
+        }
+
+        using var outputs = decoder.Run(
+        [
+            TokenSequence(tokenInput, [tokenizer.Special.StartOfTranscript], tokenType),
+            OnnxTensors.Passthrough(stateInput, hiddenStates),
+        ]);
+
+        var logits = OnnxTensors.ReadFloats(outputs.First());
+
+        // Only the final position predicts what comes next; with one input token that is the
+        // whole row, but an export that returns every position would otherwise be misread.
+        var vocabulary = signature.VocabularySize;
+        var row = logits.Length >= vocabulary
+            ? logits.AsSpan(logits.Length - vocabulary, vocabulary)
+            : logits.AsSpan();
+
+        return tokenizer.DetectLanguage(row);
     }
 
     /// <summary>

@@ -27,14 +27,97 @@ public sealed class WhisperTokenizer
         _idToToken = idToToken;
         Special = specialTokens;
         _unicodeToByte = BuildByteDecoder();
+        Languages = FindLanguages(idToToken, specialTokens);
+    }
+
+    /// <summary>
+    /// Picks the language markers out of the vocabulary. They are the only special tokens whose
+    /// body is a bare two or three letter code; everything else — transcribe, notimestamps,
+    /// startofprev — is a word.
+    /// </summary>
+    private static Dictionary<int, string> FindLanguages(
+        IReadOnlyDictionary<int, string> idToToken,
+        SpecialTokens special)
+    {
+        var languages = new Dictionary<int, string>();
+
+        foreach (var (id, token) in idToToken)
+        {
+            if (id <= special.StartOfTranscript || token.Length is < 6 or > 7)
+            {
+                continue;
+            }
+
+            if (!token.StartsWith("<|", StringComparison.Ordinal)
+                || !token.EndsWith("|>", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var code = token[2..^2];
+            if (code.All(char.IsAsciiLetterLower))
+            {
+                languages[id] = code;
+            }
+        }
+
+        return languages;
     }
 
     /// <summary>The ids the decoder loop needs to build a prompt and know when to stop.</summary>
     public SpecialTokens Special { get; }
 
+    /// <summary>
+    /// Language tokens by id, e.g. 50259 to "en". Empty on an English-only model.
+    /// <para>
+    /// Read from the vocabulary rather than assumed to be a contiguous block after
+    /// <c>&lt;|startoftranscript|&gt;</c>: that happens to be true of the published models, but
+    /// it is a layout detail no export promises.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<int, string> Languages { get; private init; } =
+        new Dictionary<int, string>();
+
+    /// <summary>
+    /// Reads the language off one step of decoder output.
+    /// <para>
+    /// Whisper predicts the language as the token immediately after
+    /// <c>&lt;|startoftranscript|&gt;</c>, so a single decode step with nothing but that token
+    /// scores every language at once. Restricting the search to language ids is what makes this
+    /// a detection rather than an ordinary greedy step, which would usually just start
+    /// transcribing.
+    /// </para>
+    /// </summary>
+    /// <param name="logits">Scores for the whole vocabulary at the position after the start token.</param>
+    /// <returns>The winning language id, or -1 when this model has no language tokens.</returns>
+    public int DetectLanguage(ReadOnlySpan<float> logits)
+    {
+        var best = -1;
+        var bestScore = float.NegativeInfinity;
+
+        foreach (var (id, _) in Languages)
+        {
+            if (id < logits.Length && logits[id] > bestScore)
+            {
+                bestScore = logits[id];
+                best = id;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>The code for a language id, e.g. "en", or null when it is not one.</summary>
+    public string? LanguageCode(int tokenId) =>
+        Languages.TryGetValue(tokenId, out var code) ? code : null;
+
     /// <param name="StartOfTranscript">Opens every decode.</param>
     /// <param name="EndOfText">Ends a decode.</param>
     /// <param name="Transcribe">Selects transcription rather than translation.</param>
+    /// <param name="English">
+    /// Id of <c>&lt;|en|&gt;</c>, or -1 on an English-only model, which has no language tokens
+    /// because it needs none.
+    /// </param>
     /// <param name="NoTimestamps">Suppresses timestamp tokens.</param>
     /// <param name="NoSpeech">Marks a window the model believes contains no speech.</param>
     /// <param name="FirstTimestamp">
@@ -46,8 +129,12 @@ public sealed class WhisperTokenizer
         int Transcribe,
         int NoTimestamps,
         int NoSpeech,
-        int FirstTimestamp)
+        int FirstTimestamp,
+        int English = -1)
     {
+        /// <summary>True when this vocabulary carries language tokens and therefore needs one.</summary>
+        public bool IsMultilingual => English >= 0;
+
         /// <summary>True when the id is a timestamp marker rather than text.</summary>
         public bool IsTimestamp(int tokenId) => FirstTimestamp >= 0 && tokenId >= FirstTimestamp;
 
@@ -121,7 +208,8 @@ public sealed class WhisperTokenizer
                 Transcribe: Find("<|transcribe|>", required: true),
                 NoTimestamps: Find("<|notimestamps|>", required: false),
                 NoSpeech: Find("<|nospeech|>", required: false),
-                FirstTimestamp: Find("<|0.00|>", required: false)));
+                FirstTimestamp: Find("<|0.00|>", required: false),
+                English: Find("<|en|>", required: false)));
     }
 
     /// <summary>
@@ -158,13 +246,41 @@ public sealed class WhisperTokenizer
     /// The prompt that opens a decode: start, language, task, and optionally a request for no
     /// timestamps. English-only models have no language token, so it is omitted when absent.
     /// </summary>
+    /// <summary>
+    /// Builds the tokens that open a decode.
+    /// <para>
+    /// The order is fixed and the language slot is not optional on a multilingual model:
+    /// <c>&lt;|startoftranscript|&gt; &lt;|en|&gt; &lt;|transcribe|&gt;</c>, then
+    /// <c>&lt;|notimestamps|&gt;</c> if timestamps are not wanted. English-only models have no
+    /// language tokens at all and correctly get none.
+    /// </para>
+    /// <para>
+    /// Leaving the slot empty on a multilingual model does not make the model detect the
+    /// language, it makes it guess, and it guesses again on every pass. The observed result was
+    /// a live transcript that returned "Gracias." for the first two seconds of English speech,
+    /// and that flipped between properly punctuated output and a bare lowercase run of words
+    /// from one pass to the next. Both are the same fault: an unconditioned prompt leaves the
+    /// model free to pick a different language and a different output convention each time.
+    /// </para>
+    /// <para>
+    /// The answer is to detect the language once and then say so on every pass, not to hard-code
+    /// one. See <see cref="DetectLanguage"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="withTimestamps">False to suppress timestamp tokens.</param>
+    /// <param name="languageToken">
+    /// The detected language id. Falls back to English when detection has not run and the model
+    /// is multilingual, because naming a language is what keeps the output stable — an empty
+    /// slot is the one option that is always wrong.
+    /// </param>
     public IReadOnlyList<int> BuildPrompt(bool withTimestamps = true, int languageToken = -1)
     {
         var prompt = new List<int> { Special.StartOfTranscript };
 
-        if (languageToken >= 0)
+        var language = languageToken >= 0 ? languageToken : Special.English;
+        if (language >= 0)
         {
-            prompt.Add(languageToken);
+            prompt.Add(language);
         }
 
         prompt.Add(Special.Transcribe);

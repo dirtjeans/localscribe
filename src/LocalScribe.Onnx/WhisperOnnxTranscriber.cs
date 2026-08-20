@@ -33,6 +33,7 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     private readonly LogMelSpectrogram _spectrogram;
     private readonly ExecutionPlan _plan;
     private readonly IWhisperDecodeStrategy _strategy;
+    private readonly DecodeSession _session = new();
 
     /// <summary>
     /// Whisper never emits more than 448 tokens for a 30-second window, so this is a safety net
@@ -64,9 +65,10 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         _spectrogram = new LogMelSpectrogram(melBands: signature.MelBands);
 
         _strategy = signature.Contract == WhisperDecoderContract.QnnCached
-            ? new QnnCachedDecodeStrategy(encoder, decoder, tokenizer, signature, signature.MelBands)
+            ? new QnnCachedDecodeStrategy(
+                encoder, decoder, tokenizer, signature, signature.MelBands, _session)
             : new PortableDecodeStrategy(
-                encoder, decoder, tokenizer, signature, signature.MelBands, maxTokensPerWindow);
+                encoder, decoder, tokenizer, signature, signature.MelBands, maxTokensPerWindow, _session);
     }
 
     /// <summary>
@@ -145,9 +147,20 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
             + "or see docs/setup-snapdragon.md for the AI Hub layout.",
             Path.Combine(modelDirectory, $"{half}.onnx"));
 
-    public string Description =>
-        $"Whisper {_plan.WhisperModel}: encoder on {_plan.Encoder.Device}, "
-        + $"decoder on {_plan.Decoder.Device} ({Signature.Describe()})";
+    /// <summary>The language the model reported, once it has heard any speech.</summary>
+    public string? DetectedLanguage =>
+        _session.Language is { } id ? _tokenizer.LanguageCode(id) : null;
+
+    public string Description
+    {
+        get
+        {
+            var language = DetectedLanguage is { } code ? $", {code}" : string.Empty;
+
+            return $"Whisper {_plan.WhisperModel}: encoder on {_plan.Encoder.Device}, "
+                + $"decoder on {_plan.Decoder.Device} ({Signature.Describe()}{language})";
+        }
+    }
 
     public Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
         AudioChunk chunk,

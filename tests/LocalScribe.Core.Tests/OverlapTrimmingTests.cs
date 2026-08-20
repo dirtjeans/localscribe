@@ -115,4 +115,35 @@ public class OverlapTrimmingTests
         Assert.Equal(2, stitched.Count);
         Assert.Equal("for next year", stitched[1].Text);
     }
+
+    /// <summary>
+    /// A pass re-reads its whole window, so the words it repeats routinely run past the end of
+    /// any one previous segment. Comparing against only the most recent one left most of the
+    /// repetition in place.
+    /// </summary>
+    [Fact]
+    public void AnOverlapLongerThanOneSegmentIsStillFound()
+    {
+        const string previous =
+            "so that chunking and stitching are both exercised. Whisper divides audio into";
+        const string candidate =
+            "so that chunking and stitching are both exercised. Whisper divides audio into "
+            + "fixed windows and the decoder emits tokens one at a time.";
+
+        var trimmed = TranscriptStitcher.TrimLeadingOverlap(previous, candidate);
+
+        Assert.Equal("fixed windows and the decoder emits tokens one at a time.", trimmed);
+    }
+
+    /// <summary>
+    /// The search is bounded, so an absurdly long repeat is left alone rather than matched by
+    /// accident. Bounded is the point: past a certain length, repetition is speech, not a seam.
+    /// </summary>
+    [Fact]
+    public void TheSearchIsBounded()
+    {
+        var words = string.Join(" ", Enumerable.Range(0, 80).Select(i => $"word{i}"));
+
+        Assert.Equal(words, TranscriptStitcher.TrimLeadingOverlap(words, words, maxWords: 5));
+    }
 }

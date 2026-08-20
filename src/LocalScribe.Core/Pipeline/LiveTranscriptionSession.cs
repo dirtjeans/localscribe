@@ -61,6 +61,19 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     /// </summary>
     private double _committedThroughSeconds;
 
+    /// <summary>
+    /// The best-formatted reading of the current window seen so far, kept so a later pass that
+    /// degenerates does not become the transcript merely by arriving last.
+    /// </summary>
+    private List<TranscriptSegment>? _bestReading;
+
+    /// <summary>
+    /// Where the window started when <see cref="_bestReading"/> was taken. A reading is only a
+    /// substitute for another reading of the same audio, and once the window has rolled on it is
+    /// no longer that.
+    /// </summary>
+    private double _bestReadingWindowStart = double.NaN;
+
     private volatile bool _disposed;
     private double _windowStartSeconds;
     private double _sessionSeconds;
@@ -172,6 +185,8 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
                 .TranscribeChunkAsync(chunk, cancellationToken)
                 .ConfigureAwait(false);
 
+            segments = PreferBestReading(segments, windowStart);
+
             var settledBefore = commitEverything
                 ? double.MaxValue
                 : _sessionSeconds - CommitAfterSeconds;
@@ -187,7 +202,7 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
 
                 if (segment.EndSeconds <= settledBefore)
                 {
-                    Commit(segment, isFinalPass: commitEverything);
+                    Commit(segment);
                 }
                 else
                 {
@@ -204,6 +219,63 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
         {
             _passLock.Release();
         }
+    }
+
+    /// <summary>
+    /// The end of the committed transcript, long enough to cover any overlap a single pass can
+    /// produce and no longer, since every extra word is another chance at a false match.
+    /// </summary>
+    private string CommittedTail()
+    {
+        const int words = 60;
+
+        var tail = new List<string>();
+
+        for (var i = _committed.Count - 1; i >= 0 && tail.Count < words; i--)
+        {
+            var parts = _committed[i].Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            tail.InsertRange(0, parts);
+        }
+
+        return string.Join(" ", tail.TakeLast(words));
+    }
+
+    /// <summary>
+    /// Remembers the best-formatted reading of the window, and falls back to it when a pass
+    /// returns the degenerate one.
+    /// <para>
+    /// Every pass re-transcribes the same rolling window, so a session normally holds several
+    /// readings of identical audio. Whisper occasionally delivers one of them as a bare
+    /// lowercase run of words, and on the final pass that reading would otherwise become the
+    /// transcript purely because it came last. Nothing here rewrites the model's output; it only
+    /// chooses between things the model itself said about the same seconds of speech.
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<TranscriptSegment> PreferBestReading(
+        IReadOnlyList<TranscriptSegment> segments,
+        double windowStart)
+    {
+        var text = string.Join(" ", segments.Select(s => s.Text.Trim()));
+
+        if (!TranscriptQuality.LooksUnformatted(text))
+        {
+            _bestReading = segments.ToList();
+            _bestReadingWindowStart = windowStart;
+            return segments;
+        }
+
+        // Only a reading of the same window is a candidate. Once the window has rolled, an
+        // earlier reading describes different seconds of audio, and substituting it drops
+        // whatever was said in between — which is a far worse failure than the missing commas
+        // it was meant to repair.
+        if (_bestReading is null || Math.Abs(_bestReadingWindowStart - windowStart) > double.Epsilon)
+        {
+            return segments;
+        }
+
+        var best = string.Join(" ", _bestReading.Select(s => s.Text.Trim()));
+
+        return TranscriptQuality.PreferCandidate(text, best) ? _bestReading : segments;
     }
 
     /// <summary>
@@ -228,12 +300,7 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     /// pass decides were in it.
     /// </para>
     /// </summary>
-    /// <param name="isFinalPass">
-    /// True on the pass triggered by stopping. There is no later pass to defer to, so a
-    /// straddling segment is taken whole: repeating a few words is a smaller failure than
-    /// dropping the last thing the user said.
-    /// </param>
-    private void Commit(TranscriptSegment segment, bool isFinalPass)
+    private void Commit(TranscriptSegment segment)
     {
         if (segment.EndSeconds <= _committedThroughSeconds + BoundaryToleranceSeconds)
         {
@@ -241,19 +308,18 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
             return;
         }
 
-        if (!isFinalPass && segment.StartSeconds < _committedThroughSeconds - BoundaryToleranceSeconds)
-        {
-            // Straddles the mark: its opening words are already committed. Taking it whole would
-            // repeat them, so it waits — the next pass will offer the same speech as a segment
-            // that starts cleanly after the mark.
-            return;
-        }
+        // A segment straddling the mark used to be deferred, on the reasoning that a later pass
+        // would offer the same speech starting cleanly after it. Often one does. But once the
+        // window rolls past, no pass ever offers it again, and the deferral is silently
+        // permanent — a whole clause vanished mid-sentence, "the Orion cores stay" running
+        // straight into the next paragraph. Losing words to avoid repeating them is the wrong
+        // trade, so it is taken and its overlapping opening trimmed below.
 
-        // The final pass takes straddling segments whole, so its opening words may repeat the
-        // tail of what is already committed. Trim rather than accept the stutter.
-        var text = _committed.Count == 0
-            ? segment.Text
-            : TranscriptStitcher.TrimLeadingOverlap(_committed[^1].Text, segment.Text);
+        // Trimmed against the tail of everything committed, not just the last segment. A pass
+        // re-reads its whole window, so the words it repeats routinely span several of the
+        // segments already written down, and comparing with only the most recent one leaves the
+        // rest of the repetition in place.
+        var text = TranscriptStitcher.TrimLeadingOverlap(CommittedTail(), segment.Text);
 
         if (text.Trim().Length == 0)
         {

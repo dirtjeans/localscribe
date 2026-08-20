@@ -127,7 +127,7 @@ public sealed class TranscriptStitcher
     /// How far back to look. Bounded because a long match is more likely to be genuine
     /// repetition in the speech than an artefact of the seam.
     /// </param>
-    public static string TrimLeadingOverlap(string previous, string candidate, int maxWords = 20)
+    public static string TrimLeadingOverlap(string previous, string candidate, int maxWords = 40)
     {
         ArgumentNullException.ThrowIfNull(previous);
         ArgumentNullException.ThrowIfNull(candidate);

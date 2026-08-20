@@ -31,7 +31,8 @@ internal sealed class QnnCachedDecodeStrategy(
     InferenceSession decoder,
     WhisperTokenizer tokenizer,
     WhisperModelSignature signature,
-    int melBands) : IWhisperDecodeStrategy
+    int melBands,
+    DecodeSession session) : IWhisperDecodeStrategy
 {
     /// <summary>
     /// What a masked position scores. Qualcomm's export uses a finite sentinel rather than
@@ -64,8 +65,10 @@ internal sealed class QnnCachedDecodeStrategy(
         var layers = signature.DecoderLayers;
         var window = signature.MaxDecodeLength;
 
-        var prompt = tokenizer.BuildPrompt(withTimestamps: true);
-        var tokens = new List<int>(prompt);
+        // Starts as just the start token. The language is not known until the model has scored
+        // it, and the rest of the prompt is appended once it has.
+        var forced = new List<int> { tokenizer.Special.StartOfTranscript };
+        var tokens = new List<int>(forced);
         var emitted = new List<int>();
 
         var mask = new float[window];
@@ -107,18 +110,30 @@ internal sealed class QnnCachedDecodeStrategy(
 
                 try
                 {
-                    var next = OnnxTensors.ArgMax(OnnxTensors.ReadFloats(Output(outputs, "logits")));
+                    var logits = OnnxTensors.ReadFloats(Output(outputs, "logits"));
+
+                    // The token after the start marker is where Whisper says what language it
+                    // heard, so this step is a detection rather than a prediction.
+                    if (step == 0)
+                    {
+                        forced.AddRange(PromptAfterDetection(logits));
+                    }
+
+                    // While the prompt is still being fed the prediction is discarded: those
+                    // tokens are ours to choose, not the model's.
+                    var next = step + 1 < forced.Count
+                        ? forced[step + 1]
+                        : OnnxTensors.ArgMax(logits);
 
                     if (next == tokenizer.Special.EndOfText)
                     {
                         break;
                     }
 
-                    // While the forced prompt is still being fed the prediction is discarded:
-                    // those tokens are ours to choose, not the model's.
-                    if (step >= prompt.Count - 1)
+                    tokens.Add(next);
+
+                    if (step + 1 >= forced.Count)
                     {
-                        tokens.Add(next);
                         emitted.Add(next);
                     }
 
@@ -139,6 +154,31 @@ internal sealed class QnnCachedDecodeStrategy(
         }
 
         return emitted;
+    }
+
+    /// <summary>
+    /// The rest of the prompt, once the language has been read off the first step's scores.
+    /// <para>
+    /// Detected once and then reused for the whole session. Re-detecting every pass is what
+    /// produced a transcript that opened with "Gracias." over English speech and then changed
+    /// its mind; the language of a recording does not change between passes over the same audio,
+    /// so neither should the prompt.
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<int> PromptAfterDetection(ReadOnlySpan<float> logits)
+    {
+        session.Language ??= tokenizer.DetectLanguage(logits);
+
+        var prompt = new List<int>();
+
+        if (session.Language is > 0)
+        {
+            prompt.Add(session.Language.Value);
+        }
+
+        prompt.Add(tokenizer.Special.Transcribe);
+
+        return prompt;
     }
 
     /// <summary>

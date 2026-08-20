@@ -15,6 +15,52 @@ namespace LocalScribe.Core.Tests;
 /// </summary>
 public sealed class LiveTranscriptionShutdownTests
 {
+    /// <summary>A transcriber returning a scripted sequence of readings, one per pass.</summary>
+    private sealed class ScriptedTranscriber(params string[] readings) : ITranscriber
+    {
+        private int _pass;
+
+        public string Description => "scripted";
+
+        public Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
+            AudioChunk chunk,
+            CancellationToken cancellationToken = default)
+        {
+            var index = Math.Min(_pass++, readings.Length - 1);
+
+            return Task.FromResult<IReadOnlyList<TranscriptSegment>>(
+                [new TranscriptSegment(readings[index], chunk.StartSeconds, chunk.StartSeconds + 2)]);
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// The reported failure, at the level it actually occurs. Whisper delivers the same speech
+    /// formatted on one pass and as a bare lowercase run of words on the next, and the final
+    /// pass is the one that reaches the transcript. Arriving last is not a reason to win.
+    /// </summary>
+    [Fact]
+    public async Task ADegeneratePassDoesNotOverwriteAFormattedOne()
+    {
+        const string formatted = "Okay, here we go. Let's try the transcription again.";
+        const string degenerate = "okay here we go let's try the transcription again";
+
+        using var transcriber = new ScriptedTranscriber(formatted, degenerate);
+        await using var session = new LiveTranscriptionSession(transcriber);
+
+        await session.PushAsync(Audio(2));   // formatted
+        await session.PushAsync(Audio(2));   // degenerate
+
+        var committed = await session.FinishAsync();
+        var text = string.Join(" ", committed.Select(s => s.Text));
+
+        Assert.Contains("Okay, here we go.", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("okay here we go", text, StringComparison.Ordinal);
+    }
+
     /// <summary>A transcriber whose pass blocks until released.</summary>
     private sealed class HoldableTranscriber : ITranscriber
     {
