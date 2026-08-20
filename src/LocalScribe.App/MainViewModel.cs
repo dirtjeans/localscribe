@@ -14,7 +14,7 @@ namespace LocalScribe.App;
 /// Drives the window. Holds no UI types, so the interesting behaviour can be reasoned about
 /// (and later tested) without standing up a WinUI host.
 /// </summary>
-public sealed class MainViewModel : INotifyPropertyChanged
+public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly string _modelRoot;
     private ExecutionPlan? _plan;
@@ -23,6 +23,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private MicrophoneCapture? _microphone;
     private LiveTranscriptionSession? _liveSession;
 
+    /// <summary>
+    /// The live transcriber is kept between recordings rather than rebuilt. Opening the QNN
+    /// sessions takes about five seconds, and the session does not own it, so re-creating it per
+    /// recording both leaked the old one and paid that cost again every time.
+    /// </summary>
+    private ITranscriber? _liveTranscriber;
+    private string? _liveTranscriberKey;
+
     private string _status = "Starting up…";
     private string _hardwareSummary = string.Empty;
     private string _transcript = string.Empty;
@@ -30,6 +38,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private double _progress;
     private bool _busy;
     private bool _recording;
+    private bool _preparing;
 
     public MainViewModel(string? modelRoot = null)
     {
@@ -87,6 +96,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set => Set(ref _recording, value);
     }
 
+    /// <summary>
+    /// True while the model is loading and the microphone is not yet running.
+    /// <para>
+    /// This is its own state rather than a flavour of <see cref="IsBusy"/> because it is the one
+    /// moment the user must not speak. Loading the QNN sessions takes seconds, and anything said
+    /// before the microphone starts is gone — not delayed, gone.
+    /// </para>
+    /// </summary>
+    public bool IsPreparing
+    {
+        get => _preparing;
+        private set => Set(ref _preparing, value);
+    }
+
     /// <summary>Terms the cleanup model should spell correctly. Edited by the user in the UI.</summary>
     public List<string> Glossary { get; } = [];
 
@@ -131,7 +154,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             Status = "Loading audio…";
             var audio = await Task.Run(() => AudioFileLoader.Load(path), _cancellation.Token);
 
-            using var transcriber = OpenTranscriber(_plan);
+            Status = "Loading the model…";
+            using var transcriber = await Task.Run(() => OpenTranscriber(_plan), _cancellation.Token);
             var pipeline = new TranscriptionPipeline(transcriber, BuildRefiner());
 
             Status = $"Transcribing with {transcriber.Description}…";
@@ -170,12 +194,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Starts live transcription from the microphone.</summary>
-    public Task StartRecordingAsync()
+    /// <summary>
+    /// Starts live transcription from the microphone.
+    /// <para>
+    /// The model is opened before the microphone, off the UI thread, and the user is told to
+    /// wait until it is. This used to run the load synchronously on the click, which froze the
+    /// window for about five seconds and started capturing only afterwards — so the opening
+    /// words of every recording were lost, with nothing on screen to suggest they would be.
+    /// </para>
+    /// </summary>
+    public async Task StartRecordingAsync()
     {
-        if (_plan is null || IsRecording)
+        if (_plan is null || IsRecording || IsPreparing)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         // Live work wants a smaller model than batch, so the plan is recomputed for this mode.
@@ -184,7 +216,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
             PerformanceProfile.Considerate,
             WorkloadMode.Live);
 
-        var transcriber = OpenTranscriber(livePlan);
+        IsPreparing = true;
+        Status = "Loading the model — wait for the go-ahead before speaking…";
+
+        ITranscriber transcriber;
+
+        try
+        {
+            transcriber = await Task.Run(() => LiveTranscriber(livePlan));
+        }
+        catch (Exception exception)
+        {
+            IsPreparing = false;
+            Status = $"Could not start listening: {exception.Message}";
+            return;
+        }
+
         _liveSession = new LiveTranscriptionSession(transcriber);
         _cancellation = new CancellationTokenSource();
 
@@ -192,9 +239,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _microphone.SamplesAvailable += OnSamplesAvailable;
         _microphone.Start();
 
+        // Only now is anything the user says actually being captured, so this is the first
+        // moment it is honest to say so.
+        IsPreparing = false;
         IsRecording = true;
-        Status = $"Listening with {transcriber.Description}…";
-        return Task.CompletedTask;
+        Status = $"Listening — go ahead. ({transcriber.Description})";
+    }
+
+    /// <summary>
+    /// The cached live transcriber, rebuilt only when the placement or model size changes.
+    /// Called on a worker thread; opening ONNX sessions is slow and blocking.
+    /// </summary>
+    private ITranscriber LiveTranscriber(ExecutionPlan plan)
+    {
+        var key = $"{plan.Encoder.Device}/{plan.Decoder.Device}/{plan.WhisperModel}";
+
+        if (_liveTranscriber is not null && _liveTranscriberKey == key)
+        {
+            return _liveTranscriber;
+        }
+
+        _liveTranscriber?.Dispose();
+        _liveTranscriber = OpenTranscriber(plan);
+        _liveTranscriberKey = key;
+
+        return _liveTranscriber;
     }
 
     /// <summary>Stops listening and commits the trailing words.</summary>
@@ -321,6 +390,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// <summary>Cancels whatever is running.</summary>
     public void Cancel() => _cancellation?.Cancel();
+
+    /// <summary>
+    /// Releases the cached transcriber and anything still capturing. The transcriber holds ONNX
+    /// sessions and, on the NPU path, a context binary well over a gigabyte, so it is worth
+    /// letting go of rather than leaving to process exit.
+    /// </summary>
+    public void Dispose()
+    {
+        _microphone?.Dispose();
+        _microphone = null;
+
+        _liveTranscriber?.Dispose();
+        _liveTranscriber = null;
+        _liveTranscriberKey = null;
+
+        _cancellation?.Dispose();
+        _cancellation = null;
+
+        (_languageModel as IDisposable)?.Dispose();
+        _languageModel = null;
+    }
 
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {

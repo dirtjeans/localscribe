@@ -22,6 +22,8 @@ public sealed partial class MainWindow : Window
         _dispatcher = DispatcherQueue.GetForCurrentThread();
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        Closed += (_, _) => _viewModel.Dispose();
+
         _ = _viewModel.InitialiseAsync();
     }
 
@@ -62,6 +64,52 @@ public sealed partial class MainWindow : Window
                     break;
             }
         });
+    }
+
+    /// <summary>
+    /// Reflects the three states the record button actually has. Preparing is not recording:
+    /// the microphone is not running yet, and anything said now is lost rather than delayed, so
+    /// it must not look like it is listening.
+    /// </summary>
+    private void UpdateRecordButton()
+    {
+        if (_viewModel.IsPreparing)
+        {
+            RecordLabel.Text = "Getting ready…";
+            RecordIcon.Glyph = "";                 // stopwatch
+            RecordButton.IsEnabled = false;
+            OpenFileButton.IsEnabled = false;
+            ProgressBarControl.IsIndeterminate = true;
+
+            ListeningBar.Severity = InfoBarSeverity.Warning;
+            ListeningBar.Title = "Not listening yet";
+            ListeningBar.Message =
+                "Loading the model. Hold off on speaking — the microphone is not running, so "
+                + "anything said now is lost rather than queued.";
+            ListeningBar.IsOpen = true;
+            return;
+        }
+
+        ProgressBarControl.IsIndeterminate = false;
+
+        if (_viewModel.IsRecording)
+        {
+            ListeningBar.Severity = InfoBarSeverity.Success;
+            ListeningBar.Title = "Listening";
+            ListeningBar.Message = "Go ahead — speak now.";
+            ListeningBar.IsOpen = true;
+        }
+        else
+        {
+            ListeningBar.IsOpen = false;
+        }
+
+        RecordButton.IsEnabled = true;
+        RecordLabel.Text = _viewModel.IsRecording ? "Stop listening" : "Start listening";
+
+        // Segoe Fluent Icons: a stop square while recording, a microphone otherwise.
+        RecordIcon.Glyph = _viewModel.IsRecording ? "" : "";
+        OpenFileButton.IsEnabled = !_viewModel.IsRecording;
     }
 
     private async void OnOpenFile(object sender, RoutedEventArgs e)

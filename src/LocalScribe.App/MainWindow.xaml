@@ -11,6 +11,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -56,7 +57,20 @@
             <Button Content="Glossary" Click="OnEditGlossary" />
         </StackPanel>
 
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <!--
+            Whether the microphone is actually running is the one thing the user has to know, and
+            a line of caption text at the bottom of the window does not carry it. Anything said
+            while the model is still loading is lost rather than delayed, so that state gets a
+            banner of its own rather than sharing the status line.
+        -->
+        <InfoBar
+            x:Name="ListeningBar"
+            Grid.Row="2"
+            IsOpen="False"
+            IsClosable="False"
+            Severity="Informational" />
+
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="8">
                 <TextBlock
                     x:Name="TranscriptText"
@@ -79,7 +93,7 @@
             </StackPanel>
         </ScrollViewer>
 
-        <StackPanel Grid.Row="3" Spacing="8">
+        <StackPanel Grid.Row="4" Spacing="8">
             <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />
             <TextBlock
                 x:Name="StatusText"
