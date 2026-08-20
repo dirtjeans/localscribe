@@ -133,6 +133,26 @@ internal static class Program
             }
         }
 
+        var matrixAudio = ArgumentValue(args, "--speaker-matrix");
+        if (matrixAudio is not null)
+        {
+            return DiarizeCommand.Matrix(
+                matrixAudio,
+                ArgumentValue(args, "--diarization-models") ?? Path.Combine(modelDirectory, "diarization"),
+                ArgumentValue(args, "--spans") ?? string.Empty);
+        }
+
+        var diarizeAudio = ArgumentValue(args, "--diarize");
+        if (diarizeAudio is not null)
+        {
+            return DiarizeCommand.Run(
+                diarizeAudio,
+                ArgumentValue(args, "--diarization-models")
+                    ?? Path.Combine(modelDirectory, "diarization"),
+                ArgumentValue(args, "--speakers"),
+                ArgumentValue(args, "--threshold"));
+        }
+
         var liveAudio = ArgumentValue(args, "--transcribe-live");
         if (liveAudio is not null)
         {
@@ -193,6 +213,9 @@ internal static class Program
         Console.WriteLine("  --force          Re-download files that are already present.");
         Console.WriteLine("  --transcribe <f> Transcribe a PCM WAV file and report what happened.");
         Console.WriteLine("  --transcribe-live <f>  Feed a WAV through the live path, as the microphone does.");
+        Console.WriteLine("  --diarize <f>    Work out who spoke when in a WAV, and print the turns.");
+        Console.WriteLine("  --speakers <n>   Upper bound on speakers for --diarize.");
+        Console.WriteLine("  --threshold <d>  Cosine distance at which two voices are different people.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
