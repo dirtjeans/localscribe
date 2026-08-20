@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -81,12 +82,12 @@ public sealed partial class MainWindow : Window
             OpenFileButton.IsEnabled = false;
             ProgressBarControl.IsIndeterminate = true;
 
-            ListeningBar.Severity = InfoBarSeverity.Warning;
-            ListeningBar.Title = "Not listening yet";
-            ListeningBar.Message =
-                "Loading the model. Hold off on speaking — the microphone is not running, so "
-                + "anything said now is lost rather than queued.";
-            ListeningBar.IsOpen = true;
+            ShowCue(
+                WaitBackground,
+                "Wait — not recording yet",
+                "Loading the model. The microphone is off, so anything said now is lost rather "
+                + "than queued.",
+                pulse: false);
             return;
         }
 
@@ -94,14 +95,16 @@ public sealed partial class MainWindow : Window
 
         if (_viewModel.IsRecording)
         {
-            ListeningBar.Severity = InfoBarSeverity.Success;
-            ListeningBar.Title = "Listening";
-            ListeningBar.Message = "Go ahead — speak now.";
-            ListeningBar.IsOpen = true;
+            ShowCue(
+                ListenBackground,
+                "Speak now — listening",
+                "The microphone is live and everything is being transcribed on this machine.",
+                pulse: true);
         }
         else
         {
-            ListeningBar.IsOpen = false;
+            PulseStoryboard.Stop();
+            CueBanner.Visibility = Visibility.Collapsed;
         }
 
         RecordButton.IsEnabled = true;
@@ -110,6 +113,37 @@ public sealed partial class MainWindow : Window
         // Segoe Fluent Icons: a stop square while recording, a microphone otherwise.
         RecordIcon.Glyph = _viewModel.IsRecording ? "" : "";
         OpenFileButton.IsEnabled = !_viewModel.IsRecording;
+    }
+
+    /// <summary>
+    /// Saturated fills with white text rather than theme brushes. This is the one signal in the
+    /// window that has to survive being glanced at, and a subtle tint that adapts to light and
+    /// dark adapts itself into invisibility.
+    /// </summary>
+    private static readonly SolidColorBrush WaitBackground =
+        new(Windows.UI.Color.FromArgb(255, 0xB4, 0x53, 0x09));   // amber
+
+    private static readonly SolidColorBrush ListenBackground =
+        new(Windows.UI.Color.FromArgb(255, 0x15, 0x80, 0x3D));   // green
+
+    private void ShowCue(SolidColorBrush background, string title, string detail, bool pulse)
+    {
+        CueBanner.Background = background;
+        CueTitle.Text = title;
+        CueDetail.Text = detail;
+        CueBanner.Visibility = Visibility.Visible;
+
+        // Motion registers before either colour or words do, so it is reserved for the state
+        // where acting on it matters: the microphone being live.
+        if (pulse)
+        {
+            PulseStoryboard.Begin();
+        }
+        else
+        {
+            PulseStoryboard.Stop();
+            CueDot.Opacity = 1.0;
+        }
     }
 
     private async void OnOpenFile(object sender, RoutedEventArgs e)

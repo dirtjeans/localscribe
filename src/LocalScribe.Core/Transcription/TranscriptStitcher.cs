@@ -47,7 +47,22 @@ public sealed class TranscriptStitcher
                     continue;
                 }
 
-                merged.Add(segment);
+                // Not a whole duplicate, but its opening words may still repeat the tail of what
+                // came before. That is the ordinary shape of an overlap between two windows.
+                //
+                // Only at a seam, though. Trimming is a repair to a join, and a join is close in
+                // time; a phrase genuinely said again ten minutes later is not an artefact and
+                // must survive intact.
+                var trimmed = merged.Count > 0 && AbutsPrevious(merged[^1], segment)
+                    ? segment with { Text = TrimLeadingOverlap(merged[^1].Text, segment.Text) }
+                    : segment;
+
+                if (trimmed.Text.Trim().Length == 0)
+                {
+                    continue;
+                }
+
+                merged.Add(trimmed);
             }
         }
 
@@ -86,6 +101,91 @@ public sealed class TranscriptStitcher
         }
 
         return false;
+    }
+
+    /// <summary>True when two segments are close enough in time to share a window boundary.</summary>
+    private bool AbutsPrevious(TranscriptSegment previous, TranscriptSegment candidate) =>
+        candidate.StartSeconds - previous.EndSeconds <= _boundaryToleranceSeconds;
+
+    /// <summary>
+    /// Removes words at the start of <paramref name="candidate"/> that already appear at the end
+    /// of <paramref name="previous"/>.
+    /// <para>
+    /// Whole-segment equality only catches the case where two passes divided the audio the same
+    /// way. Usually they do not: one produces "If the stitching works correctly," and the next
+    /// starts "works correctly, this sentence will appear once". Neither contains the other, so
+    /// both survive, and the seam reads "works correctly, works correctly," — which is what a
+    /// duplicate actually looks like in practice.
+    /// </para>
+    /// <para>
+    /// Compared word by word with punctuation and casing ignored, because the two passes rarely
+    /// agree on either. The longest overlap wins, so a repeated single word does not shadow a
+    /// repeated phrase.
+    /// </para>
+    /// </summary>
+    /// <param name="maxWords">
+    /// How far back to look. Bounded because a long match is more likely to be genuine
+    /// repetition in the speech than an artefact of the seam.
+    /// </param>
+    public static string TrimLeadingOverlap(string previous, string candidate, int maxWords = 20)
+    {
+        ArgumentNullException.ThrowIfNull(previous);
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        var tail = previous.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var head = candidate.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        if (tail.Length == 0 || head.Length == 0)
+        {
+            return candidate;
+        }
+
+        var limit = Math.Min(maxWords, Math.Min(tail.Length, head.Length));
+
+        for (var length = limit; length >= 1; length--)
+        {
+            var matches = true;
+
+            for (var i = 0; i < length; i++)
+            {
+                if (!WordsMatch(tail[tail.Length - length + i], head[i]))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                // A dash or comma left stranded at the front once its sentence has been trimmed
+                // away is punctuation attaching to nothing, so it goes with the overlap.
+                var rest = head.Skip(length).SkipWhile(word => NormaliseWord(word).Length == 0);
+
+                return string.Join(" ", rest);
+            }
+        }
+
+        return candidate;
+    }
+
+    private static bool WordsMatch(string left, string right) =>
+        NormaliseWord(left) == NormaliseWord(right);
+
+    /// <summary>One word, stripped to what the two passes are likely to agree on.</summary>
+    private static string NormaliseWord(string word)
+    {
+        Span<char> buffer = word.Length <= 64 ? stackalloc char[word.Length] : new char[word.Length];
+        var length = 0;
+
+        foreach (var character in word)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                buffer[length++] = char.ToLowerInvariant(character);
+            }
+        }
+
+        return new string(buffer[..length]);
     }
 
     /// <summary>

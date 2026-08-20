@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
+using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Onnx;
 
@@ -182,6 +183,101 @@ internal static class TranscribeCommand
                 + "detected. The signature printed above is what the binding used.");
         }
     }
+
+    /// <summary>
+    /// Feeds a file through the live session the way the microphone does, then stops it the way
+    /// the stop button does. Reproduces the live path exactly, which a batch run does not: the
+    /// rolling window, the commit horizon, and the final pass are all specific to it.
+    /// </summary>
+    public static async Task<int> RunLiveAsync(
+        string audioPath,
+        string modelDirectory,
+        DeviceCapabilities capabilities,
+        ExecutionPlan plan,
+        string? explicitModelDirectory)
+    {
+        if (!File.Exists(audioPath))
+        {
+            Console.Error.WriteLine($"No such file: {audioPath}");
+            return 1;
+        }
+
+        var directory = explicitModelDirectory
+            ?? Core.Models.ModelLayout.Locate(
+                modelDirectory, capabilities.Family, plan.Encoder.Device, plan.WhisperModel);
+
+        if (directory is null)
+        {
+            Console.Error.WriteLine($"No Whisper weights under {modelDirectory}.");
+            return 1;
+        }
+
+        var audio = WavReader.Read(audioPath);
+        audio.EnsureWhisperFormat();
+
+        Heading("Live");
+        Console.WriteLine($"  Audio      {audioPath}");
+        Console.WriteLine($"  Models     {directory}");
+        Console.WriteLine($"  Duration   {audio.DurationSeconds:F1}s");
+
+        using var transcriber = WhisperOnnxTranscriber.Load(directory, plan);
+        Console.WriteLine($"  Signature  {transcriber.Signature.Describe()}");
+        Console.WriteLine();
+
+        await using var session = new LiveTranscriptionSession(transcriber);
+
+        // The microphone hands over roughly 200 ms at a time.
+        var frame = (int)(0.2 * audio.SampleRate);
+        var lastShown = string.Empty;
+
+        for (var offset = 0; offset < audio.Samples.Length; offset += frame)
+        {
+            var length = Math.Min(frame, audio.Samples.Length - offset);
+            var update = await session
+                .PushAsync(audio.Samples.AsMemory(offset, length))
+                .ConfigureAwait(false);
+
+            if (update is null)
+            {
+                continue;
+            }
+
+            // What the window shows while listening: settled text plus the provisional tail.
+            var committed = new Transcript(session.CommittedSegments).FullText;
+            var onScreen = string.Join(" ", new[] { committed, update.Text }
+                .Where(part => part.Length > 0));
+
+            if (onScreen != lastShown)
+            {
+                lastShown = onScreen;
+                Console.WriteLine($"  [live] {onScreen}");
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  --- stop pressed ---");
+        Console.WriteLine();
+
+        var final = new Transcript(await session.FinishAsync()).FullText;
+
+        Heading("On screen while listening");
+        Console.WriteLine(lastShown.Length == 0 ? "  (nothing)" : lastShown);
+
+        Heading("After stopping");
+        Console.WriteLine(final.Length == 0 ? "  (nothing)" : final);
+
+        Heading("Comparison");
+        Console.WriteLine($"  While listening  {Punctuation(lastShown)} punctuation marks, {lastShown.Length} chars");
+        Console.WriteLine($"  After stopping   {Punctuation(final)} punctuation marks, {final.Length} chars");
+        Console.WriteLine(final == lastShown
+            ? "  Identical."
+            : "  DIFFERENT — the stop changed the text.");
+
+        return 0;
+    }
+
+    private static int Punctuation(string text) =>
+        text.Count(c => c is '.' or ',' or '?' or '!' or ';' or ':');
 
     private static void Heading(string title)
     {

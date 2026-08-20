@@ -54,6 +54,13 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     /// </summary>
     private readonly object _windowLock = new();
 
+    /// <summary>
+    /// How far into the recording has already been committed. The rolling window is
+    /// re-transcribed in full every pass, so this is what stops the same speech being appended
+    /// again and again.
+    /// </summary>
+    private double _committedThroughSeconds;
+
     private volatile bool _disposed;
     private double _windowStartSeconds;
     private double _sessionSeconds;
@@ -180,10 +187,7 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
 
                 if (segment.EndSeconds <= settledBefore)
                 {
-                    if (!IsAlreadyCommitted(segment))
-                    {
-                        _committed.Add(segment);
-                    }
+                    Commit(segment, isFinalPass: commitEverything);
                 }
                 else
                 {
@@ -203,28 +207,62 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// Each pass re-transcribes the whole window, so most of what comes back was already
-    /// committed on an earlier pass. Compare on normalised text, since timings shift slightly
-    /// between passes even when the words do not.
+    /// How far a segment may start before the committed mark and still count as new. Whisper
+    /// shifts a boundary by a couple of hundred milliseconds between passes even when the words
+    /// are identical, so an exact comparison would drop real speech.
     /// </summary>
-    private bool IsAlreadyCommitted(TranscriptSegment candidate)
+    private const double BoundaryToleranceSeconds = 0.4;
+
+    /// <summary>
+    /// Appends a settled segment, unless the audio it covers has already been committed.
+    /// <para>
+    /// The test is the span it occupies, not the words it contains. Every pass re-transcribes
+    /// the whole rolling window, and it does not divide that window the same way twice: the same
+    /// speech comes back as "long enough to span more than one window" on one pass and "window,
+    /// so that chunking and stitching are both exercised" on the next. Those are different
+    /// strings covering overlapping audio, so matching on text appended both, and a minute of
+    /// speech grew into several minutes of stuttering repetition.
+    /// </para>
+    /// <para>
+    /// Time cannot drift like that. Audio committed once is committed, whatever words a later
+    /// pass decides were in it.
+    /// </para>
+    /// </summary>
+    /// <param name="isFinalPass">
+    /// True on the pass triggered by stopping. There is no later pass to defer to, so a
+    /// straddling segment is taken whole: repeating a few words is a smaller failure than
+    /// dropping the last thing the user said.
+    /// </param>
+    private void Commit(TranscriptSegment segment, bool isFinalPass)
     {
-        var normalised = TranscriptStitcher.Normalise(candidate.Text);
-
-        for (var i = _committed.Count - 1; i >= 0; i--)
+        if (segment.EndSeconds <= _committedThroughSeconds + BoundaryToleranceSeconds)
         {
-            if (candidate.StartSeconds - _committed[i].EndSeconds > WindowSeconds)
-            {
-                break;
-            }
-
-            if (TranscriptStitcher.Normalise(_committed[i].Text) == normalised)
-            {
-                return true;
-            }
+            // Entirely inside audio we have already written down.
+            return;
         }
 
-        return false;
+        if (!isFinalPass && segment.StartSeconds < _committedThroughSeconds - BoundaryToleranceSeconds)
+        {
+            // Straddles the mark: its opening words are already committed. Taking it whole would
+            // repeat them, so it waits — the next pass will offer the same speech as a segment
+            // that starts cleanly after the mark.
+            return;
+        }
+
+        // The final pass takes straddling segments whole, so its opening words may repeat the
+        // tail of what is already committed. Trim rather than accept the stutter.
+        var text = _committed.Count == 0
+            ? segment.Text
+            : TranscriptStitcher.TrimLeadingOverlap(_committed[^1].Text, segment.Text);
+
+        if (text.Trim().Length == 0)
+        {
+            _committedThroughSeconds = Math.Max(_committedThroughSeconds, segment.EndSeconds);
+            return;
+        }
+
+        _committed.Add(segment with { Text = text });
+        _committedThroughSeconds = Math.Max(_committedThroughSeconds, segment.EndSeconds);
     }
 
     /// <summary>Drops audio that has scrolled past the window, keeping memory flat over long sessions.</summary>

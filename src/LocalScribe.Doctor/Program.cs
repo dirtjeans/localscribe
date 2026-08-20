@@ -133,6 +133,14 @@ internal static class Program
             }
         }
 
+        var liveAudio = ArgumentValue(args, "--transcribe-live");
+        if (liveAudio is not null)
+        {
+            return await TranscribeCommand.RunLiveAsync(
+                    liveAudio, modelDirectory, capabilities, plan, ArgumentValue(args, "--model-dir"))
+                .ConfigureAwait(false);
+        }
+
         var audio = ArgumentValue(args, "--transcribe");
         if (audio is not null)
         {
@@ -184,6 +192,7 @@ internal static class Program
         Console.WriteLine("  --model <size>   Size to fetch. Defaults to the one the plan chose.");
         Console.WriteLine("  --force          Re-download files that are already present.");
         Console.WriteLine("  --transcribe <f> Transcribe a PCM WAV file and report what happened.");
+        Console.WriteLine("  --transcribe-live <f>  Feed a WAV through the live path, as the microphone does.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");

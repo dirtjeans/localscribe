@@ -8,6 +8,17 @@
     Title="LocalScribe">
 
     <Grid Padding="24" RowSpacing="16">
+        <Grid.Resources>
+            <Storyboard x:Name="PulseStoryboard" RepeatBehavior="Forever" AutoReverse="True">
+                <DoubleAnimation
+                    Storyboard.TargetName="CueDot"
+                    Storyboard.TargetProperty="Opacity"
+                    From="1.0"
+                    To="0.15"
+                    Duration="0:0:0.65" />
+            </Storyboard>
+        </Grid.Resources>
+
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -59,16 +70,35 @@
 
         <!--
             Whether the microphone is actually running is the one thing the user has to know, and
-            a line of caption text at the bottom of the window does not carry it. Anything said
-            while the model is still loading is lost rather than delayed, so that state gets a
-            banner of its own rather than sharing the status line.
+            the earlier thin banner did not carry it. Anything said while the model is loading is
+            lost rather than delayed, so the two states are given saturated backgrounds with
+            white text: unmistakable at a glance, and legible in either theme without depending
+            on which one is active.
         -->
-        <InfoBar
-            x:Name="ListeningBar"
+        <Border
+            x:Name="CueBanner"
             Grid.Row="2"
-            IsOpen="False"
-            IsClosable="False"
-            Severity="Informational" />
+            CornerRadius="8"
+            Padding="20,16"
+            Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                <!-- Pulses while listening, steady while waiting. Motion reads before text. -->
+                <Ellipse x:Name="CueDot" Width="18" Height="18" Fill="White" VerticalAlignment="Center" />
+                <StackPanel Spacing="2">
+                    <TextBlock
+                        x:Name="CueTitle"
+                        FontSize="22"
+                        FontWeight="SemiBold"
+                        Foreground="White" />
+                    <TextBlock
+                        x:Name="CueDetail"
+                        FontSize="14"
+                        Foreground="White"
+                        Opacity="0.92"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
 
         <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="8">
