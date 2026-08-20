@@ -56,10 +56,39 @@
                 </StackPanel>
             </Button>
 
-            <Button x:Name="RecordButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
+            <!--
+                Two buttons rather than one recoloured at runtime. The Button template swaps its
+                own background on hover and press, so a locally set colour survives only until
+                the pointer touches it; overriding the brushes the template looks up is the only
+                way to hold a colour through every state, and those overrides live on the control.
+            -->
+            <Button x:Name="StartButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
                 <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon x:Name="RecordIcon" Glyph="&#xE720;" FontSize="16" />
-                    <TextBlock x:Name="RecordLabel" Text="Start listening" />
+                    <FontIcon x:Name="StartIcon" Glyph="&#xE720;" FontSize="16" />
+                    <TextBlock x:Name="StartLabel" Text="Start listening" />
+                </StackPanel>
+            </Button>
+
+            <Button
+                x:Name="StopButton"
+                Click="OnToggleRecording"
+                Style="{ThemeResource AccentButtonStyle}"
+                Visibility="Collapsed">
+                <!-- Windows' own critical red, held through hover, press and keyboard focus. -->
+                <Button.Resources>
+                    <SolidColorBrush x:Key="AccentButtonBackground" Color="#C42B1C" />
+                    <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#B0271A" />
+                    <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#96201A" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#C42B1C" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#B0271A" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="#96201A" />
+                    <SolidColorBrush x:Key="AccentButtonForeground" Color="White" />
+                    <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="White" />
+                    <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="White" />
+                </Button.Resources>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" />
+                    <TextBlock Text="Stop listening" />
                 </StackPanel>
             </Button>
 

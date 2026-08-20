@@ -58,10 +58,8 @@ public sealed partial class MainWindow : Window
                     CancelButton.IsEnabled = _viewModel.IsBusy;
                     break;
                 case nameof(MainViewModel.IsRecording):
-                    RecordLabel.Text = _viewModel.IsRecording ? "Stop listening" : "Start listening";
-                    // Segoe Fluent Icons: a stop square while recording, a microphone otherwise.
-                    RecordIcon.Glyph = _viewModel.IsRecording ? "\uE71A" : "\uE720";
-                    OpenFileButton.IsEnabled = !_viewModel.IsRecording;
+                case nameof(MainViewModel.IsPreparing):
+                    UpdateRecordButton();
                     break;
             }
         });
@@ -76,9 +74,12 @@ public sealed partial class MainWindow : Window
     {
         if (_viewModel.IsPreparing)
         {
-            RecordLabel.Text = "Getting ready…";
-            RecordIcon.Glyph = "";                 // stopwatch
-            RecordButton.IsEnabled = false;
+            StartButton.Visibility = Visibility.Visible;
+            StopButton.Visibility = Visibility.Collapsed;
+
+            StartLabel.Text = "Getting ready…";
+            StartIcon.Glyph = "";                  // stopwatch
+            StartButton.IsEnabled = false;
             OpenFileButton.IsEnabled = false;
             ProgressBarControl.IsIndeterminate = true;
 
@@ -93,6 +94,17 @@ public sealed partial class MainWindow : Window
 
         ProgressBarControl.IsIndeterminate = false;
 
+        // Red is the one colour that means recording, so it belongs on the control the user is
+        // looking at when they wonder whether it is. The banner says the same thing in words;
+        // this says it without being read.
+        StartButton.Visibility = _viewModel.IsRecording ? Visibility.Collapsed : Visibility.Visible;
+        StopButton.Visibility = _viewModel.IsRecording ? Visibility.Visible : Visibility.Collapsed;
+
+        StartButton.IsEnabled = true;
+        StartLabel.Text = "Start listening";
+        StartIcon.Glyph = "";                      // microphone
+        OpenFileButton.IsEnabled = !_viewModel.IsRecording;
+
         if (_viewModel.IsRecording)
         {
             ShowCue(
@@ -106,13 +118,6 @@ public sealed partial class MainWindow : Window
             PulseStoryboard.Stop();
             CueBanner.Visibility = Visibility.Collapsed;
         }
-
-        RecordButton.IsEnabled = true;
-        RecordLabel.Text = _viewModel.IsRecording ? "Stop listening" : "Start listening";
-
-        // Segoe Fluent Icons: a stop square while recording, a microphone otherwise.
-        RecordIcon.Glyph = _viewModel.IsRecording ? "" : "";
-        OpenFileButton.IsEnabled = !_viewModel.IsRecording;
     }
 
     /// <summary>
