@@ -33,9 +33,9 @@ internal static class Program
         Heading("Machine");
 
         var capabilities = DeviceProbe.Probe(modelDirectory);
-        var foundry = new FoundryLocalClient();
-        var foundryAvailable = await foundry.IsAvailableAsync().ConfigureAwait(false);
-        capabilities = capabilities with { FoundryLocalPresent = foundryAvailable };
+        var languageModel = await LocalLanguageModel.ResolveAsync().ConfigureAwait(false);
+        using var languageModelHandle = languageModel as IDisposable;
+        capabilities = capabilities with { LocalLanguageModelPresent = languageModel is not null };
 
         Report("Processor", capabilities.SocName);
         Report("Detected family", capabilities.Family.ToString());
@@ -66,8 +66,14 @@ internal static class Program
             + "Precompiled QNN binaries are chipset-specific; see docs/setup-snapdragon.md.");
         Check("DirectML (Adreno GPU)", capabilities.DirectMlPresent,
             "Optional. Used as the fallback when the NPU is unavailable.");
-        Check("Foundry Local", capabilities.FoundryLocalPresent,
-            "Optional. Run 'foundry service start' to enable punctuation repair and summaries.");
+        Check(
+            languageModel is null
+                ? "Local language model"
+                : $"Local language model ({languageModel.Description})",
+            capabilities.LocalLanguageModelPresent,
+            "Optional; enables punctuation repair, glossary correction and summaries. Start "
+            + $"one of: {string.Join(", ", LocalLanguageModel.BackendNames)}. GenieX is "
+            + "preferred on Snapdragon; see docs/setup-snapdragon.md.");
 
         if (capabilities.OnnxProviders.Count > 0)
         {
@@ -95,6 +101,34 @@ internal static class Program
             foreach (var warning in plan.Warnings)
             {
                 Warn(warning);
+            }
+        }
+
+        Heading("Recommended engine");
+
+        var advice = TranscriptionEngineAdvisor.Advise(
+            capabilities,
+            live ? WorkloadMode.Live : WorkloadMode.Batch);
+
+        Console.WriteLine($"  {advice.Summary}");
+        Console.WriteLine();
+
+        foreach (var option in advice.All)
+        {
+            var mark = option.Availability switch
+            {
+                EngineAvailability.Ready => "ok",
+                EngineAvailability.NeedsSetup => "--",
+                _ => "no",
+            };
+
+            var here = ReferenceEquals(option, advice.Recommended) ? "  <- using this" : string.Empty;
+            Console.WriteLine($"  [{mark}] {option.Name} ({option.ModelSize}){here}");
+            Console.WriteLine($"       {option.Rationale}");
+
+            foreach (var requirement in option.Requirements)
+            {
+                Console.WriteLine($"       needs: {requirement}");
             }
         }
 

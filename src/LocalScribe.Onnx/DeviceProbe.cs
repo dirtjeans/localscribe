@@ -39,7 +39,7 @@ public static class DeviceProbe
             HexagonDriverPresent = family is not SocFamily.NonQualcomm && HasHexagonRuntime(),
             WhisperQnnAssetsPresent = HasWhisperAssets(modelDirectory, family),
             DirectMlPresent = providers.Contains("DmlExecutionProvider") || providers.Contains("DML"),
-            FoundryLocalPresent = false, // Filled in asynchronously by the caller; see FoundryLocalClient.
+            LocalLanguageModelPresent = false, // Filled in asynchronously by the caller; see LocalLanguageModel.
             OnBattery = IsOnBattery(),
         };
     }

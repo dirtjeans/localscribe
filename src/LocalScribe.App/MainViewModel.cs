@@ -100,8 +100,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         var capabilities = await Task.Run(() => DeviceProbe.Probe(_modelRoot));
 
-        using var foundry = new FoundryLocalClient();
-        capabilities = capabilities with { FoundryLocalPresent = await foundry.IsAvailableAsync() };
+        _languageModel = await LocalLanguageModel.ResolveAsync();
+        capabilities = capabilities with { LocalLanguageModelPresent = _languageModel is not null };
 
         _capabilities = capabilities;
         _plan = AcceleratorPlanner.Plan(capabilities);
@@ -257,10 +257,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return WhisperOnnxTranscriber.Load(directory, plan);
     }
 
+    /// <summary>
+    /// The backend found at startup, reused rather than reconnected per pass. Null when none is
+    /// running, which disables the cleanup stage without disabling transcription.
+    /// </summary>
+    private ILanguageModel? _languageModel;
+
     private TranscriptRefiner? BuildRefiner() =>
-        _capabilities?.FoundryLocalPresent == true
-            ? new TranscriptRefiner(new FoundryLocalClient())
-            : null;
+        _languageModel is null ? null : new TranscriptRefiner(_languageModel);
 
     private static string Format(TranscriptionResult result)
     {

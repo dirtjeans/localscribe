@@ -27,7 +27,7 @@ public sealed class AcceleratorPlannerTests
             HexagonDriverPresent = driver,
             WhisperQnnAssetsPresent = assets,
             DirectMlPresent = directMl,
-            FoundryLocalPresent = foundry,
+            LocalLanguageModelPresent = foundry,
             OnBattery = onBattery,
         };
 
@@ -187,13 +187,13 @@ public sealed class AcceleratorPlannerTests
     }
 
     [Fact]
-    public void WithoutFoundryLocal_CleanupIsDisabledButTranscriptionStillPlanned()
+    public void WithoutALocalLanguageModel_CleanupIsDisabledButTranscriptionStillPlanned()
     {
         var plan = AcceleratorPlanner.Plan(SnapdragonXElite(foundry: false));
 
         Assert.Equal(ComputeDevice.Npu, plan.Encoder.Device);
         Assert.Contains("Disabled", plan.LanguageModel.Reason, StringComparison.Ordinal);
-        Assert.Contains(plan.Warnings, w => w.Contains("Foundry Local", StringComparison.Ordinal));
+        Assert.Contains(plan.Warnings, w => w.Contains("local language-model service", StringComparison.Ordinal));
     }
 
     [Fact]

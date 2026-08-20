@@ -115,17 +115,18 @@ public static class AcceleratorPlanner
     }
 
     /// <summary>
-    /// The cleanup model is optional. When Foundry Local is running we hand the work to it,
+    /// The cleanup model is optional. When a local service is running we hand the work to it,
     /// since it picks its own hardware variant. Otherwise the pipeline still produces a
     /// transcript, just without punctuation repair or a summary.
     /// </summary>
     private static StagePlan PlanLanguageModel(DeviceCapabilities caps, List<string> warnings)
     {
-        if (!caps.FoundryLocalPresent)
+        if (!caps.LocalLanguageModelPresent)
         {
             warnings.Add(
-                "Foundry Local is not reachable. Transcripts will be raw: no punctuation repair, " +
-                "glossary correction, or summary. Run 'foundry service start' to enable them.");
+                "No local language-model service is reachable. Transcripts will be raw: no " +
+                "punctuation repair, glossary correction, or summary. Start GenieX, or " +
+                "'foundry service start' for Foundry Local, to enable them.");
             return new StagePlan(ComputeDevice.Cpu, null, "Disabled. No local language-model service was found.");
         }
 
@@ -134,13 +135,13 @@ public static class AcceleratorPlanner
             return new StagePlan(
                 ComputeDevice.Npu,
                 null,
-                "Foundry Local on the NPU. Cleanup runs off-CPU alongside transcription.");
+                "A local model on the NPU. Cleanup runs off-CPU alongside transcription.");
         }
 
         return new StagePlan(
             ComputeDevice.Cpu,
             null,
-            "Foundry Local on the CPU. The Oryon cores handle a small model at reading speed.");
+            "A local model on the CPU. The Oryon cores handle a small model at reading speed.");
     }
 
     /// <summary>
@@ -213,7 +214,7 @@ public static class AcceleratorPlanner
     /// Picks Whisper weights against three limits at once: how much memory the machine has,
     /// whether the encoder is offloaded, and whether we owe the user low latency.
     /// </summary>
-    private static string ChooseWhisperModel(DeviceCapabilities caps, ComputeDevice encoderDevice, WorkloadMode mode)
+    internal static string ChooseWhisperModel(DeviceCapabilities caps, ComputeDevice encoderDevice, WorkloadMode mode)
     {
         var memoryGib = caps.TotalMemoryGib;
 

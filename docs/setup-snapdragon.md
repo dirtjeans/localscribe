@@ -90,9 +90,26 @@ Precompiled context binaries are tied to the QAIRT and ONNX Runtime versions the
 with. The model card lists both. If a model fails to load with a context-binary error, a
 version mismatch is the first thing to check.
 
-## 4. Optional: Foundry Local for the cleanup pass
+## 4. Optional: a local language model for the cleanup pass
 
 Transcription works without this. Punctuation repair, glossary correction, and summaries do not.
+
+Either backend below works; the app probes both and uses whichever answers, so you only need
+one. The doctor names the one it found.
+
+### GenieX (preferred on Snapdragon)
+
+Qualcomm's on-device generative runtime. It runs LLMs across the Hexagon NPU, the Adreno GPU and
+the Oryon cores, and serves an OpenAI-compatible API on `127.0.0.1:18181`, which is all this app
+needs. See [github.com/qualcomm/GenieX](https://github.com/qualcomm/GenieX).
+
+It is preferred here because Foundry Local has had open bugs affecting NPU generation on
+Snapdragon X Elite, and a cleanup stage that crashes is worse than one that is merely slower.
+
+Note that GenieX covers this stage only. It runs language and vision-language models and has no
+speech-to-text path, so Whisper still goes through ONNX Runtime.
+
+### Foundry Local
 
 ```powershell
 winget install Microsoft.FoundryLocal
@@ -103,9 +120,8 @@ foundry model run qwen2.5-1.5b-instruct
 Pass a model **alias** rather than a fully qualified id. Foundry then picks the QNN NPU build on
 Snapdragon and falls back to CPU elsewhere, which is exactly the behaviour we want.
 
-Note that Foundry Local has had open bugs affecting NPU generation on Snapdragon X Elite. If
-generation crashes, drop back to a CPU variant — the cleanup model is small enough that the
-Oryon cores handle it comfortably.
+If generation crashes on the NPU, drop back to a CPU variant — the cleanup model is small enough
+that the Oryon cores handle it comfortably.
 
 ## Verifying the NPU is genuinely in use
 
