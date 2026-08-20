@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
 using LocalScribe.Core.Pipeline;
@@ -32,10 +33,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private string? _liveTranscriberKey;
     private SessionDiagnostics? _diagnostics;
 
+    /// <summary>
+    /// The segments behind the displayed text. Kept because the transcript is no longer just a
+    /// string: paragraphs, export formats and clicking a line to hear it all need the timings.
+    /// </summary>
+    private IReadOnlyList<TranscriptSegment> _segments = [];
+
+    /// <summary>
+    /// Everything the microphone delivered this session, so a finished recording can be played
+    /// back and its transcript clicked through. A recording has no file to re-open, so if this
+    /// is not kept the audio is gone the moment capture stops.
+    /// </summary>
+    private List<float>? _liveCapture;
+
     private string _status = "Starting up…";
     private string _hardwareSummary = string.Empty;
     private string _transcript = string.Empty;
     private string _provisionalText = string.Empty;
+    private string _summary = string.Empty;
     private double _progress;
     private bool _busy;
     private bool _recording;
@@ -47,6 +62,60 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>Summary and action items from the cleanup model, empty when there was none.</summary>
+    public string Summary
+    {
+        get => _summary;
+        private set => Set(ref _summary, value);
+    }
+
+    /// <summary>Plays back whatever was last transcribed, so a line can be clicked and heard.</summary>
+    public TranscriptPlayer Player { get; } = new();
+
+    /// <summary>The transcript grouped into paragraphs, which is what the window shows.</summary>
+    public IReadOnlyList<TranscriptParagraph> Paragraphs { get; private set; } = [];
+
+    /// <summary>True when there is a transcript to copy, save or discard.</summary>
+    public bool HasTranscript => _segments.Count > 0;
+
+    /// <summary>Where the transcript came from, used to name an export.</summary>
+    public string SourceName { get; private set; } = "Transcript";
+
+    /// <summary>
+    /// Replaces the transcript and everything derived from it. One place, so the paragraphs, the
+    /// flat text and the export never disagree about what the transcript currently is.
+    /// </summary>
+    private void SetTranscript(IReadOnlyList<TranscriptSegment> segments)
+    {
+        _segments = segments;
+        Paragraphs = TranscriptFormatter.Paragraphs(segments);
+        Transcript = TranscriptFormatter.ToPlainText(Paragraphs);
+
+        Raise(nameof(Paragraphs));
+        Raise(nameof(HasTranscript));
+    }
+
+    /// <summary>The transcript in one of the formats the save dialog offers.</summary>
+    public string Export(TranscriptFormat format) => format switch
+    {
+        TranscriptFormat.Markdown => TranscriptFormatter.ToMarkdown(Paragraphs, SourceName),
+        TranscriptFormat.SubRip => TranscriptFormatter.ToSubRip(_segments),
+        _ => TranscriptFormatter.ToPlainText(Paragraphs),
+    };
+
+    /// <summary>Throws the transcript away and releases the audio behind it.</summary>
+    public void Discard()
+    {
+        Player.Clear();
+
+        SetTranscript([]);
+        ProvisionalText = string.Empty;
+        Summary = string.Empty;
+        Progress = 0;
+        SourceName = "Transcript";
+        Status = "Discarded.";
+    }
 
     /// <summary>What the app is doing right now, shown in the status bar.</summary>
     public string Status
@@ -147,13 +216,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         IsBusy = true;
         Progress = 0;
-        Transcript = string.Empty;
+        Summary = string.Empty;
+        SetTranscript([]);
         _cancellation = new CancellationTokenSource();
 
         try
         {
-            Status = "Loading audio…";
+            Status = AudioFileLoader.IsVideo(path) ? "Extracting audio…" : "Loading audio…";
             var audio = await Task.Run(() => AudioFileLoader.Load(path), _cancellation.Token);
+
+            SourceName = Path.GetFileNameWithoutExtension(path);
+
+            // Held so a line in the transcript can be clicked and heard. The timings refer to
+            // these samples, not to the file, which is why the decoded audio is what is kept.
+            Player.Load(audio);
 
             Status = "Loading the model…";
             using var transcriber = await Task.Run(() => OpenTranscriber(_plan), _cancellation.Token);
@@ -161,10 +237,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             Status = $"Transcribing with {transcriber.Description}…";
 
+            // Each window's text as it lands, rather than a bare percentage. A long file is
+            // otherwise several minutes of a progress bar and nothing to read.
+            var streamed = new List<TranscriptSegment>();
+
             var progress = new Progress<TranscriptionProgress>(update =>
             {
                 Progress = update.Fraction;
                 Status = $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
+
+                if (update.LatestText.Length > 0)
+                {
+                    streamed.Add(new TranscriptSegment(
+                        update.LatestText,
+                        update.ChunksCompleted * AudioChunker.WindowSeconds,
+                        (update.ChunksCompleted + 1) * AudioChunker.WindowSeconds));
+
+                    SetTranscript(streamed.ToList());
+                }
             });
 
             var result = await pipeline.RunAsync(
@@ -174,7 +264,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 progress,
                 _cancellation.Token);
 
-            Transcript = Format(result);
+            SetTranscript(result.Transcript.Segments);
+            Summary = Format(result);
             Status = "Done.";
         }
         catch (OperationCanceledException)
@@ -236,6 +327,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _liveSession = new LiveTranscriptionSession(transcriber);
         _cancellation = new CancellationTokenSource();
         _diagnostics = SessionDiagnostics.StartIfEnabled(livePlan.Summary, transcriber.Description);
+        _liveCapture = [];
+
+        Player.Clear();
+        SourceName = $"Recording {DateTime.Now:yyyy-MM-dd HH.mm}";
 
         _microphone = new MicrophoneCapture();
         _microphone.SamplesAvailable += OnSamplesAvailable;
@@ -295,8 +390,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var committed = await session.FinishAsync();
-            Transcript = new Transcript(committed).FullText;
+            SetTranscript(committed);
             ProvisionalText = string.Empty;
+
+            // The recording becomes playable the moment it stops, on the same path a
+            // transcribed file takes.
+            if (_liveCapture is { Count: > 0 } captured)
+            {
+                Player.Load(new PcmAudio([.. captured]));
+            }
+
+            _liveCapture = null;
 
             if (_diagnostics is not null)
             {
@@ -333,12 +437,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             _diagnostics?.Captured(samples);
+            _liveCapture?.AddRange(samples);
 
             var update = await session.PushAsync(samples, _cancellation?.Token ?? default);
             if (update is not null)
             {
                 ProvisionalText = update.Text;
-                Transcript = new Transcript(session.CommittedSegments).FullText;
+                SetTranscript(session.CommittedSegments);
 
                 _diagnostics?.Pass(update.Text, session.CommittedSegments);
             }
@@ -380,28 +485,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private TranscriptRefiner? BuildRefiner() =>
         _languageModel is null ? null : new TranscriptRefiner(_languageModel);
 
+    /// <summary>
+    /// The cleanup model's summary and action items, shown above the transcript rather than
+    /// spliced into it. They are about the recording; the transcript is the recording.
+    /// </summary>
     private static string Format(TranscriptionResult result)
     {
         var builder = new StringBuilder();
 
         if (result.Refinement?.Summary is { Length: > 0 } summary)
         {
-            builder.AppendLine("Summary").AppendLine(summary).AppendLine();
+            builder.AppendLine("Summary").AppendLine(summary);
         }
 
         if (result.Refinement?.ActionItems is { Count: > 0 } actions)
         {
+            if (builder.Length > 0)
+            {
+                builder.AppendLine();
+            }
+
             builder.AppendLine("Action items");
             foreach (var action in actions)
             {
                 builder.AppendLine($"- {action}");
             }
-
-            builder.AppendLine();
         }
 
-        builder.AppendLine("Transcript").AppendLine(result.BestText);
-        return builder.ToString();
+        return builder.ToString().TrimEnd();
     }
 
     /// <summary>Cancels whatever is running.</summary>
@@ -427,6 +538,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         (_languageModel as IDisposable)?.Dispose();
         _languageModel = null;
     }
+
+    private void Raise(string name) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {

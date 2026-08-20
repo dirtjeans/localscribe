@@ -13,10 +13,31 @@ namespace LocalScribe.App;
 /// </summary>
 public static class AudioFileLoader
 {
-    /// <summary>Loads and resamples any format NAudio can open: wav, mp3, m4a, wma, and others.</summary>
+    /// <summary>
+    /// Containers that hold video as well as audio. NAudio's AudioFileReader does not open
+    /// these; Media Foundation does, and pulls the audio track out on the way through.
+    /// </summary>
+    private static readonly HashSet<string> VideoExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mov", ".m4v", ".avi", ".wmv", ".mkv", ".webm" };
+
+    /// <summary>Every extension the picker should offer.</summary>
+    public static IReadOnlyList<string> SupportedExtensions { get; } =
+    [
+        ".wav", ".mp3", ".m4a", ".flac", ".wma", ".aac", ".aiff", ".ogg",
+        ".mp4", ".mov", ".m4v", ".avi", ".wmv", ".mkv", ".webm",
+    ];
+
+    /// <summary>True when the file is a video container rather than plain audio.</summary>
+    public static bool IsVideo(string path) =>
+        VideoExtensions.Contains(Path.GetExtension(path));
+
+    /// <summary>
+    /// Loads and resamples anything Windows can decode: wav, mp3, m4a and the rest, and the
+    /// audio track of a video file.
+    /// </summary>
     public static PcmAudio Load(string path)
     {
-        using var reader = new AudioFileReader(path);
+        using var reader = OpenReader(path);
         using var resampler = new MediaFoundationResampler(
             reader,
             WaveFormat.CreateIeeeFloatWaveFormat(PcmAudio.WhisperSampleRate, channels: 1))
@@ -37,6 +58,31 @@ public static class AudioFileLoader
         }
 
         return new PcmAudio([.. samples]);
+    }
+
+    /// <summary>
+    /// Opens whichever reader can handle the file.
+    /// <para>
+    /// Video goes straight to Media Foundation. Audio prefers AudioFileReader, which handles the
+    /// common formats without involving the platform decoders at all, and falls back to Media
+    /// Foundation for anything it does not recognise rather than failing in front of the user.
+    /// </para>
+    /// </summary>
+    private static WaveStream OpenReader(string path)
+    {
+        if (IsVideo(path))
+        {
+            return new MediaFoundationReader(path);
+        }
+
+        try
+        {
+            return new AudioFileReader(path);
+        }
+        catch (Exception exception) when (exception is not FileNotFoundException)
+        {
+            return new MediaFoundationReader(path);
+        }
     }
 }
 

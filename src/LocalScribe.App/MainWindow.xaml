@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:LocalScribe.App"
     mc:Ignorable="d"
     Title="LocalScribe">
 
@@ -95,6 +96,34 @@
             <Button x:Name="CancelButton" Click="OnCancel" IsEnabled="False" Content="Cancel" />
 
             <Button Content="Glossary" Click="OnEditGlossary" />
+
+            <Button x:Name="CopyButton" Click="OnCopy" IsEnabled="False">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE8C8;" FontSize="16" />
+                    <TextBlock Text="Copy" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="SaveButton" Click="OnSave" IsEnabled="False">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE74E;" FontSize="16" />
+                    <TextBlock Text="Save" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="DiscardButton" Click="OnDiscard" IsEnabled="False">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE74D;" FontSize="16" />
+                    <TextBlock Text="Discard" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="StopPlaybackButton" Click="OnStopPlayback" Visibility="Collapsed">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE71A;" FontSize="16" />
+                    <TextBlock Text="Stop playback" />
+                </StackPanel>
+            </Button>
         </StackPanel>
 
         <!--
@@ -129,28 +158,86 @@
             </StackPanel>
         </Border>
 
-        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
-            <StackPanel Spacing="8">
-                <TextBlock
-                    x:Name="TranscriptText"
-                    Text=""
-                    IsTextSelectionEnabled="True"
-                    TextWrapping="Wrap"
-                    Style="{ThemeResource BodyTextBlockStyle}" />
+        <Grid Grid.Row="3" RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
 
-                <!--
-                    Provisional words are dimmed rather than hidden. Showing them as settled text
-                    would be a small lie that the next pass then corrects in front of the user.
-                -->
+            <!-- What the cleanup model made of the recording, kept apart from the recording. -->
+            <Border
+                x:Name="SummaryCard"
+                Grid.Row="0"
+                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16,12"
+                Visibility="Collapsed">
                 <TextBlock
-                    x:Name="ProvisionalTextBlock"
-                    Text=""
+                    x:Name="SummaryText"
                     TextWrapping="Wrap"
-                    FontStyle="Italic"
-                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                    IsTextSelectionEnabled="True"
                     Style="{ThemeResource BodyTextBlockStyle}" />
-            </StackPanel>
-        </ScrollViewer>
+            </Border>
+
+            <!--
+                One item per paragraph rather than one long block of text. Paragraphs are what
+                make a transcript readable, and giving each its own item is also what lets a
+                click land on a time: the timestamp beside it is the position in the recording,
+                so the text and the audio stay the same object rather than two views of one.
+            -->
+            <ListView
+                x:Name="TranscriptList"
+                Grid.Row="1"
+                SelectionMode="Single"
+                IsItemClickEnabled="True"
+                ItemClick="OnParagraphClick"
+                ShowsScrollingPlaceholders="False">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="local:ParagraphView">
+                        <Grid ColumnSpacing="12" Padding="0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock
+                                Grid.Column="0"
+                                Text="{x:Bind Clock}"
+                                FontFamily="Consolas"
+                                VerticalAlignment="Top"
+                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                Style="{ThemeResource CaptionTextBlockStyle}" />
+
+                            <StackPanel Grid.Column="1" Spacing="2">
+                                <TextBlock
+                                    Text="{x:Bind Speaker}"
+                                    Visibility="{x:Bind HasSpeaker}"
+                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                    Style="{ThemeResource CaptionTextBlockStyle}" />
+                                <TextBlock
+                                    Text="{x:Bind Text}"
+                                    TextWrapping="Wrap"
+                                    Style="{ThemeResource BodyTextBlockStyle}" />
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <!-- Words still moving. Dimmed, because showing them as settled is a small lie. -->
+            <TextBlock
+                x:Name="ProvisionalTextBlock"
+                Grid.Row="1"
+                Text=""
+                TextWrapping="Wrap"
+                FontStyle="Italic"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,8"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                Style="{ThemeResource BodyTextBlockStyle}" />
+        </Grid>
 
         <StackPanel Grid.Row="4" Spacing="8">
             <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />

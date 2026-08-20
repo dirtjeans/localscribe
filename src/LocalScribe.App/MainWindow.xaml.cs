@@ -16,6 +16,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
     private readonly DispatcherQueue _dispatcher;
+    private IReadOnlyList<ParagraphView> _paragraphs = [];
 
     public MainWindow()
     {
@@ -23,7 +24,16 @@ public sealed partial class MainWindow : Window
         _dispatcher = DispatcherQueue.GetForCurrentThread();
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
-        Closed += (_, _) => _viewModel.Dispose();
+
+        _viewModel.Player.PositionChanged += OnPlaybackPosition;
+        _viewModel.Player.Stopped += OnPlaybackStopped;
+
+        Closed += (_, _) =>
+        {
+            _viewModel.Player.PositionChanged -= OnPlaybackPosition;
+            _viewModel.Player.Stopped -= OnPlaybackStopped;
+            _viewModel.Dispose();
+        };
 
         _ = _viewModel.InitialiseAsync();
     }
@@ -44,8 +54,19 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.HardwareSummary):
                     HardwareText.Text = _viewModel.HardwareSummary;
                     break;
-                case nameof(MainViewModel.Transcript):
-                    TranscriptText.Text = _viewModel.Transcript;
+                case nameof(MainViewModel.Paragraphs):
+                    ShowParagraphs();
+                    break;
+                case nameof(MainViewModel.Summary):
+                    SummaryText.Text = _viewModel.Summary;
+                    SummaryCard.Visibility = _viewModel.Summary.Length > 0
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+                    break;
+                case nameof(MainViewModel.HasTranscript):
+                    CopyButton.IsEnabled = _viewModel.HasTranscript;
+                    SaveButton.IsEnabled = _viewModel.HasTranscript;
+                    DiscardButton.IsEnabled = _viewModel.HasTranscript;
                     break;
                 case nameof(MainViewModel.ProvisionalText):
                     ProvisionalTextBlock.Text = _viewModel.ProvisionalText;
@@ -151,6 +172,115 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Rebuilds the list. Scrolls to the end only while text is still arriving, so a transcript
+    /// being read is not dragged out from under the reader.
+    /// </summary>
+    private void ShowParagraphs()
+    {
+        var following = _viewModel.IsRecording || _viewModel.IsBusy;
+
+        _paragraphs = _viewModel.Paragraphs.Select(p => new ParagraphView(p)).ToList();
+        TranscriptList.ItemsSource = _paragraphs;
+
+        if (following && _paragraphs.Count > 0)
+        {
+            TranscriptList.ScrollIntoView(_paragraphs[^1]);
+        }
+    }
+
+    private void OnParagraphClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not ParagraphView paragraph || !_viewModel.Player.HasAudio)
+        {
+            return;
+        }
+
+        _viewModel.Player.PlayFrom(paragraph.StartSeconds);
+
+        StopPlaybackButton.Visibility = Visibility.Visible;
+        TranscriptList.SelectedItem = paragraph;
+    }
+
+    /// <summary>
+    /// Follows playback by moving the selection, so the highlight is the same mechanism the user
+    /// clicked with rather than a second one that has to be kept in step with it.
+    /// </summary>
+    private void OnPlaybackPosition(double seconds) =>
+        _dispatcher.TryEnqueue(() =>
+        {
+            var playing = _paragraphs.FirstOrDefault(p => p.Contains(seconds));
+
+            if (playing is not null && !ReferenceEquals(TranscriptList.SelectedItem, playing))
+            {
+                TranscriptList.SelectedItem = playing;
+                TranscriptList.ScrollIntoView(playing);
+            }
+        });
+
+    private void OnPlaybackStopped() =>
+        _dispatcher.TryEnqueue(() => StopPlaybackButton.Visibility = Visibility.Collapsed);
+
+    private void OnStopPlayback(object sender, RoutedEventArgs e) => _viewModel.Player.Stop();
+
+    private void OnCopy(object sender, RoutedEventArgs e)
+    {
+        var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        package.SetText(_viewModel.Export(TranscriptFormat.PlainText));
+
+        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+
+        StatusText.Text = "Transcript copied.";
+    }
+
+    private async void OnSave(object sender, RoutedEventArgs e)
+    {
+        var picker = new FileSavePicker { SuggestedFileName = _viewModel.SourceName };
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        picker.FileTypeChoices.Add("Text", [".txt"]);
+        picker.FileTypeChoices.Add("Markdown", [".md"]);
+        picker.FileTypeChoices.Add("Subtitles", [".srt"]);
+
+        var file = await picker.PickSaveFileAsync();
+        if (file is null)
+        {
+            return;
+        }
+
+        var format = Path.GetExtension(file.Name).ToLowerInvariant() switch
+        {
+            ".md" => TranscriptFormat.Markdown,
+            ".srt" => TranscriptFormat.SubRip,
+            _ => TranscriptFormat.PlainText,
+        };
+
+        await Windows.Storage.FileIO.WriteTextAsync(file, _viewModel.Export(format));
+
+        StatusText.Text = $"Saved to {file.Path}";
+    }
+
+    private async void OnDiscard(object sender, RoutedEventArgs e)
+    {
+        // Confirmed, because there is nowhere to get it back from: the audio lives only in
+        // memory and goes with it.
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "Discard this transcript?",
+            Content = "The transcript and the recording behind it will be gone. "
+                + "Nothing has been written to disk unless you saved it.",
+            PrimaryButtonText = "Discard",
+            CloseButtonText = "Keep",
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            _viewModel.Discard();
+        }
+    }
+
     private async void OnOpenFile(object sender, RoutedEventArgs e)
     {
         var picker = new FileOpenPicker();
@@ -159,7 +289,7 @@ public sealed partial class MainWindow : Window
         // window owns it, or the call fails at runtime rather than at compile time.
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
 
-        foreach (var extension in new[] { ".wav", ".mp3", ".m4a", ".flac", ".wma", ".aac" })
+        foreach (var extension in AudioFileLoader.SupportedExtensions)
         {
             picker.FileTypeFilter.Add(extension);
         }

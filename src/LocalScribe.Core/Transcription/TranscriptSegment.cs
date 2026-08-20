@@ -12,12 +12,18 @@ namespace LocalScribe.Core.Transcription;
 /// The model's own estimate that this span contains no speech at all. High values on a span
 /// with text are the classic hallucination signature.
 /// </param>
+/// <param name="Speaker">
+/// Who was talking, or null when nobody has worked that out. Whisper does not answer this —
+/// separating voices needs its own model — so the field exists to carry an answer from
+/// elsewhere rather than to imply the transcriber produces one.
+/// </param>
 public sealed record TranscriptSegment(
     string Text,
     double StartSeconds,
     double EndSeconds,
     double AverageLogProbability = 0.0,
-    double NoSpeechProbability = 0.0)
+    double NoSpeechProbability = 0.0,
+    string? Speaker = null)
 {
     /// <summary>Duration of the segment in seconds.</summary>
     public double DurationSeconds => EndSeconds - StartSeconds;
