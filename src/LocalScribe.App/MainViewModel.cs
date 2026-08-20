@@ -30,6 +30,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private ITranscriber? _liveTranscriber;
     private string? _liveTranscriberKey;
+    private SessionDiagnostics? _diagnostics;
 
     private string _status = "Starting up…";
     private string _hardwareSummary = string.Empty;
@@ -234,6 +235,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _liveSession = new LiveTranscriptionSession(transcriber);
         _cancellation = new CancellationTokenSource();
+        _diagnostics = SessionDiagnostics.StartIfEnabled(livePlan.Summary, transcriber.Description);
 
         _microphone = new MicrophoneCapture();
         _microphone.SamplesAvailable += OnSamplesAvailable;
@@ -295,7 +297,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var committed = await session.FinishAsync();
             Transcript = new Transcript(committed).FullText;
             ProvisionalText = string.Empty;
-            Status = "Stopped.";
+
+            if (_diagnostics is not null)
+            {
+                _diagnostics.Finished(committed);
+                Status = $"Stopped. Diagnostics written to {_diagnostics.Directory}";
+                _diagnostics = null;
+            }
+            else
+            {
+                Status = "Stopped.";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -320,11 +332,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
+            _diagnostics?.Captured(samples);
+
             var update = await session.PushAsync(samples, _cancellation?.Token ?? default);
             if (update is not null)
             {
                 ProvisionalText = update.Text;
                 Transcript = new Transcript(session.CommittedSegments).FullText;
+
+                _diagnostics?.Pass(update.Text, session.CommittedSegments);
             }
         }
         catch (OperationCanceledException)
