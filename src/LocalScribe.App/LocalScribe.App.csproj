@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>LocalScribe.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!--
+      arm64 first: this app exists for Snapdragon laptops, and an x64 build running under
+      emulation cannot load the QNN provider at all. x64 stays available so the UI can be
+      worked on from an ordinary desktop, where it falls back to the CPU.
+    -->
+    <Platforms>arm64;x64</Platforms>
+    <RuntimeIdentifiers>win-arm64;win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.240923002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+
+    <!-- WASAPI capture and audio file decoding. Ships arm64-compatible managed assemblies. -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LocalScribe.Core/LocalScribe.Core.csproj" />
+    <ProjectReference Include="../LocalScribe.Onnx/LocalScribe.Onnx.csproj" />
+  </ItemGroup>
+
+</Project>

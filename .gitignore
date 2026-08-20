@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+*.user
+
+# Model weights are large and licensed separately. The doctor tells you where to put them.
+models/
+*.onnx
+*.bin

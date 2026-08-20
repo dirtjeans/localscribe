@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>LocalScribe.Core</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    This project has no external dependencies on purpose. All the decision-making, audio maths,
+    and orchestration lives here so it can be built and tested on any machine, including CI
+    runners with no Qualcomm hardware anywhere near them. Anything that needs ONNX Runtime or
+    Windows lives in a project above this one.
+  -->
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LocalScribe.Core.Tests" />
+  </ItemGroup>
+
+</Project>

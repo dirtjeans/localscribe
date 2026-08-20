@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>LocalScribe.Onnx</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LocalScribe.Core/LocalScribe.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
+  </ItemGroup>
+
+  <!--
+    The QNN package carries the Qualcomm AI Engine Direct libraries and only ships for
+    win-arm64. Referencing it unconditionally would break builds and CI on every other
+    platform, so it is brought in only when building for Windows on ARM. On other platforms
+    the QNN provider simply fails to register and the planner falls back, which is the
+    behaviour we want anyway.
+  -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-arm64' Or '$(Platform)' == 'arm64'">
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.QNN" Version="1.20.1" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,29 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!--
+      Documentation is generated so that the reasoning captured in the doc comments reaches
+      anyone consuming these types. It is not, however, mandatory on every self-explanatory
+      property: forcing a comment onto "public int Fraction" produces noise, not understanding.
+      CS1591 is missing-comment, CS1573 is partially-documented parameters.
+    -->
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    The app targets Snapdragon laptops, so arm64 is the platform that matters. x64 is kept
+    available for development on other machines and for the ONNX Runtime quantisation tools,
+    which do not ship for arm64.
+  -->
+  <PropertyGroup>
+    <Platforms>AnyCPU;arm64;x64</Platforms>
+  </PropertyGroup>
+
+</Project>

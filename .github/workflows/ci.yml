@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Core carries the policy and the audio maths, and has no dependency on Qualcomm hardware or
+  # Windows. Testing it on Linux keeps the feedback loop fast and proves the split is real.
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build core and ONNX layer
+        run: |
+          dotnet build src/LocalScribe.Core/LocalScribe.Core.csproj -c Release
+          dotnet build src/LocalScribe.Onnx/LocalScribe.Onnx.csproj -c Release
+          dotnet build src/LocalScribe.Doctor/LocalScribe.Doctor.csproj -c Release
+
+      - name: Test
+        run: dotnet test tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj -c Release
+
+  # The WinUI app only builds on Windows. There is no arm64 hosted runner, so this is a
+  # cross-compile: it catches compile and XAML errors but cannot run the result.
+  app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build the app for win-arm64
+        run: dotnet build src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm64

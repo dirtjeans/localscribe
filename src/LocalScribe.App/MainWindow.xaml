@@ -1,0 +1,91 @@
+<Window
+    x:Class="LocalScribe.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="LocalScribe">
+
+    <Grid Padding="24" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Where the work is running. Shown up front, because it is the thing people doubt. -->
+        <Border
+            Grid.Row="0"
+            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="16,12">
+            <StackPanel Spacing="4">
+                <TextBlock
+                    Text="Hardware"
+                    Style="{ThemeResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock
+                    x:Name="HardwareText"
+                    Text="Checking…"
+                    Style="{ThemeResource BodyStrongTextBlockStyle}"
+                    TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12">
+            <Button x:Name="OpenFileButton" Click="OnOpenFile">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                    <TextBlock Text="Transcribe a file" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="RecordButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon x:Name="RecordIcon" Glyph="&#xE720;" FontSize="16" />
+                    <TextBlock x:Name="RecordLabel" Text="Start listening" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="CancelButton" Click="OnCancel" IsEnabled="False" Content="Cancel" />
+
+            <Button Content="Glossary" Click="OnEditGlossary" />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="8">
+                <TextBlock
+                    x:Name="TranscriptText"
+                    Text=""
+                    IsTextSelectionEnabled="True"
+                    TextWrapping="Wrap"
+                    Style="{ThemeResource BodyTextBlockStyle}" />
+
+                <!--
+                    Provisional words are dimmed rather than hidden. Showing them as settled text
+                    would be a small lie that the next pass then corrects in front of the user.
+                -->
+                <TextBlock
+                    x:Name="ProvisionalTextBlock"
+                    Text=""
+                    TextWrapping="Wrap"
+                    FontStyle="Italic"
+                    Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                    Style="{ThemeResource BodyTextBlockStyle}" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Spacing="8">
+            <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />
+            <TextBlock
+                x:Name="StatusText"
+                Text="Starting up…"
+                Style="{ThemeResource CaptionTextBlockStyle}"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+        </StackPanel>
+    </Grid>
+</Window>
