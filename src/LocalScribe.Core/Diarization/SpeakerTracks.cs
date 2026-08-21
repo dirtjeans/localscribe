@@ -424,6 +424,150 @@ public static class SpeakerTracks
                 .ToArray())];
     }
 
+    /// <summary>
+    /// Groups tracks into people by voice, but forbidden from ever putting two of them together
+    /// when the segmentation model saw them talking at the same moment.
+    /// <para>
+    /// The general form of <see cref="SeparateTwo"/>, for recordings with more than two people
+    /// in them. Two-colouring settles a two-speaker recording outright and needs no voices at
+    /// all; with three or more, the constraints stop determining an answer on their own and
+    /// something has to choose between the arrangements that satisfy them. Voice similarity is
+    /// what chooses — but only among legal arrangements, which is the difference between using
+    /// weak evidence and being led by it.
+    /// </para>
+    /// <para>
+    /// That matters most exactly where the voices are hardest to tell apart. Unconstrained
+    /// clustering on a poor recording collapses everyone into one person; here the collapse is
+    /// impossible, because the pairs it would have to merge are the pairs known to be different.
+    /// </para>
+    /// </summary>
+    /// <param name="voices">One embedding per track, in track order.</param>
+    /// <param name="conflicts">For each track, the tracks it cannot share a person with.</param>
+    /// <param name="wanted">How many people to end up with.</param>
+    /// <returns>A person number per track.</returns>
+    public static int[] GroupWithConstraints(
+        IReadOnlyList<float[]> voices,
+        IReadOnlyList<IReadOnlyList<int>> conflicts,
+        int wanted)
+    {
+        ArgumentNullException.ThrowIfNull(voices);
+        ArgumentNullException.ThrowIfNull(conflicts);
+
+        var members = Enumerable.Range(0, voices.Count).Select(i => new List<int> { i }).ToList();
+        var forbidden = conflicts.Select(list => list.ToHashSet()).ToList();
+        var alive = Enumerable.Range(0, voices.Count).ToList();
+
+        while (alive.Count > wanted)
+        {
+            var bestDistance = double.MaxValue;
+            var bestA = -1;
+            var bestB = -1;
+
+            for (var i = 0; i < alive.Count; i++)
+            {
+                for (var j = i + 1; j < alive.Count; j++)
+                {
+                    var (a, b) = (alive[i], alive[j]);
+
+                    // Illegal if anybody in one group was talking over anybody in the other.
+                    if (members[a].Any(x => members[b].Any(y => forbidden[x].Contains(y))))
+                    {
+                        continue;
+                    }
+
+                    // Average linkage, as the unconstrained clustering uses: the mean distance
+                    // over every pair, which is steadier than the nearest or the furthest when
+                    // individual embeddings are noisy.
+                    var total = 0.0;
+                    var pairs = 0;
+
+                    foreach (var x in members[a])
+                    {
+                        foreach (var y in members[b])
+                        {
+                            total += SpeakerClustering.CosineDistance(voices[x], voices[y]);
+                            pairs++;
+                        }
+                    }
+
+                    if (pairs > 0 && total / pairs < bestDistance)
+                    {
+                        bestDistance = total / pairs;
+                        bestA = a;
+                        bestB = b;
+                    }
+                }
+            }
+
+            // Every remaining merge would put two people who talked over each other together.
+            // Stopping above the requested count is the honest outcome: the recording contains
+            // more distinguishable people than were asked for.
+            if (bestA < 0)
+            {
+                break;
+            }
+
+            members[bestA].AddRange(members[bestB]);
+            members[bestB].Clear();
+            forbidden[bestA].UnionWith(forbidden[bestB]);
+            alive.Remove(bestB);
+        }
+
+        var labels = new int[voices.Count];
+        for (var i = 0; i < alive.Count; i++)
+        {
+            foreach (var track in members[alive[i]])
+            {
+                labels[track] = i;
+            }
+        }
+
+        return labels;
+    }
+
+    /// <summary>
+    /// The fewest people the segmentation model's own evidence can be explained by.
+    /// <para>
+    /// Two tracks talking at the same moment are two people, so colouring the graph of those
+    /// facts puts a floor under the speaker count — reached without comparing a single voice,
+    /// which is what makes it worth having on a recording where voices cannot be compared. It is
+    /// a floor and not an answer: people who never talk over anybody leave no evidence here at
+    /// all, so a tidy conversation of six can look like one.
+    /// </para>
+    /// </summary>
+    public static int AtLeastThisManyPeople(IReadOnlyList<IReadOnlyList<int>> conflicts)
+    {
+        ArgumentNullException.ThrowIfNull(conflicts);
+
+        if (conflicts.Count == 0)
+        {
+            return 0;
+        }
+
+        // Most-constrained first, which is what makes greedy colouring tight in practice.
+        var order = Enumerable.Range(0, conflicts.Count)
+            .OrderByDescending(i => conflicts[i].Count)
+            .ToList();
+
+        var colour = new int[conflicts.Count];
+        Array.Fill(colour, -1);
+
+        foreach (var track in order)
+        {
+            var taken = conflicts[track].Where(other => colour[other] >= 0).Select(other => colour[other]).ToHashSet();
+
+            var pick = 0;
+            while (taken.Contains(pick))
+            {
+                pick++;
+            }
+
+            colour[track] = pick;
+        }
+
+        return colour.Max() + 1;
+    }
+
     /// <summary>Seconds two sets of spans have in common.</summary>
     private static double SharedSeconds(
         IReadOnlyList<(double Start, double End)> left,

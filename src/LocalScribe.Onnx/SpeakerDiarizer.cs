@@ -432,6 +432,20 @@ public sealed class SpeakerDiarizer : IDisposable
             tracks = (limit == 2 ? SpeakerTracks.SeparateTwo(spans, tracks) : null)
                 ?? Merge(audio, spans, tracks, limit, threshold, cancellationToken);
         }
+        else
+        {
+            // No count given. The constraints still put a floor under it, without listening to
+            // anybody: tracks that talked over one another are different people, and colouring
+            // that graph says how few people the evidence can be explained by. Better than
+            // letting a distance threshold guess, which is what produced 19 speakers on a
+            // recording with three.
+            var floor = SpeakerTracks.AtLeastThisManyPeople(ConflictsAmong(spans, tracks).Edges);
+
+            if (floor >= 2)
+            {
+                tracks = Merge(audio, spans, tracks, floor, threshold, cancellationToken);
+            }
+        }
 
         return Tidy([.. SpeakerTracks.ToTurns(spans, tracks, audio.DurationSeconds)]);
     }
@@ -508,8 +522,24 @@ public sealed class SpeakerDiarizer : IDisposable
             return tracks;
         }
 
-        var labels = SpeakerClustering.Cluster(
-            [.. known.Select(track => voices[track])], threshold, exactSpeakers: wanted);
+        // Grouped by voice, but never putting two tracks together that the segmentation model
+        // saw talking at the same moment. On a recording where the voices are hard to tell
+        // apart, that constraint is most of what keeps everyone from collapsing into one person.
+        var (edges, order) = ConflictsAmong(spans, tracks);
+
+        var positionOf = order.Select((track, i) => (track, i)).ToDictionary(x => x.track, x => x.i);
+        var knownAt = known.Select((track, i) => (track, i)).ToDictionary(x => x.track, x => x.i);
+
+        var constraints = known
+            .Select(track => positionOf.TryGetValue(track, out var at)
+                ? (IReadOnlyList<int>)[.. edges[at]
+                    .Select(other => knownAt.TryGetValue(order[other], out var k) ? k : -1)
+                    .Where(k => k >= 0)]
+                : [])
+            .ToList();
+
+        var labels = SpeakerTracks.GroupWithConstraints(
+            [.. known.Select(track => voices[track])], constraints, wanted);
 
         var moved = known
             .Select((track, i) => (track, label: labels[i]))
@@ -520,6 +550,78 @@ public sealed class SpeakerDiarizer : IDisposable
 
         return [.. tracks.Select(window =>
             window.Select(track => moved.TryGetValue(track, out var label) ? label : spare++).ToArray())];
+    }
+
+    /// <summary>
+    /// Which tracks were heard talking at the same moment as which others, and so cannot be the
+    /// same person. Straight from the segmentation model; no voices involved.
+    /// </summary>
+    /// <param name="spans">Per window, per local speaker, when they were talking.</param>
+    /// <param name="tracks">Track numbers from <see cref="SpeakerTracks.Link"/>.</param>
+    /// <returns>
+    /// Edges indexed by position, referring to other positions, alongside the track each
+    /// position stands for. Positions rather than track numbers because the colouring walks the
+    /// edges as an array, and mixing the two identifier spaces is a bug that reads as a working
+    /// program.
+    /// </returns>
+    private static (IReadOnlyList<IReadOnlyList<int>> Edges, IReadOnlyList<int> Tracks) ConflictsAmong(
+        IReadOnlyList<IReadOnlyList<IReadOnlyList<(double Start, double End)>>> spans,
+        int[][] tracks)
+    {
+        var index = new Dictionary<int, int>();
+        var sets = new List<HashSet<int>>();
+
+        int Slot(int track)
+        {
+            if (!index.TryGetValue(track, out var at))
+            {
+                at = sets.Count;
+                index[track] = at;
+                sets.Add([]);
+            }
+
+            return at;
+        }
+
+        for (var w = 0; w < spans.Count; w++)
+        {
+            var active = new List<int>();
+
+            for (var s = 0; s < spans[w].Count; s++)
+            {
+                var track = tracks[w][s];
+                if (track == SpeakerTracks.Silent)
+                {
+                    continue;
+                }
+
+                Slot(track);
+
+                if (spans[w][s].Sum(span => span.End - span.Start) >= MinimumTurnSeconds)
+                {
+                    active.Add(track);
+                }
+            }
+
+            foreach (var one in active.Distinct())
+            {
+                foreach (var other in active.Distinct())
+                {
+                    if (one != other)
+                    {
+                        sets[Slot(one)].Add(Slot(other));
+                    }
+                }
+            }
+        }
+
+        var order = new int[sets.Count];
+        foreach (var (track, at) in index)
+        {
+            order[at] = track;
+        }
+
+        return ([.. sets.Select(set => (IReadOnlyList<int>)[.. set])], order);
     }
 
     /// <summary>
