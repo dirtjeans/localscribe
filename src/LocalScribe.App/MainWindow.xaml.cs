@@ -85,6 +85,9 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.HardwareSummary):
                     HardwareText.Text = _viewModel.HardwareSummary;
+                    // The corner is too narrow for the whole plan, so the line is trimmed and
+                    // the rest lives on hover rather than being lost.
+                    ToolTipService.SetToolTip(HardwareText, _viewModel.HardwareSummary);
                     break;
                 case nameof(MainViewModel.Transcript):
                     TranscriptText.Text = _viewModel.Transcript;
