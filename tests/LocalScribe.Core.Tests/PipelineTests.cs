@@ -300,23 +300,51 @@ public sealed class TranscriptRefinerTests
     [Fact]
     public void LongTranscriptsAreSplitIntoModelSizedWindows()
     {
-        var text = string.Join(' ', Enumerable.Range(0, 1000).Select(i => $"word{i}"));
+        // Twenty segments of ten words: two hundred words at fifty per window.
+        var segments = Enumerable.Range(0, 20)
+            .Select(i => new TranscriptSegment(
+                string.Join(' ', Enumerable.Range(0, 10).Select(w => $"w{i}_{w}")),
+                i * 5.0,
+                (i + 1) * 5.0))
+            .ToList();
 
-        var windows = TranscriptRefiner.SplitIntoWindows(text, 400).ToList();
+        var windows = TranscriptRefiner.SplitSegmentsIntoWindows(segments, 50);
 
-        Assert.Equal(3, windows.Count);
-        Assert.Equal("word0", windows[0].Split(' ')[0]);
-        Assert.Equal("word999", windows[^1].Split(' ')[^1]);
+        Assert.Equal(4, windows.Count);
+        Assert.All(windows, window => Assert.Equal(5, window.Count));
     }
 
+    /// <summary>
+    /// Segments are never cut in half. A segment is the unit that carries a timing, and half of
+    /// one has nowhere to put its words back afterwards.
+    /// </summary>
     [Fact]
-    public void SplittingLosesNoWords()
+    public void SplittingLosesNoSegments()
     {
-        var text = string.Join(' ', Enumerable.Range(0, 953).Select(i => $"w{i}"));
+        var segments = Enumerable.Range(0, 37)
+            .Select(i => new TranscriptSegment($"segment {i} text here", i, i + 1))
+            .ToList();
 
-        var recombined = string.Join(' ', TranscriptRefiner.SplitIntoWindows(text, 400));
+        var windows = TranscriptRefiner.SplitSegmentsIntoWindows(segments, 40);
 
-        Assert.Equal(text, recombined);
+        Assert.Equal(segments, windows.SelectMany(window => window).ToList());
+    }
+
+    /// <summary>A segment longer than a whole window still travels intact, on its own.</summary>
+    [Fact]
+    public void AnOversizedSegmentGetsItsOwnWindow()
+    {
+        var segments = new List<TranscriptSegment>
+        {
+            new("short one", 0, 1),
+            new(string.Join(' ', Enumerable.Range(0, 200).Select(w => $"w{w}")), 1, 20),
+            new("short two", 20, 21),
+        };
+
+        var windows = TranscriptRefiner.SplitSegmentsIntoWindows(segments, 50);
+
+        Assert.Equal(segments, windows.SelectMany(window => window).ToList());
+        Assert.Contains(windows, window => window.Count == 1 && window[0] == segments[1]);
     }
 
     [Theory]

@@ -28,10 +28,22 @@ public enum RefinementOutputs
 /// <param name="CleanedText">The transcript after punctuation and glossary repair.</param>
 /// <param name="Summary">Present only when <see cref="RefinementOutputs.Summary"/> was requested.</param>
 /// <param name="ActionItems">Present only when <see cref="RefinementOutputs.ActionItems"/> was requested.</param>
+/// <param name="CleanedSegments">
+/// The same text, back in the segments it came from, with every timing intact.
+/// <para>
+/// The form the app actually needs, and for a long time the one it could not have. Cleanup
+/// returned a flat string; the transcript view is built from timed segments, because that is
+/// what click-to-play seeks with and what speaker labels attach to. With no way to get the
+/// string back into the segments, the cleaned text was computed and then dropped — every
+/// transcript shown, saved, and copied was the raw one, which is why parts of them were never
+/// punctuated no matter which model ran.
+/// </para>
+/// </param>
 public sealed record RefinementResult(
     string CleanedText,
     string? Summary = null,
-    IReadOnlyList<string>? ActionItems = null);
+    IReadOnlyList<string>? ActionItems = null,
+    IReadOnlyList<TranscriptSegment>? CleanedSegments = null);
 
 /// <summary>
 /// Runs the transcript through a local language model to fix what Whisper reliably gets wrong:
@@ -74,26 +86,35 @@ public sealed class TranscriptRefiner
         var rawText = transcript.FullText;
         if (rawText.Length == 0 || outputs == RefinementOutputs.None)
         {
-            return new RefinementResult(rawText);
+            return new RefinementResult(rawText, CleanedSegments: transcript.Segments);
         }
 
-        // Every call to the model is one step, counted up front so the fraction means something
-        // from the first one rather than jumping about as the work reveals itself.
-        var cleanupWindows = outputs.HasFlag(RefinementOutputs.Punctuation) || outputs.HasFlag(RefinementOutputs.Glossary)
-            ? SplitIntoWindows(rawText, WordsPerCleanupWindow).Count()
-            : 0;
+        var wantsCleanup = outputs.HasFlag(RefinementOutputs.Punctuation)
+            || outputs.HasFlag(RefinementOutputs.Glossary);
+
+        // Windows are groups of whole segments rather than slices of a string, so that what
+        // comes back has somewhere to go. Every call to the model is one step, counted up front
+        // so the fraction means something from the first one rather than jumping about as the
+        // work reveals itself.
+        var windows = wantsCleanup
+            ? SplitSegmentsIntoWindows(transcript.Segments, WordsPerCleanupWindow)
+            : [];
 
         var totalSteps = Math.Max(1,
-            cleanupWindows
+            windows.Count
             + (outputs.HasFlag(RefinementOutputs.Summary) ? 1 : 0)
             + (outputs.HasFlag(RefinementOutputs.ActionItems) ? 1 : 0));
 
         var completed = 0;
         void Step() => progress?.Report(Math.Min(1.0, ++completed / (double)totalSteps));
 
-        var cleaned = cleanupWindows > 0
-            ? await CleanAsync(rawText, glossary, outputs, Step, cancellationToken).ConfigureAwait(false)
-            : rawText;
+        var cleanedSegments = windows.Count > 0
+            ? await CleanAsync(windows, glossary, outputs, Step, cancellationToken).ConfigureAwait(false)
+            : transcript.Segments;
+
+        var cleaned = string.Join(
+            " ",
+            cleanedSegments.Select(segment => segment.Text.Trim()).Where(text => text.Length > 0));
 
         string? summary = null;
         if (outputs.HasFlag(RefinementOutputs.Summary))
@@ -118,7 +139,7 @@ public sealed class TranscriptRefiner
             actionItems = ParseActionItems(raw);
         }
 
-        return new RefinementResult(cleaned, summary, actionItems);
+        return new RefinementResult(cleaned, summary, actionItems, cleanedSegments);
     }
 
     /// <summary>
@@ -128,45 +149,88 @@ public sealed class TranscriptRefiner
     /// </summary>
     public int Rejected { get; private set; }
 
-    private async Task<string> CleanAsync(
-        string rawText,
+    private async Task<IReadOnlyList<TranscriptSegment>> CleanAsync(
+        IReadOnlyList<IReadOnlyList<TranscriptSegment>> windows,
         IReadOnlyList<string>? glossary,
         RefinementOutputs outputs,
         Action onWindowDone,
         CancellationToken cancellationToken)
     {
         var systemPrompt = BuildCleanupSystemPrompt(glossary, outputs);
-        var builder = new StringBuilder();
+        var result = new List<TranscriptSegment>();
 
-        foreach (var window in SplitIntoWindows(rawText, WordsPerCleanupWindow))
+        foreach (var window in windows)
         {
+            var spoken = TextOf(window);
+
             var cleaned = (await _model.CompleteAsync(
                 systemPrompt,
-                window,
-                maxTokens: EstimateReplyTokens(window),
+                spoken,
+                maxTokens: EstimateReplyTokens(spoken),
                 cancellationToken).ConfigureAwait(false)).Trim();
 
             // Checked, not trusted. The instructions already say to keep every word and add no
             // notes, and small models disregard both often enough that a transcript cleaned
             // without verification is a transcript that has quietly lost sentences. A window
             // that fails goes through unchanged.
-            var faithful = TranscriptQuality.IsFaithfulCleanup(window, cleaned);
-
-            if (!faithful)
+            if (TranscriptQuality.IsFaithfulCleanup(spoken, cleaned))
+            {
+                result.AddRange(CleanedTextAlignment.Apply(window, cleaned));
+            }
+            else
             {
                 Rejected++;
+                result.AddRange(window);
             }
 
-            if (builder.Length > 0)
-            {
-                builder.Append(' ');
-            }
-
-            builder.Append(faithful ? cleaned : window);
             onWindowDone();
         }
 
-        return builder.ToString();
+        return result;
+    }
+
+    /// <summary>The words of a window, as the model should see them.</summary>
+    private static string TextOf(IReadOnlyList<TranscriptSegment> window) =>
+        string.Join(" ", window.Select(segment => segment.Text.Trim()).Where(text => text.Length > 0));
+
+    /// <summary>
+    /// Groups consecutive segments into windows of roughly <paramref name="wordsPerWindow"/>
+    /// words.
+    /// <para>
+    /// Whole segments, never split, because a segment is the unit that carries a timing and half
+    /// of one has nowhere to put its words back. A window runs a little over rather than cutting
+    /// a segment in two.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<IReadOnlyList<TranscriptSegment>> SplitSegmentsIntoWindows(
+        IReadOnlyList<TranscriptSegment> segments,
+        int wordsPerWindow)
+    {
+        var windows = new List<IReadOnlyList<TranscriptSegment>>();
+        var current = new List<TranscriptSegment>();
+        var words = 0;
+
+        foreach (var segment in segments)
+        {
+            var count = segment.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+
+            if (words > 0 && words + count > wordsPerWindow)
+            {
+                windows.Add(current);
+                current = [];
+                words = 0;
+            }
+
+            current.Add(segment);
+            words += count;
+        }
+
+        if (current.Count > 0)
+        {
+            windows.Add(current);
+        }
+
+        return windows;
     }
 
     /// <summary>
@@ -225,24 +289,6 @@ public sealed class TranscriptRefiner
         Reply with the list and nothing else.
         """;
 
-    /// <summary>
-    /// Splits text into word-count windows. Cleanup is per-window so that a two-hour recording
-    /// does not need a model with a two-hour context.
-    /// </summary>
-    internal static IEnumerable<string> SplitIntoWindows(string text, int wordsPerWindow)
-    {
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (words.Length == 0)
-        {
-            yield break;
-        }
-
-        for (var start = 0; start < words.Length; start += wordsPerWindow)
-        {
-            var count = Math.Min(wordsPerWindow, words.Length - start);
-            yield return string.Join(' ', words, start, count);
-        }
-    }
 
     /// <summary>
     /// Cleanup output is about the same length as its input, plus headroom for the punctuation

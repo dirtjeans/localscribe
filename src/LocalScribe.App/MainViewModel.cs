@@ -668,9 +668,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 progress,
                 _cancellation.Token);
 
-            _segmentsBeforeSpeakers = result.Transcript.Segments;
+            // The cleaned segments when cleanup ran, the raw ones when it did not. This is
+            // the line that was missing: the cleaned text used to be computed and dropped, and
+            // what the user read was always the raw transcript.
+            var cleaned = result.Refinement?.CleanedSegments ?? result.Transcript.Segments;
 
-            var segments = await AttributeSpeakersAsync(result.Transcript.Segments, audio);
+            _segmentsBeforeSpeakers = cleaned;
+
+            var segments = await AttributeSpeakersAsync(cleaned, audio);
 
             SetTranscript(segments);
             Summary = Format(result);
