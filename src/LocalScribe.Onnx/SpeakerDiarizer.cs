@@ -235,6 +235,18 @@ public sealed class SpeakerDiarizer : IDisposable
     private const double GapWeightPerSecond = 0.02;
 
     /// <summary>
+    /// How much further than the different-speaker threshold a short stretch must sit from every
+    /// known voice before it is allowed to be somebody new.
+    /// <para>
+    /// A margin rather than the threshold itself, because half a second of speech identifies
+    /// nobody reliably and a noisy embedding should not invent a speaker. Beyond this, though,
+    /// the evidence is not marginal: the interjections that prompted this measured 0.54 and 0.70
+    /// against a threshold of 0.42.
+    /// </para>
+    /// </summary>
+    private const double StrangerMargin = 1.25;
+
+    /// <summary>
     /// Clusters the spans long enough to be trusted, then attaches the short ones to whichever
     /// of those they most resemble.
     /// <para>
@@ -271,6 +283,8 @@ public sealed class SpeakerDiarizer : IDisposable
             labels[reliable[i]] = reliableLabels[i];
         }
 
+        var strangers = new List<int>();
+
         for (var i = 0; i < spans.Count; i++)
         {
             if (reliable.Contains(i))
@@ -280,11 +294,14 @@ public sealed class SpeakerDiarizer : IDisposable
 
             var nearest = 0;
             var best = double.MaxValue;
+            var closestVoice = double.MaxValue;
 
             for (var r = 0; r < reliable.Count; r++)
             {
                 var distance = SpeakerClustering.CosineDistance(
                     Unit(embeddings[i]), Unit(embeddings[reliable[r]]));
+
+                closestVoice = Math.Min(closestVoice, distance);
 
                 // Weighted by how far away in time it is, gently. Half a second of speech does
                 // not identify anyone confidently, and when the voice is ambiguous the next best
@@ -303,7 +320,36 @@ public sealed class SpeakerDiarizer : IDisposable
                 }
             }
 
-            labels[i] = nearest;
+            // Unless it sounds like nobody here. Attaching short speech to a neighbour is a way
+            // of handling evidence too thin to trust, not a rule that everyone brief must be
+            // someone already known — and applied unconditionally it silently deletes a speaker
+            // who only ever interjects. On a four-minute recording of one person, the two
+            // half-second interruptions by somebody else sat 0.54 and 0.70 from the main voice,
+            // which this same code calls a different person anywhere else, and both were handed
+            // to the person they had interrupted.
+            if (closestVoice > threshold * StrangerMargin)
+            {
+                strangers.Add(i);
+            }
+            else
+            {
+                labels[i] = nearest;
+            }
+        }
+
+        if (strangers.Count > 0)
+        {
+            // Clustered among themselves, so that one person interjecting five times is one new
+            // speaker rather than five.
+            var next = reliableLabels.Max() + 1;
+
+            var among = SpeakerClustering.Cluster(
+                [.. strangers.Select(i => embeddings[i])], threshold);
+
+            for (var i = 0; i < strangers.Count; i++)
+            {
+                labels[strangers[i]] = next + among[i];
+            }
         }
 
         return labels;
