@@ -158,7 +158,8 @@ internal static class Program
                 ArgumentValue(args, "--diarization-models")
                     ?? Path.Combine(modelDirectory, "diarization"),
                 ArgumentValue(args, "--speakers"),
-                ArgumentValue(args, "--threshold"));
+                ArgumentValue(args, "--threshold"),
+                args.Contains("--tracking", StringComparer.Ordinal));
         }
 
         var liveAudio = ArgumentValue(args, "--transcribe-live");
@@ -225,6 +226,7 @@ internal static class Program
         Console.WriteLine("  --speakers <n>   Upper bound on speakers for --diarize.");
         Console.WriteLine("  --threshold <d>  Cosine distance at which two voices are different people.");
         Console.WriteLine("  --sweep          With --diarize: try every threshold and show where the answer changes.");
+        Console.WriteLine("  --tracking       With --diarize: follow speakers between windows instead of comparing voices.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");

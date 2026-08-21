@@ -384,6 +384,147 @@ public sealed class SpeakerDiarizer : IDisposable
     /// </para>
     /// </summary>
     /// <summary>
+    /// Works out who spoke when by following speakers between overlapping windows, instead of
+    /// by comparing what their voices sound like.
+    /// <para>
+    /// The alternative to <see cref="Diarize"/>, and the better one wherever the recording is
+    /// poor. Both start from the same segmentation model; they differ in how they turn its
+    /// per-window numbering into people. Clustering embeddings needs the voices to be
+    /// distinguishable, and on a phone-quality interview they are not — the same voice a second
+    /// apart measured 0.809 apart there, against a 0.42 threshold for being different people.
+    /// Following the clock needs only that somebody keeps talking often enough to appear in
+    /// consecutive windows, which is a far weaker thing to ask.
+    /// </para>
+    /// <para>
+    /// What it cannot do on its own is reunite someone after a long silence: a person who says
+    /// nothing for more than a window comes back as a new track. Reducing those tracks to the
+    /// number of people in the room is what <paramref name="exactSpeakers"/> is for, and that
+    /// last step does use embeddings — but over all of a track's audio at once rather than a few
+    /// seconds at a time, which is the one condition under which they are worth trusting here.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<SpeakerTurn> DiarizeByTracking(
+        PcmAudio audio,
+        int? maxSpeakers = null,
+        int? exactSpeakers = null,
+        double threshold = SpeakerClustering.DefaultThreshold,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(audio);
+
+        var windows = DescribeWindows(audio, progress, cancellationToken);
+        if (windows.Count == 0)
+        {
+            return [];
+        }
+
+        var spans = windows.Select(window => window.Speakers).ToList();
+        var tracks = SpeakerTracks.Link(spans);
+
+        var wanted = exactSpeakers ?? maxSpeakers;
+        if (wanted is { } limit && limit > 0)
+        {
+            tracks = Merge(audio, spans, tracks, limit, threshold, cancellationToken);
+        }
+
+        return Tidy([.. SpeakerTracks.ToTurns(spans, tracks, audio.DurationSeconds)]);
+    }
+
+    /// <summary>
+    /// Reduces the tracks to at most <paramref name="wanted"/> people, by what they sound like.
+    /// <para>
+    /// Each track is embedded from its own longest stretches of speech rather than span by span.
+    /// A track usually holds tens of seconds of one person, and a minute of somebody talking
+    /// identifies them where two seconds does not — which is why this step can be trusted on a
+    /// recording where per-span clustering could not be.
+    /// </para>
+    /// </summary>
+    private int[][] Merge(
+        PcmAudio audio,
+        IReadOnlyList<IReadOnlyList<IReadOnlyList<(double Start, double End)>>> spans,
+        int[][] tracks,
+        int wanted,
+        double threshold,
+        CancellationToken cancellationToken)
+    {
+        var present = tracks.SelectMany(window => window).Distinct().OrderBy(t => t).ToList();
+        if (present.Count <= wanted)
+        {
+            return tracks;
+        }
+
+        var voices = new Dictionary<int, float[]>();
+
+        foreach (var track in present)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // The longest few stretches this track was heard in, which is the best look at it
+            // going. Short ones add noise without adding evidence.
+            var best = Enumerable.Range(0, spans.Count)
+                .SelectMany(w => Enumerable.Range(0, spans[w].Count)
+                    .Where(s => tracks[w][s] == track)
+                    .SelectMany(s => spans[w][s]))
+                .OrderByDescending(span => span.End - span.Start)
+                .Take(EmbeddingsPerTrack)
+                .ToList();
+
+            float[]? total = null;
+            var counted = 0;
+
+            foreach (var (start, end) in best)
+            {
+                if (Embed(audio, start, end) is not { } embedding)
+                {
+                    continue;
+                }
+
+                var unit = Unit(embedding);
+                total ??= new float[unit.Length];
+
+                for (var i = 0; i < unit.Length; i++)
+                {
+                    total[i] += unit[i];
+                }
+
+                counted++;
+            }
+
+            if (counted > 0)
+            {
+                voices[track] = Unit(total!);
+            }
+        }
+
+        var known = present.Where(voices.ContainsKey).ToList();
+        if (known.Count <= wanted)
+        {
+            return tracks;
+        }
+
+        var labels = SpeakerClustering.Cluster(
+            [.. known.Select(track => voices[track])], threshold, exactSpeakers: wanted);
+
+        var moved = known
+            .Select((track, i) => (track, label: labels[i]))
+            .ToDictionary(x => x.track, x => x.label);
+
+        // A track too quiet to embed keeps its own number rather than being guessed at.
+        var spare = moved.Count == 0 ? 0 : moved.Values.Max() + 1;
+
+        return [.. tracks.Select(window =>
+            window.Select(track => moved.TryGetValue(track, out var label) ? label : spare++).ToArray())];
+    }
+
+    /// <summary>
+    /// How many of a track's stretches to average into its voice. Enough to cover a change of
+    /// microphone distance or tone; few enough that the tail of short fragments cannot outvote
+    /// the long stretches that actually identify someone.
+    /// </summary>
+    private const int EmbeddingsPerTrack = 8;
+
+    /// <summary>
     /// One pass of the segmentation model: which local speakers were talking, and when.
     /// <para>
     /// "Local" because the numbering means nothing outside the window. The segmentation model

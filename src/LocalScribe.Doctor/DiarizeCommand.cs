@@ -136,7 +136,12 @@ internal static class DiarizeCommand
         return values.Length == 0 ? 0 : values[values.Length / 2];
     }
 
-    public static int Run(string audioPath, string modelDirectory, string? speakers, string? threshold)
+    public static int Run(
+        string audioPath,
+        string modelDirectory,
+        string? speakers,
+        string? threshold,
+        bool tracking = false)
     {
         if (!File.Exists(audioPath))
         {
@@ -159,6 +164,7 @@ internal static class DiarizeCommand
             : SpeakerClustering.DefaultThreshold;
 
         Console.WriteLine($"  Threshold  {distance:F2}{(maxSpeakers is { } n ? $", at most {n} speakers" : string.Empty)}");
+        Console.WriteLine($"  Method     {(tracking ? "following speakers between windows" : "comparing voices")}");
         Console.WriteLine();
 
         IReadOnlyList<SpeakerTurn> turns;
@@ -167,7 +173,13 @@ internal static class DiarizeCommand
         try
         {
             using var diarizer = SpeakerDiarizer.Load(modelDirectory);
-            turns = diarizer.Diarize(audio, distance, maxSpeakers);
+
+            // Two ways to turn the segmentation model's per-window numbering into people:
+            // compare what the voices sound like, or follow them through the audio consecutive
+            // windows share. The second holds up on recordings too poor for the first.
+            turns = tracking
+                ? diarizer.DiarizeByTracking(audio, maxSpeakers, maxSpeakers, distance)
+                : diarizer.Diarize(audio, distance, maxSpeakers);
         }
         catch (FileNotFoundException exception)
         {
