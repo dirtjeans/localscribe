@@ -566,6 +566,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Glossary,
             RefinementOutputs.Everything,
             new Progress<double>(stages.Cleanup),
+
+            // Shown as it lands, window by window, so the transcript is visibly gaining
+            // punctuation rather than sitting there until the last one returns. Safe to write
+            // over the top of: speaker labels are attached after both stages finish, so there is
+            // nothing here yet for a redraw to lose.
+            new Progress<IReadOnlyList<TranscriptSegment>>(SetTranscript),
             cancellationToken).ConfigureAwait(true);
 
     /// <summary>

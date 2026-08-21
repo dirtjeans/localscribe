@@ -161,7 +161,7 @@ public sealed class TranscriptionPipeline
             TranscriptionPhase.CleaningUp)));
 
         return await _refiner
-            .RefineAsync(transcript, glossary, outputs, cleanup, cancellationToken)
+            .RefineAsync(transcript, glossary, outputs, cleanup, null, cancellationToken)
             .ConfigureAwait(false);
     }
 
