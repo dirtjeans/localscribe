@@ -66,10 +66,34 @@ public sealed class TranscriptionPipeline
         _stitcher = stitcher ?? new TranscriptStitcher();
     }
 
+    /// <summary>
+    /// Transcribes and then cleans up, one after the other.
+    /// <para>
+    /// The convenience for callers with nothing else to do. A caller that also wants to work out
+    /// who spoke should run <see cref="TranscribeAsync"/> and then start
+    /// <see cref="RefineAsync"/> alongside the diarizer, which reads only the audio and so has
+    /// no reason to wait for either.
+    /// </para>
+    /// </summary>
     public async Task<TranscriptionResult> RunAsync(
         PcmAudio audio,
         IReadOnlyList<string>? glossary = null,
         RefinementOutputs outputs = RefinementOutputs.Default,
+        IProgress<TranscriptionProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var transcript = await TranscribeAsync(audio, progress, cancellationToken)
+            .ConfigureAwait(false);
+
+        var refinement = await RefineAsync(transcript, glossary, outputs, progress, cancellationToken)
+            .ConfigureAwait(false);
+
+        return new TranscriptionResult(transcript, refinement);
+    }
+
+    /// <summary>Whisper only: the words and their timings, before any cleanup.</summary>
+    public async Task<Transcript> TranscribeAsync(
+        PcmAudio audio,
         IProgress<TranscriptionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -109,11 +133,25 @@ public sealed class TranscriptionPipeline
                 string.Join(" ", segments.Select(s => s.Text.Trim()))));
         }
 
-        var transcript = new Transcript(_stitcher.Stitch(perChunkSegments));
+        return new Transcript(_stitcher.Stitch(perChunkSegments));
+    }
+
+    /// <summary>
+    /// Cleanup only: punctuation, the glossary, and whatever else was asked for. Null when no
+    /// cleanup model was found or there is nothing to clean.
+    /// </summary>
+    public async Task<RefinementResult?> RefineAsync(
+        Transcript transcript,
+        IReadOnlyList<string>? glossary = null,
+        RefinementOutputs outputs = RefinementOutputs.Default,
+        IProgress<TranscriptionProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(transcript);
 
         if (_refiner is null || transcript.Segments.Count == 0)
         {
-            return new TranscriptionResult(transcript, Refinement: null);
+            return null;
         }
 
         var cleanup = new Progress<double>(fraction => progress?.Report(new TranscriptionProgress(
@@ -122,11 +160,9 @@ public sealed class TranscriptionPipeline
             string.Empty,
             TranscriptionPhase.CleaningUp)));
 
-        var refinement = await _refiner
+        return await _refiner
             .RefineAsync(transcript, glossary, outputs, cleanup, cancellationToken)
             .ConfigureAwait(false);
-
-        return new TranscriptionResult(transcript, refinement);
     }
 
     /// <summary>

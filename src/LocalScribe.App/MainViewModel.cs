@@ -164,13 +164,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         PcmAudio audio,
         int? speakers = null)
     {
-        var directory = Path.Combine(_modelRoot, "diarization");
-
-        if (!File.Exists(Path.Combine(directory, "segmentation.onnx")))
-        {
-            return segments;
-        }
-
         Status = "Working out who spoke…";
         Progress = 0;
 
@@ -180,20 +173,46 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Status = $"Working out who spoke… {(int)(fraction * 100)}%";
         });
 
+        var turns = await FindTurnsAsync(audio, speakers, found).ConfigureAwait(true);
+
+        return turns is null ? segments : SpeakerDiarizer.Attribute(segments, turns);
+    }
+
+    /// <summary>
+    /// Works out who spoke when, from the audio alone. Null when the models are missing or the
+    /// run failed.
+    /// <para>
+    /// Separated from attribution because the two have completely different dependencies, and
+    /// keeping them together hid that. Finding the turns needs the recording and nothing else —
+    /// not the words, not their timings — so it can run at the same time as the cleanup model is
+    /// rewriting the text. Attaching those turns to segments is pure bookkeeping and costs
+    /// nothing once both have finished.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<SpeakerTurn>?> FindTurnsAsync(
+        PcmAudio audio,
+        int? speakers,
+        IProgress<double>? progress)
+    {
+        var directory = Path.Combine(_modelRoot, "diarization");
+
+        if (!File.Exists(Path.Combine(directory, "segmentation.onnx")))
+        {
+            return null;
+        }
+
         try
         {
             return await Task.Run(() =>
             {
                 using var diarizer = SpeakerDiarizer.Load(directory);
 
-                var turns = diarizer.Diarize(
+                return diarizer.Diarize(
                     audio,
                     maxSpeakers: speakers,
                     exactSpeakers: speakers,
-                    progress: found,
+                    progress: progress,
                     cancellationToken: _cancellation?.Token ?? default);
-
-                return SpeakerDiarizer.Attribute(segments, turns);
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
@@ -203,7 +222,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception)
         {
             Status = $"Transcribed, but speakers could not be identified: {exception.Message}";
-            return segments;
+            return null;
         }
     }
 
@@ -472,6 +491,78 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private const double ShortestComparableParagraph = 1.0;
 
+    /// <summary>
+    /// One progress bar shared by two stages running at once.
+    /// <para>
+    /// Reported as the mean of the two, which is a fair account of the wait: they start together
+    /// and the run is over when the slower finishes. Showing whichever happened to report last
+    /// would make the bar jump backwards, and showing only one would leave it parked while the
+    /// other was still working.
+    /// </para>
+    /// <para>
+    /// A stage that is not running contributes nothing and is not counted, so a machine with no
+    /// cleanup model still gets a bar that means something.
+    /// </para>
+    /// </summary>
+    private sealed class SharedBar(MainViewModel owner)
+    {
+        private readonly object _gate = new();
+
+        private double _cleanup;
+        private double _speakers;
+        private bool _cleaningUp;
+        private bool _findingSpeakers;
+
+        public void Cleanup(double fraction)
+        {
+            lock (_gate)
+            {
+                _cleaningUp = true;
+                _cleanup = fraction;
+            }
+
+            Publish();
+        }
+
+        public void Speakers(double fraction)
+        {
+            lock (_gate)
+            {
+                _findingSpeakers = true;
+                _speakers = fraction;
+            }
+
+            Publish();
+        }
+
+        private void Publish()
+        {
+            double fraction;
+            string what;
+
+            lock (_gate)
+            {
+                var running = (_cleaningUp ? 1 : 0) + (_findingSpeakers ? 1 : 0);
+                if (running == 0)
+                {
+                    return;
+                }
+
+                fraction = ((_cleaningUp ? _cleanup : 0) + (_findingSpeakers ? _speakers : 0)) / running;
+
+                what = (_cleaningUp, _findingSpeakers) switch
+                {
+                    (true, true) => "Cleaning up and working out who spoke",
+                    (true, false) => "Cleaning up the transcript",
+                    _ => "Working out who spoke",
+                };
+            }
+
+            owner.Progress = fraction;
+            owner.Status = $"{what}… {(int)(fraction * 100)}%";
+        }
+    }
+
     private static double Midpoint(TranscriptSegment segment) =>
         segment.StartSeconds + ((segment.EndSeconds - segment.StartSeconds) / 2);
 
@@ -643,12 +734,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 Progress = update.Fraction;
 
-                // Named per stage. A run is transcription then cleanup then speakers, each
-                // taking a comparable while, and a bar that fills up and then sits there for a
-                // minute is worse than no bar at all.
-                Status = update.Phase == TranscriptionPhase.CleaningUp
-                    ? $"Cleaning up the transcript… {update.ChunksCompleted}%"
-                    : $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
+                Status = $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
 
                 if (update.Phase == TranscriptionPhase.Transcribing && update.LatestText.Length > 0)
                 {
@@ -661,24 +747,47 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             });
 
-            var result = await pipeline.RunAsync(
-                audio,
+            var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token);
+
+            // Cleanup and diarization at the same time. They share no data in either direction:
+            // the cleanup model rewrites text and never looks at the audio, the diarizer reads
+            // the audio and never looks at the words. Running them in sequence was costing the
+            // shorter of the two for nothing.
+            var stages = new SharedBar(this);
+
+            var cleaning = pipeline.RefineAsync(
+                transcript,
                 Glossary,
                 RefinementOutputs.Everything,
-                progress,
+                new Progress<TranscriptionProgress>(update => stages.Cleanup(update.ChunksCompleted / 100.0)),
                 _cancellation.Token);
 
-            // The cleaned segments when cleanup ran, the raw ones when it did not. This is
-            // the line that was missing: the cleaned text used to be computed and dropped, and
-            // what the user read was always the raw transcript.
-            var cleaned = result.Refinement?.CleanedSegments ?? result.Transcript.Segments;
+            var listening = FindTurnsAsync(
+                audio,
+                speakers: null,
+                new Progress<double>(stages.Speakers));
+
+            await Task.WhenAll(cleaning, listening);
+
+            var refinement = await cleaning;
+            var turns = await listening;
+
+            // The cleaned segments when cleanup ran, the raw ones when it did not. This is the
+            // line that was missing for a long time: the cleaned text used to be computed and
+            // dropped, and what the user read was always the raw transcript.
+            var cleaned = refinement?.CleanedSegments ?? transcript.Segments;
 
             _segmentsBeforeSpeakers = cleaned;
 
-            var segments = await AttributeSpeakersAsync(cleaned, audio);
+            // Attribution last, on the cleaned text rather than the raw text. Segments that span
+            // a speaker change are divided at sentence boundaries, and by this point there are
+            // real sentence boundaries to divide at.
+            var segments = turns is null
+                ? cleaned
+                : SpeakerDiarizer.Attribute(cleaned, turns);
 
             SetTranscript(segments);
-            Summary = Format(result);
+            Summary = Format(new TranscriptionResult(transcript, refinement));
             Status = "Done.";
         }
         catch (OperationCanceledException)
