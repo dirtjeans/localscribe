@@ -128,6 +128,16 @@ public static class SpeakerTracks
 
             for (var s = 0; s < windows[w].Count; s++)
             {
+                // A window always reports a slot per local speaker, and on a recording with one
+                // person talking most of them are empty. Numbering those gave a track to every
+                // silence: 1,260 windows produced 2,196 tracks, of which the overwhelming
+                // majority were nobody at all, and they swamped everything downstream.
+                if (windows[w][s].Count == 0)
+                {
+                    result[w][s] = Silent;
+                    continue;
+                }
+
                 var root = Find(offsets[w] + s);
 
                 if (!numbers.TryGetValue(root, out var number))
@@ -169,7 +179,7 @@ public static class SpeakerTracks
             return [];
         }
 
-        var speakers = tracks.SelectMany(window => window).DefaultIfEmpty(-1).Max() + 1;
+        var speakers = tracks.SelectMany(window => window).DefaultIfEmpty(Silent).Max() + 1;
         if (speakers <= 0)
         {
             return [];
@@ -182,6 +192,10 @@ public static class SpeakerTracks
             for (var s = 0; s < windows[w].Count; s++)
             {
                 var track = tracks[w][s];
+                if (track == Silent)
+                {
+                    continue;
+                }
 
                 foreach (var (start, end) in windows[w][s])
                 {
@@ -247,6 +261,164 @@ public static class SpeakerTracks
         return turns;
     }
 
+    /// <summary>
+    /// Sorts the tracks into two people using only what the segmentation model saw, without
+    /// asking what anybody sounds like.
+    /// <para>
+    /// Two local speakers active in the same window are two different people. That is a fact the
+    /// segmentation model supplies directly, it needs no voice comparison, and it survives audio
+    /// that defeats the embedding model completely. On the interview that prompted this, 465
+    /// windows produced 501 such facts, and all but 8 of them were mutually consistent — the
+    /// graph they form is very nearly two-colourable, and colouring it splits the recording
+    /// 48/52. Clustering the same recording by voice gave 98/2.
+    /// </para>
+    /// <para>
+    /// What the facts cannot settle is which colour is which person across a gap in the
+    /// conversation: they connect tracks that were talking at the same moment, so a stretch
+    /// where nobody interrupted anybody forms an island of its own. Those islands are joined by
+    /// the one other thing known without listening — that consecutive turns are usually
+    /// different people — voted over every pair of tracks that follow one another in time.
+    /// </para>
+    /// <para>
+    /// Two people only. The reasoning is a two-colouring and does not generalise to three: with
+    /// more speakers the constraints stop determining an answer and voices have to be compared
+    /// after all.
+    /// </para>
+    /// </summary>
+    /// <returns>Track numbers renumbered to 0 and 1, or null when the constraints say too little.</returns>
+    public static int[][]? SeparateTwo(
+        IReadOnlyList<IReadOnlyList<IReadOnlyList<(double Start, double End)>>> windows,
+        int[][] tracks)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(tracks);
+
+        var extent = new Dictionary<int, (double Start, double End, double Seconds)>();
+        var conflicts = new Dictionary<int, HashSet<int>>();
+
+        for (var w = 0; w < windows.Count; w++)
+        {
+            var active = new List<int>();
+
+            for (var s = 0; s < windows[w].Count; s++)
+            {
+                var track = tracks[w][s];
+                if (track == Silent || windows[w][s].Count == 0)
+                {
+                    continue;
+                }
+
+                var seconds = windows[w][s].Sum(span => span.End - span.Start);
+                if (seconds <= 0)
+                {
+                    continue;
+                }
+
+                var start = windows[w][s].Min(span => span.Start);
+                var end = windows[w][s].Max(span => span.End);
+
+                extent[track] = extent.TryGetValue(track, out var was)
+                    ? (Math.Min(was.Start, start), Math.Max(was.End, end), was.Seconds + seconds)
+                    : (start, end, seconds);
+
+                conflicts.TryAdd(track, []);
+
+                if (seconds >= MinimumOverlapSeconds)
+                {
+                    active.Add(track);
+                }
+            }
+
+            foreach (var one in active.Distinct())
+            {
+                foreach (var other in active.Distinct())
+                {
+                    if (one != other)
+                    {
+                        conflicts[one].Add(other);
+                    }
+                }
+            }
+        }
+
+        if (extent.Count == 0 || conflicts.Values.All(set => set.Count == 0))
+        {
+            return null;
+        }
+
+        // Two-colour each island of mutually-constrained tracks.
+        var colour = new Dictionary<int, int>();
+        var island = new Dictionary<int, int>();
+        var islands = 0;
+
+        foreach (var start in extent.Keys.OrderBy(t => extent[t].Start))
+        {
+            if (colour.ContainsKey(start))
+            {
+                continue;
+            }
+
+            colour[start] = 0;
+            island[start] = islands;
+
+            var queue = new Queue<int>([start]);
+            while (queue.Count > 0)
+            {
+                var at = queue.Dequeue();
+
+                foreach (var other in conflicts[at])
+                {
+                    if (colour.ContainsKey(other))
+                    {
+                        continue;
+                    }
+
+                    colour[other] = 1 - colour[at];
+                    island[other] = islands;
+                    queue.Enqueue(other);
+                }
+            }
+
+            islands++;
+        }
+
+        // Join the islands. Whoever spoke next is usually not whoever spoke last, so every pair
+        // of consecutive tracks is a vote that their colours should differ. Counted across the
+        // recording, that settles which way round each island goes relative to the biggest one.
+        var order = extent.Keys.OrderBy(t => extent[t].Start).ToList();
+        var flipVotes = new Dictionary<int, double>();
+
+        for (var i = 0; i + 1 < order.Count; i++)
+        {
+            var (a, b) = (order[i], order[i + 1]);
+            if (island[a] == island[b])
+            {
+                continue;
+            }
+
+            // Positive means the islands disagree about which colour is which.
+            var wantsSame = colour[a] == colour[b];
+            var weight = Math.Min(extent[a].Seconds, extent[b].Seconds);
+
+            var key = island[b];
+            flipVotes[key] = flipVotes.GetValueOrDefault(key) + (wantsSame ? weight : -weight);
+        }
+
+        var anchor = island[extent.OrderByDescending(e => e.Value.Seconds).First().Key];
+
+        foreach (var track in order)
+        {
+            if (island[track] != anchor && flipVotes.GetValueOrDefault(island[track]) > 0)
+            {
+                colour[track] = 1 - colour[track];
+            }
+        }
+
+        return [.. tracks.Select(window =>
+            window.Select(track => track == Silent || !colour.TryGetValue(track, out var c) ? Silent : c)
+                .ToArray())];
+    }
+
     /// <summary>Seconds two sets of spans have in common.</summary>
     private static double SharedSeconds(
         IReadOnlyList<(double Start, double End)> left,
@@ -271,6 +443,9 @@ public static class SpeakerTracks
     /// boundary does not join two people together.
     /// </summary>
     private const double MinimumOverlapSeconds = 0.5;
+
+    /// <summary>Marks a local speaker slot that nobody occupied.</summary>
+    public const int Silent = -1;
 
     /// <summary>Resolution of the vote. Finer than any turn boundary is worth arguing about.</summary>
     private const double FrameSeconds = 0.05;

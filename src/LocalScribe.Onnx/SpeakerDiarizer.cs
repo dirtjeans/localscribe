@@ -423,9 +423,14 @@ public sealed class SpeakerDiarizer : IDisposable
         var tracks = SpeakerTracks.Link(spans);
 
         var wanted = exactSpeakers ?? maxSpeakers;
+
         if (wanted is { } limit && limit > 0)
         {
-            tracks = Merge(audio, spans, tracks, limit, threshold, cancellationToken);
+            // Two people can be told apart by the segmentation model alone: two local speakers
+            // in one window are two different people, and that fact needs no voice comparison.
+            // Tried first because it survives audio the embedding model cannot read.
+            tracks = (limit == 2 ? SpeakerTracks.SeparateTwo(spans, tracks) : null)
+                ?? Merge(audio, spans, tracks, limit, threshold, cancellationToken);
         }
 
         return Tidy([.. SpeakerTracks.ToTurns(spans, tracks, audio.DurationSeconds)]);

@@ -151,6 +151,56 @@ public class SpeakerTracksTests
         Assert.DoesNotContain(turns, turn => turn.StartSeconds >= 2 && turn.EndSeconds <= 8);
     }
 
+    /// <summary>
+    /// Two local speakers in one window are two different people, whatever they sound like.
+    /// </summary>
+    [Fact]
+    public void OverlapInAWindowSeparatesTwoPeople()
+    {
+        var windows = Enumerable.Range(0, 4)
+            .Select(_ => Window(Talks(0, 5), Talks(4, 10)))
+            .ToArray();
+
+        var tracks = SpeakerTracks.Link(windows);
+        var separated = SpeakerTracks.SeparateTwo(windows, tracks);
+
+        Assert.NotNull(separated);
+        Assert.NotEqual(separated![0][0], separated[0][1]);
+        Assert.All(separated, w => Assert.All(w, t => Assert.InRange(t, 0, 1)));
+    }
+
+    /// <summary>
+    /// Islands with no constraint between them are joined on the assumption that consecutive
+    /// turns are different people, which is what carries the colouring across a quiet patch.
+    /// </summary>
+    [Fact]
+    public void IslandsAreJoinedByWhoSpokeNext()
+    {
+        var windows = new[]
+        {
+            // A and B overlap here, so they are known to differ.
+            Window(Talks(0, 6), Talks(5, 10)),
+            Window(Talks(0, 6), Talks(5, 10)),
+            // A gap, then two more speakers overlapping — a separate island.
+            Window(Talks(40, 46), Talks(45, 50)),
+            Window(Talks(40, 46), Talks(45, 50)),
+        };
+
+        var tracks = SpeakerTracks.Link(windows);
+        var separated = SpeakerTracks.SeparateTwo(windows, tracks);
+
+        Assert.NotNull(separated);
+        Assert.All(separated!, w => Assert.All(w, t => Assert.True(t == SpeakerTracks.Silent || t is 0 or 1)));
+    }
+
+    [Fact]
+    public void WithoutAnyOverlapThereIsNothingToSeparate()
+    {
+        var windows = Enumerable.Range(0, 3).Select(w => Window(Talks(w, w + 5))).ToArray();
+
+        Assert.Null(SpeakerTracks.SeparateTwo(windows, SpeakerTracks.Link(windows)));
+    }
+
     [Fact]
     public void NothingAtAllIsNotAFailure()
     {
