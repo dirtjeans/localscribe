@@ -1,34 +1,40 @@
 # Handoff notes
 
-Written at the end of a cloud session, for whoever picks this up on the actual Snapdragon.
+Written across cloud sessions, for whoever picks this up on the actual Snapdragon.
 
 ## Where things stand
 
-Two commits are on `main`. The core library builds and its 135 tests pass. The doctor tool runs
-end to end. That is the whole of what has been proven.
+The core library builds and its 144 tests pass. `LocalScribe.App` compiles for win-arm64 on a
+Windows CI runner, clean under `TreatWarningsAsErrors`. That is the whole of what has been
+proven.
 
-**Nothing has ever run on Snapdragon hardware.** The cloud session that wrote this was on Linux
-x64, where Windows targets cannot compile and no NPU exists. So `LocalScribe.App` has never been
-compiled at all, and `LocalScribe.Onnx` has compiled but never executed a model.
+**Nothing has ever run on Snapdragon hardware.** The sessions that wrote this were on Linux x64,
+where no NPU exists and Windows binaries cannot be executed. `LocalScribe.Onnx` has never run a
+model, and the app has never been launched. Compiling is not evidence of working — the runtime
+bugs in this codebase are the kind that only appear under a real start/stop cycle.
 
-Treat the unverified parts as a first draft that happens to typecheck.
+Treat the unverified parts as a first draft that happens to compile.
 
 ## First things to run
 
 ```powershell
 dotnet build -c Release -r win-arm64
 dotnet test
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
+dotnet build src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm64
 ```
 
-The first command is the one most likely to fail, because the WinUI project has never been
-built. Expect XAML and package problems there. The core library and doctor should be clean.
-
-Then, to fetch models:
+Then launch the app. Setup opens by itself when anything is missing, lists what it found, and
+offers to download the rest:
 
 ```powershell
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --install
+dotnet run --project src/LocalScribe.App -c Release -r win-arm64
 ```
+
+**There is no headless path any more.** `LocalScribe.Doctor` was removed when setup moved into
+the app, so hardware reporting and provisioning now require launching the GUI. That is a real
+loss for CI, for support requests where you want someone to paste terminal output, and for
+diagnosing a machine over SSH. If you want it back, the logic all lives in `SetupViewModel` and
+`Core/Provisioning`, and a console front end over them is a small job.
 
 ## What is most likely to be wrong
 
@@ -40,9 +46,15 @@ Ranked by how likely it is to bite, worst first.
 `qualcomm/Whisper-Tiny` was confirmed to exist. The rest were inferred from a naming pattern and
 never checked, because Hugging Face was blocked from the cloud container.
 
-If `--install` reports "not found or empty" for every repository, this is why. Fix it by
-browsing `https://huggingface.co/qualcomm` and correcting the list. The selection logic
-underneath is tested and should be fine once the names are right.
+If setup reports "no such repository" for every entry, this is why. Fix it by browsing
+`https://huggingface.co/qualcomm` and correcting the list. The selection logic underneath is
+tested and should be fine once the names are right.
+
+Note the wording. A repository that does not exist and a network that cannot be reached used to
+produce the same "not found or empty" message, which sent you to rewrite a repository list when
+your connection was the problem. They are now separated: "no such repository" means Hugging Face
+answered, and a message about your internet connection means it did not. Believe the one you
+get — on a work network, a proxy blocking `huggingface.co` produces the second.
 
 ### 2. The decoder's input signature
 
@@ -96,7 +108,7 @@ makes a healthy service look absent, and the cleanup pass then gets skipped in s
 two when the models are offloaded. This is the "do not make the machine feel slow" requirement,
 not an oversight.
 
-**The doctor never installs the Hexagon driver.** It is a signed kernel driver behind an account
+**Setup never installs the Hexagon driver.** It is a signed kernel driver behind an account
 wall. Automating it would produce a tool that reports success and leaves the app silently
 CPU-bound.
 
@@ -123,11 +135,13 @@ maths be tested anywhere. Adding a package reference there gives up more than it
 | Why is this word duplicated or missing? | `Core/Transcription/TranscriptStitcher.cs` |
 | Why does live text keep changing? | `Core/Pipeline/LiveTranscriptionSession.cs` |
 | What gets installed, and what does not? | `Core/Provisioning/Provisioner.cs` |
+| Why does setup say a repository is missing? | `Core/Provisioning/HuggingFaceCatalog.cs` |
+| What does the app do on first launch? | `App/SetupViewModel.cs` |
 | How does a provider actually get registered? | `Onnx/OnnxSessionFactory.cs` |
 
 ## A note on the tests
 
-The 135 tests cover decisions, not plumbing. The FFT is checked against the definition of the
+The 144 tests cover decisions, not plumbing. The FFT is checked against the definition of the
 DFT rather than against a recorded snapshot of its own output, and the mel filterbank is checked
 by confirming that rising frequencies land in rising bands.
 

@@ -33,8 +33,8 @@ public static class OnnxSessionFactory
         if (!File.Exists(modelPath))
         {
             throw new FileNotFoundException(
-                $"Model file not found. Run the doctor tool with --fetch-models to download a set " +
-                $"matching this machine.",
+                "Model file not found. Run setup in LocalScribe to download a set matching " +
+                "this machine.",
                 modelPath);
         }
 
@@ -98,7 +98,7 @@ public static class OnnxSessionFactory
         if (plan.StrictProviderCheck)
         {
             // Makes ONNX Runtime throw rather than silently place unsupported nodes on the CPU.
-            // The doctor tool switches this on precisely so it can prove the NPU is real; the
+            // Setup switches this on precisely so it can prove the NPU is real; the
             // app leaves it off so that a driver problem degrades instead of crashing.
             options.AddSessionConfigEntry("session.disable_cpu_ep_fallback", "1");
         }

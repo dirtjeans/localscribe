@@ -1,7 +1,7 @@
 # Setting up on a Snapdragon X laptop
 
 This is the part that actually decides whether the app uses your NPU. Work through it in
-order, and run the doctor after each step.
+order, and reopen setup after each step to see what changed.
 
 ## 1. Build native, not emulated
 
@@ -12,14 +12,8 @@ all, and the failure looks exactly like a missing driver.
 dotnet build -c Release -r win-arm64
 ```
 
-Check it worked:
-
-```powershell
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
-```
-
-The `Process architecture` line must say `Arm64`. If it says `X64`, nothing below will help
-until that is fixed.
+Check it worked by launching the app. Setup lists `Native arm64 process` first, and it must
+not report running under emulation. If it does, nothing below will help until that is fixed.
 
 ## 2. Install the Hexagon NPU runtime driver
 
@@ -30,15 +24,11 @@ This is the single most common reason a Snapdragon app quietly runs on the CPU. 
 still works, so nothing complains — it is just slower and the machine feels busier than it
 should.
 
-After installing, re-run the doctor. `Hexagon NPU runtime driver` should read `ok`.
+After installing, restart the app. Setup should show `Hexagon NPU runtime driver` as present.
 
 ## 3. Get Whisper model assets for your exact chip
 
-The doctor can do this for you:
-
-```powershell
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --install
-```
+Setup does this for you: launch the app and choose **Download what's missing**.
 
 It queries Hugging Face for a build matching your chipset, downloads the files, and writes a
 small `localscribe-model.json` recording which file is the encoder, the decoder, and the
@@ -49,7 +39,7 @@ The rest of this section is for doing it by hand, or for when the automatic sear
 empty.
 
 Precompiled QNN binaries are **chipset-specific**. A build for Snapdragon X Elite will not load
-on X Plus or X2. The doctor prints which folder it is looking in.
+on X Plus or X2. Setup reports which chipset folder it searched.
 
 Qualcomm publishes pre-exported Whisper assets on Hugging Face under the `qualcomm`
 organisation (`Whisper-Tiny`, `Whisper-Base`, `Whisper-Small`). Look for the
@@ -114,9 +104,9 @@ Oryon cores handle it comfortably.
 
 ## Verifying the NPU is genuinely in use
 
-The doctor's checks confirm the pieces are installed. To prove work actually lands on the NPU:
+Setup's checks confirm the pieces are installed. To prove work actually lands on the NPU:
 
-1. Run the doctor and confirm the plan says `Encoder  Npu`.
+1. Open setup and confirm it reports the encoder running on the NPU.
 2. Open Task Manager, Performance tab, and watch the NPU graph during a transcription.
 3. If the NPU stays flat while the CPU climbs, you are seeing silent fallback.
 

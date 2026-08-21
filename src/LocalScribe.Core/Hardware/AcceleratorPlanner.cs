@@ -165,13 +165,13 @@ public static class AcceleratorPlanner
         {
             warnings.Add(
                 "The Hexagon NPU runtime driver is missing. This is a separate install from the driver " +
-                "Windows ships with. Get it from Qualcomm Software Center, then re-run the doctor.");
+                "Windows ships with. Get it from Qualcomm Software Center, then restart LocalScribe.");
         }
         else if (!caps.WhisperQnnAssetsPresent)
         {
             warnings.Add(
                 $"No Whisper QNN model assets found for {caps.SocName}. Precompiled binaries are " +
-                "chipset-specific. Run 'localscribe-doctor --fetch-models' to download a matching set.");
+                "chipset-specific. LocalScribe offers to download a matching set during setup.");
         }
     }
 

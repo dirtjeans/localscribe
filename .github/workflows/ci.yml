@@ -21,13 +21,13 @@ jobs:
         run: |
           dotnet build src/LocalScribe.Core/LocalScribe.Core.csproj -c Release
           dotnet build src/LocalScribe.Onnx/LocalScribe.Onnx.csproj -c Release
-          dotnet build src/LocalScribe.Doctor/LocalScribe.Doctor.csproj -c Release
 
       - name: Test
         run: dotnet test tests/LocalScribe.Core.Tests/LocalScribe.Core.Tests.csproj -c Release
 
   # The WinUI app only builds on Windows. There is no arm64 hosted runner, so this is a
-  # cross-compile: it catches compile and XAML errors but cannot run the result.
+  # cross-compile: it proves the app compiles, and produces a build to run by hand, but nothing
+  # here executes it.
   app:
     runs-on: windows-latest
     steps:
@@ -37,5 +37,18 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Build the app for win-arm64
-        run: dotnet build src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm64
+      # Self-contained on both counts — the .NET runtime and the Windows App SDK travel with the
+      # app — so testing it needs nothing installed on the target machine beyond the Hexagon
+      # driver, which no build can carry.
+      - name: Publish the app for win-arm64
+        run: >
+          dotnet publish src/LocalScribe.App/LocalScribe.App.csproj
+          -c Release -r win-arm64 --self-contained true
+          -o publish/win-arm64
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: localscribe-win-arm64
+          path: publish/win-arm64
+          retention-days: 30

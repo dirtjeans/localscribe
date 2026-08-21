@@ -48,6 +48,11 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     private readonly List<TranscriptSegment> _committed = [];
     private readonly SemaphoreSlim _passLock = new(1, 1);
 
+    // Guards the window and the counters derived from it. Audio arrives on the capture thread
+    // while a pass, or FinishAsync, reads the same list from another; a List<float> torn between
+    // the two throws or yields garbage rather than failing loudly.
+    private readonly object _windowLock = new();
+
     private double _windowStartSeconds;
     private double _sessionSeconds;
     private int _samplesSinceLastPass;
@@ -69,18 +74,22 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
         ReadOnlyMemory<float> samples,
         CancellationToken cancellationToken = default)
     {
-        _window.AddRange(samples.Span);
-        _samplesSinceLastPass += samples.Length;
-        _sessionSeconds += samples.Length / (double)_sampleRate;
-
-        TrimWindow();
-
-        if (_samplesSinceLastPass < PassIntervalSeconds * _sampleRate)
+        lock (_windowLock)
         {
-            return null;
+            _window.AddRange(samples.Span);
+            _samplesSinceLastPass += samples.Length;
+            _sessionSeconds += samples.Length / (double)_sampleRate;
+
+            TrimWindow();
+
+            if (_samplesSinceLastPass < PassIntervalSeconds * _sampleRate)
+            {
+                return null;
+            }
+
+            _samplesSinceLastPass = 0;
         }
 
-        _samplesSinceLastPass = 0;
         return await RunPassAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -107,23 +116,33 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
 
         try
         {
-            if (_window.Count == 0)
+            AudioChunk chunk;
+            double sessionSeconds;
+
+            // Copy the window out before transcribing, so the capture thread can keep appending
+            // during a pass that takes longer than the interval between buffers.
+            lock (_windowLock)
             {
-                return null;
+                if (_window.Count == 0)
+                {
+                    return null;
+                }
+
+                var padded = new float[(int)(WindowSeconds * _sampleRate)];
+                var count = Math.Min(_window.Count, padded.Length);
+                _window.CopyTo(0, padded, 0, count);
+
+                chunk = new AudioChunk(padded, _windowStartSeconds, count / (double)_sampleRate);
+                sessionSeconds = _sessionSeconds;
             }
 
-            var padded = new float[(int)(WindowSeconds * _sampleRate)];
-            var count = Math.Min(_window.Count, padded.Length);
-            _window.CopyTo(0, padded, 0, count);
-
-            var chunk = new AudioChunk(padded, _windowStartSeconds, count / (double)_sampleRate);
             var segments = await _transcriber
                 .TranscribeChunkAsync(chunk, cancellationToken)
                 .ConfigureAwait(false);
 
             var settledBefore = commitEverything
                 ? double.MaxValue
-                : _sessionSeconds - CommitAfterSeconds;
+                : sessionSeconds - CommitAfterSeconds;
 
             var provisional = new List<string>();
 

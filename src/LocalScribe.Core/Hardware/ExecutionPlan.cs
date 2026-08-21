@@ -42,7 +42,7 @@ public enum WorkloadMode
 /// <param name="ExecutionProvider">
 /// The ONNX Runtime execution provider name to register, or <c>null</c> for the built-in CPU provider.
 /// </param>
-/// <param name="Reason">Plain-language justification, surfaced in the doctor tool and the app's status panel.</param>
+/// <param name="Reason">Plain-language justification, surfaced in the app's setup and status panels.</param>
 public sealed record StagePlan(ComputeDevice Device, string? ExecutionProvider, string Reason);
 
 /// <summary>
@@ -78,7 +78,7 @@ public sealed record ExecutionPlan
 
     /// <summary>
     /// When true, ONNX Runtime is told to throw rather than quietly fall back to the CPU.
-    /// Used by the doctor tool to prove the NPU is real; left off in the app so a driver
+    /// Used by setup to prove the NPU is real; left off during transcription so a driver
     /// problem degrades instead of crashing.
     /// </summary>
     public bool StrictProviderCheck { get; init; }

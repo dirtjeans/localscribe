@@ -19,8 +19,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private ExecutionPlan? _plan;
     private DeviceCapabilities? _capabilities;
     private CancellationTokenSource? _cancellation;
+    private CancellationTokenSource? _liveCancellation;
     private MicrophoneCapture? _microphone;
     private LiveTranscriptionSession? _liveSession;
+
+    // The session borrows the transcriber rather than owning it, matching TranscriptionPipeline.
+    // Holding it here is what lets stopping a recording release the ONNX sessions it opened.
+    private ITranscriber? _liveTranscriber;
 
     private string _status = "Starting up…";
     private string _hardwareSummary = string.Empty;
@@ -33,7 +38,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel(string? modelRoot = null)
     {
         _modelRoot = modelRoot ?? Path.Combine(AppContext.BaseDirectory, "models");
+        Setup = new SetupViewModel(_modelRoot);
     }
+
+    /// <summary>
+    /// What this machine is missing and how to get it. Owned here rather than by the window so
+    /// the probe runs once and transcription reads the same answer setup reported.
+    /// </summary>
+    public SetupViewModel Setup { get; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -97,18 +109,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Status = "Checking hardware…";
 
-        var capabilities = await Task.Run(() => DeviceProbe.Probe(_modelRoot));
+        await Setup.RefreshAsync();
 
-        using var foundry = new FoundryLocalClient();
-        capabilities = capabilities with { FoundryLocalPresent = await foundry.IsAvailableAsync() };
+        _capabilities = Setup.Capabilities;
+        _plan = Setup.Plan;
 
-        _capabilities = capabilities;
-        _plan = AcceleratorPlanner.Plan(capabilities);
+        HardwareSummary = _plan?.Summary ?? "Could not read this machine's hardware.";
 
-        HardwareSummary = _plan.Summary;
-        Status = _plan.Warnings.Count == 0
+        Status = Setup.CanTranscribe
             ? "Ready."
-            : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
+            : "Setup needed before LocalScribe can transcribe.";
     }
 
     /// <summary>Transcribes a file from disk.</summary>
@@ -131,7 +141,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             var audio = await Task.Run(() => AudioFileLoader.Load(path), _cancellation.Token);
 
             using var transcriber = OpenTranscriber(_plan);
-            var pipeline = new TranscriptionPipeline(transcriber, BuildRefiner());
+
+            // The refiner borrows the client, so the client has to outlive the run and be closed
+            // by whoever opened it. It holds an HttpClient, which a per-file leak does notice.
+            using FoundryLocalClient? languageModel = _capabilities?.FoundryLocalPresent == true
+                ? new FoundryLocalClient(endpoint: Setup.FoundryEndpoint)
+                : null;
+
+            var refiner = languageModel is null ? null : new TranscriptRefiner(languageModel);
+            var pipeline = new TranscriptionPipeline(transcriber, refiner);
 
             Status = $"Transcribing with {transcriber.Description}…";
 
@@ -183,9 +201,22 @@ public sealed class MainViewModel : INotifyPropertyChanged
             PerformanceProfile.Considerate,
             WorkloadMode.Live);
 
-        var transcriber = OpenTranscriber(livePlan);
+        ITranscriber transcriber;
+        try
+        {
+            transcriber = OpenTranscriber(livePlan);
+        }
+        catch (Exception exception)
+        {
+            // Loading throws when no model has been downloaded yet, which is the state every
+            // machine starts in. Letting it escape an async void handler would close the app.
+            Status = $"Could not start listening: {exception.Message}";
+            return Task.CompletedTask;
+        }
+
+        _liveTranscriber = transcriber;
         _liveSession = new LiveTranscriptionSession(transcriber);
-        _cancellation = new CancellationTokenSource();
+        _liveCancellation = new CancellationTokenSource();
 
         _microphone = new MicrophoneCapture();
         _microphone.SamplesAvailable += OnSamplesAvailable;
@@ -216,20 +247,31 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         await _liveSession.DisposeAsync();
         _liveSession = null;
+
+        _liveTranscriber?.Dispose();
+        _liveTranscriber = null;
+
+        // Cleared before disposal so an in-flight capture callback reads null rather than a
+        // disposed source.
+        var cancellation = _liveCancellation;
+        _liveCancellation = null;
+        cancellation?.Dispose();
+
         Status = "Stopped.";
     }
 
     private async void OnSamplesAvailable(float[] samples)
     {
         var session = _liveSession;
-        if (session is null)
+        var cancellation = _liveCancellation;
+        if (session is null || cancellation is null)
         {
             return;
         }
 
         try
         {
-            var update = await session.PushAsync(samples, _cancellation?.Token ?? default);
+            var update = await session.PushAsync(samples, cancellation.Token);
             if (update is not null)
             {
                 ProvisionalText = update.Text;
@@ -252,11 +294,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var directory = Path.Combine(_modelRoot, DeviceProbe.AssetFolderFor(family), plan.WhisperModel);
         return WhisperOnnxTranscriber.Load(directory, plan);
     }
-
-    private TranscriptRefiner? BuildRefiner() =>
-        _capabilities?.FoundryLocalPresent == true
-            ? new TranscriptRefiner(new FoundryLocalClient())
-            : null;
 
     private static string Format(TranscriptionResult result)
     {

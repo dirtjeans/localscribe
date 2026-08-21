@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Provisioning;
 using LocalScribe.Core.Refinement;
@@ -461,5 +463,155 @@ public sealed class ProvisioningPlanTests
             c => Assert.True(
                 c.CanInstallAutomatically || !string.IsNullOrWhiteSpace(c.ManualInstructions),
                 $"{c.Id} is missing but offers neither an installer nor instructions."));
+    }
+}
+
+/// <summary>Answers every request with a canned response, so lookups can be tested offline.</summary>
+internal sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
+    : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(respond(request));
+}
+
+/// <summary>
+/// A repository that is absent and a network that is unreachable produce the same empty file
+/// list, but the person running setup needs entirely different advice for each. These tests pin
+/// that distinction, because collapsing it is what turns a flaky connection into a bug report
+/// about model names.
+/// </summary>
+public sealed class RepositoryLookupTests
+{
+    private static HuggingFaceCatalog CatalogReturning(Func<HttpRequestMessage, HttpResponseMessage> respond) =>
+        new(new HttpClient(new StubHandler(respond)));
+
+    private static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    [Fact]
+    public async Task AListedRepositoryReportsItsFiles()
+    {
+        var catalog = CatalogReturning(_ => Json(
+            """{"siblings":[{"rfilename":"vocab.json"},{"rfilename":"encoder.onnx"}]}"""));
+
+        var contents = await catalog.LookUpAsync("qualcomm/Whisper-Base-En");
+
+        Assert.Equal(RepositoryLookup.Found, contents.Outcome);
+        Assert.Equal(["vocab.json", "encoder.onnx"], contents.Files);
+    }
+
+    [Fact]
+    public async Task AMissingRepositoryIsNotFound()
+    {
+        var catalog = CatalogReturning(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var contents = await catalog.LookUpAsync("qualcomm/Whisper-Invented");
+
+        Assert.Equal(RepositoryLookup.NotFound, contents.Outcome);
+    }
+
+    [Fact]
+    public async Task AGatedRepositoryIsNotFoundRatherThanUnreachable()
+    {
+        // 401 means Hugging Face answered. The connection is fine; this build is not ours to take.
+        var catalog = CatalogReturning(_ => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+
+        var contents = await catalog.LookUpAsync("qualcomm/Whisper-Gated");
+
+        Assert.Equal(RepositoryLookup.NotFound, contents.Outcome);
+    }
+
+    [Fact]
+    public async Task ARefusedConnectionIsUnreachable()
+    {
+        var catalog = CatalogReturning(_ => throw new HttpRequestException("connection refused"));
+
+        var contents = await catalog.LookUpAsync("qualcomm/Whisper-Base-En");
+
+        Assert.Equal(RepositoryLookup.Unreachable, contents.Outcome);
+    }
+
+    [Fact]
+    public async Task AProxyErrorPageIsUnreachableRatherThanAnEmptyRepository()
+    {
+        // A captive portal or corporate proxy answers 200 with HTML. Reading that as an empty
+        // repository is exactly the misdiagnosis this separation exists to prevent.
+        var catalog = CatalogReturning(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("<html>Access denied</html>", Encoding.UTF8, "application/json"),
+        });
+
+        var contents = await catalog.LookUpAsync("qualcomm/Whisper-Base-En");
+
+        Assert.Equal(RepositoryLookup.Unreachable, contents.Outcome);
+    }
+
+    [Fact]
+    public async Task CancellingSetupDoesNotLookLikeANetworkFailure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        var catalog = CatalogReturning(_ => Json("""{"siblings":[]}"""));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => catalog.LookUpAsync("qualcomm/Whisper-Base-En", cancellation.Token));
+    }
+}
+
+/// <summary>
+/// The installer walks a preference list, so what it says after exhausting it is the only
+/// diagnosis most people will ever read.
+/// </summary>
+public sealed class WhisperModelInstallerMessageTests
+{
+    private static WhisperModelInstaller InstallerAgainst(
+        Func<HttpRequestMessage, HttpResponseMessage> respond) =>
+        new(new HuggingFaceCatalog(new HttpClient(new StubHandler(respond))));
+
+    [Fact]
+    public async Task AnUnreachableNetworkBlamesTheConnectionRatherThanTheModel()
+    {
+        using var directory = new TemporaryDirectory();
+        var installer = InstallerAgainst(_ => throw new HttpRequestException("no route to host"));
+
+        var result = await installer.EnsureInstalledAsync(directory.Path, "base.en", "cpu");
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("internet connection", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("not found", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task GenuinelyAbsentRepositoriesStillReportWhatWasTried()
+    {
+        using var directory = new TemporaryDirectory();
+        var installer = InstallerAgainst(_ => new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var result = await installer.EnsureInstalledAsync(directory.Path, "base.en", "cpu");
+
+        Assert.False(result.Succeeded);
+        Assert.Contains("no such repository", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("internet connection", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task OneReachableRepositoryStopsTheConnectionDiagnosis()
+    {
+        using var directory = new TemporaryDirectory();
+
+        // First lookup dies on the network, second answers. The connection is evidently working,
+        // so the failure is about the catalogue and must not be reported as an outage.
+        var call = 0;
+        var installer = InstallerAgainst(_ => ++call == 1
+            ? throw new HttpRequestException("transient")
+            : new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        var result = await installer.EnsureInstalledAsync(directory.Path, "base.en", "cpu");
+
+        Assert.False(result.Succeeded);
+        Assert.DoesNotContain("internet connection", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 }

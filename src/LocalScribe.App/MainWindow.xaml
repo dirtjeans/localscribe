@@ -10,53 +10,51 @@
     <Grid Padding="24" RowSpacing="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Where the work is running. Shown up front, because it is the thing people doubt. -->
-        <Border
-            Grid.Row="0"
-            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-            BorderThickness="1"
-            CornerRadius="8"
-            Padding="16,12">
-            <StackPanel Spacing="4">
-                <TextBlock
-                    Text="Hardware"
-                    Style="{ThemeResource CaptionTextBlockStyle}"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBlock
-                    x:Name="HardwareText"
-                    Text="Checking…"
-                    Style="{ThemeResource BodyStrongTextBlockStyle}"
-                    TextWrapping="Wrap" />
+        <!--
+            Actions, grouped by what they do rather than lined up as one undifferentiated row.
+            Starting work and stopping it are different kinds of act, and the glossary is a
+            setting rather than an action on the transcript, so it sits apart from both.
+        -->
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                <!-- The two ways to begin. -->
+                <Button x:Name="OpenFileButton" Click="OnOpenFile">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                        <TextBlock Text="Transcribe a file" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="RecordButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon x:Name="RecordIcon" Glyph="&#xE720;" FontSize="16" />
+                        <TextBlock x:Name="RecordLabel" Text="Start listening" />
+                    </StackPanel>
+                </Button>
+
+                <Border
+                    Width="1"
+                    Margin="8,4"
+                    Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+
+                <!-- Acts on work already running, which is why it is on the far side of the rule. -->
+                <Button x:Name="CancelButton" Click="OnCancel" IsEnabled="False" Content="Cancel" />
             </StackPanel>
-        </Border>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12">
-            <Button x:Name="OpenFileButton" Click="OnOpenFile">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE8E5;" FontSize="16" />
-                    <TextBlock Text="Transcribe a file" />
-                </StackPanel>
-            </Button>
+            <Button Grid.Column="2" Content="Glossary" Click="OnEditGlossary" />
+        </Grid>
 
-            <Button x:Name="RecordButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon x:Name="RecordIcon" Glyph="&#xE720;" FontSize="16" />
-                    <TextBlock x:Name="RecordLabel" Text="Start listening" />
-                </StackPanel>
-            </Button>
-
-            <Button x:Name="CancelButton" Click="OnCancel" IsEnabled="False" Content="Cancel" />
-
-            <Button Content="Glossary" Click="OnEditGlossary" />
-        </StackPanel>
-
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="8">
                 <TextBlock
                     x:Name="TranscriptText"
@@ -79,13 +77,47 @@
             </StackPanel>
         </ScrollViewer>
 
-        <StackPanel Grid.Row="3" Spacing="8">
-            <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />
-            <TextBlock
-                x:Name="StatusText"
-                Text="Starting up…"
-                Style="{ThemeResource CaptionTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
+        <Grid Grid.Row="2" RowSpacing="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <ProgressBar x:Name="ProgressBarControl" Grid.Row="0" Value="0" Maximum="1" />
+
+            <Grid Grid.Row="1" ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock
+                    x:Name="StatusText"
+                    Grid.Column="0"
+                    Text="Starting up…"
+                    TextWrapping="Wrap"
+                    Style="{ThemeResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                <!--
+                    Where the work is actually running. This used to head the window, on the
+                    reasoning that it is the thing people doubt. It is also the thing most people
+                    never wonder about, and leading with it made the first screen read like a
+                    diagnostic report. Demoted to the corner: still on screen, no longer the
+                    headline, and trimmed to one line with the full plan on hover.
+                -->
+                <TextBlock
+                    x:Name="HardwareText"
+                    Grid.Column="1"
+                    Text="Checking…"
+                    MaxWidth="320"
+                    TextWrapping="NoWrap"
+                    TextTrimming="CharacterEllipsis"
+                    TextAlignment="Right"
+                    HorizontalAlignment="Right"
+                    Style="{ThemeResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+            </Grid>
+        </Grid>
     </Grid>
 </Window>

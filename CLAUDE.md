@@ -8,16 +8,16 @@ run, and what is most likely to be broken. This file is the short version.
 
 ## The state that matters
 
-The core library and its tests are verified. `LocalScribe.App` has never been compiled, and
-`LocalScribe.Onnx` has compiled but never executed a model — both were written in a Linux cloud
-container with no Windows toolchain and no NPU.
+The core library and its tests are verified, and `LocalScribe.App` compiles for win-arm64 in
+CI. Nothing has ever *run* on Snapdragon hardware: `LocalScribe.Onnx` has never executed a
+model, and the app has never been launched. Compiling is not evidence of working.
 
 ## Build and test
 
 ```powershell
 dotnet build -c Release -r win-arm64      # arm64 is required, see below
 dotnet test                                # core only; no hardware needed
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
+dotnet build src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm64
 ```
 
 `LocalScribe.App` is not in `LocalScribe.sln`, because WinUI cannot restore on Linux and its
@@ -34,6 +34,8 @@ Do not change these without reading the reasoning in `docs/handoff.md`:
 - **The decoder stays on the CPU** unless the NPU took the encoder. Dispatch overhead per decode
   step outweighs the compute saved.
 - **Never hard-code the Foundry Local port.** It is dynamic; ask `foundry service status`.
+  `SetupViewModel` discovers it once and every client is built from that. `FoundryLocalClient`'s
+  `FallbackPort` is a last resort, not a default.
 - **Never rename downloaded model files.** Large ONNX graphs reference their weight sidecars by
   name. `localscribe-model.json` records the roles instead.
 - **Never auto-install the Hexagon driver.** Signed kernel driver, account wall. Report it.

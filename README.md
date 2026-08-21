@@ -27,20 +27,18 @@ three while the machine stutters.
 
 ```powershell
 # Build native arm64. This is not optional: under x64 emulation the NPU is unreachable.
-dotnet build -c Release -r win-arm64
+dotnet build src\LocalScribe.App\LocalScribe.App.csproj -c Release -r win-arm64
 
-# See what your machine has, and what is missing
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
-
-# Download the missing models and install the local inference engine
-dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --install
+# Run it
+dotnet run --project src\LocalScribe.App -c Release -r win-arm64
 ```
 
-Without `--install` the doctor changes nothing and downloads nothing — it only reports. With it,
-it fetches Whisper weights matched to your chipset and installs Foundry Local through winget.
+The first launch checks the machine and, if anything is missing, opens setup before you can
+transcribe. Setup lists what it found, downloads Whisper weights matched to your chipset, and
+installs Foundry Local through winget. Nothing is downloaded until you ask for it.
 
 One thing it deliberately will not do is install the Hexagon NPU driver. That is a signed kernel
-driver behind a Qualcomm account, so it needs you; the doctor names it and links you to it.
+driver behind a Qualcomm account, so it needs you; setup names it and tells you where to get it.
 Everything else on the list it handles.
 
 Setup reaches the network, to Hugging Face and Microsoft. Audio never does.
@@ -51,7 +49,6 @@ Setup reaches the network, to Hugging Face and Microsoft. Audio never does.
 | --- | --- |
 | `LocalScribe.Core` | Hardware policy, audio maths, stitching, orchestration. No dependencies, runs anywhere. |
 | `LocalScribe.Onnx` | ONNX Runtime sessions, execution-provider wiring, hardware probing. |
-| `LocalScribe.Doctor` | Console tool that reports what the machine can do and what the app will do with it. |
 | `LocalScribe.App` | The WinUI 3 window. |
 
 The split is deliberate. Everything that involves a decision lives in `Core`, which has no
@@ -90,13 +87,14 @@ The rules it encodes:
 
 ## Status
 
-The core library and its 135 tests are verified. The doctor tool runs.
+The core library and its 144 tests are verified, and the app compiles for win-arm64 in CI.
 
 **The WinUI app and the ONNX layer have not been run on real Snapdragon hardware.** They were
 written on Linux, where Windows targets cannot be compiled and no NPU exists. Expect to fix
 things on first run. The most likely rough edge is the decoder's input signature: exports differ
 between Hugging Face Optimum and Qualcomm AI Hub, and the binding here discovers input names but
-assumes a shape contract. The doctor prints the discovered signature so a mismatch is obvious.
+assumes a shape contract. A mismatch throws naming every input the export declares, so the
+binding it wants is legible from the error.
 
 ## Known limitations
 
