@@ -8,7 +8,13 @@
     mc:Ignorable="d"
     Title="LocalScribe">
 
-    <Grid Padding="24" RowSpacing="16">
+    <Grid Padding="24" RowSpacing="16" AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Modifiers="Control" Key="F" Invoked="OnFindAccelerator" />
+            <KeyboardAccelerator Key="Escape" Invoked="OnEscapeAccelerator" />
+            <KeyboardAccelerator Modifiers="Control" Key="Space" Invoked="OnPlayAccelerator" />
+        </Grid.KeyboardAccelerators>
+
         <Grid.Resources>
             <Storyboard x:Name="PulseStoryboard" RepeatBehavior="Forever" AutoReverse="True">
                 <DoubleAnimation
@@ -25,6 +31,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -219,35 +226,83 @@
                 ShowsScrollingPlaceholders="False">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:ParagraphView">
-                        <Grid ColumnSpacing="12" Padding="0,6">
+                        <Grid ColumnSpacing="16" Padding="0,10">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="56" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
 
+                            <!--
+                                The timestamp sits in a fixed gutter so the text starts on the
+                                same line down the whole transcript. Ragged left margins are what
+                                make a transcript tiring to read.
+                            -->
                             <TextBlock
                                 Grid.Column="0"
                                 Text="{x:Bind Clock}"
                                 FontFamily="Consolas"
+                                FontSize="12"
                                 VerticalAlignment="Top"
-                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                                Style="{ThemeResource CaptionTextBlockStyle}" />
+                                Margin="0,3,0,0"
+                                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
-                            <StackPanel Grid.Column="1" Spacing="2">
+                            <StackPanel Grid.Column="1" Spacing="3">
                                 <TextBlock
                                     Text="{x:Bind Speaker}"
                                     Visibility="{x:Bind HasSpeaker}"
-                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
-                                    Style="{ThemeResource CaptionTextBlockStyle}" />
+                                    FontWeight="SemiBold"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+
+                                <!--
+                                    Held to a readable measure rather than the width of the
+                                    window. Past about ninety characters the eye loses the start
+                                    of the next line, which on a wall of speech is fatal.
+                                -->
+                                <!--
+                                    Not selectable, deliberately. A TextBlock with text
+                                    selection turned on consumes the pointer, and inside a list
+                                    item that means the item is never clicked and never tapped —
+                                    which is exactly why clicking a line played nothing while
+                                    the play button worked. Clicking the words to hear them is
+                                    worth more here than selecting them; Copy takes the whole
+                                    transcript, and Save writes it out.
+                                -->
                                 <TextBlock
                                     Text="{x:Bind Text}"
                                     TextWrapping="Wrap"
+                                    MaxWidth="760"
+                                    HorizontalAlignment="Left"
+                                    LineHeight="24"
                                     Style="{ThemeResource BodyTextBlockStyle}" />
                             </StackPanel>
                         </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
+
+            <StackPanel
+                x:Name="EmptyState"
+                Grid.Row="2"
+                VerticalAlignment="Center"
+                HorizontalAlignment="Center"
+                MaxWidth="420"
+                Spacing="10">
+                <FontIcon
+                    Glyph="&#xE8D6;"
+                    FontSize="32"
+                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                <TextBlock
+                    Text="Nothing transcribed yet"
+                    HorizontalAlignment="Center"
+                    Style="{ThemeResource SubtitleTextBlockStyle}" />
+                <TextBlock
+                    Text="Start listening to transcribe as you speak, or drop an audio or video file here. Everything runs on this machine."
+                    TextWrapping="Wrap"
+                    TextAlignment="Center"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Style="{ThemeResource BodyTextBlockStyle}" />
+            </StackPanel>
 
             <!-- Words still moving. Dimmed, because showing them as settled is a small lie. -->
             <TextBlock
@@ -264,7 +319,7 @@
 
         <Border
             x:Name="TransportBar"
-            Grid.Row="3"
+            Grid.Row="4"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="1"
@@ -284,18 +339,47 @@
                 </Button>
 
                 <!--
-                    Dragging this moves the highlight in the transcript, playing or not. The
-                    transcript and the recording are two views of one thing, so moving either
-                    should move the other.
+                    The recording drawn as its own shape. Where someone spoke and where they
+                    stopped is visible without reading anything, which is what makes it worth
+                    scrubbing along: the target is usually "just after that gap" rather than
+                    "four minutes eleven". Dragging moves the transcript highlight whether or
+                    not anything is playing — the two are one thing seen twice.
                 -->
-                <Slider
-                    x:Name="Scrubber"
+                <Grid
+                    x:Name="Waveform"
                     Grid.Column="1"
-                    Minimum="0"
-                    Maximum="100"
-                    StepFrequency="0.05"
-                    VerticalAlignment="Center"
-                    ValueChanged="OnScrub" />
+                    Height="48"
+                    Background="Transparent"
+                    SizeChanged="OnWaveformSizeChanged"
+                    PointerPressed="OnWaveformPressed"
+                    PointerMoved="OnWaveformMoved"
+                    PointerReleased="OnWaveformReleased"
+                    PointerCaptureLost="OnWaveformReleased"
+                    Tapped="OnWaveformTapped">
+
+                    <!--
+                        The drawing is not the control. Shapes are hit-testable by default, so
+                        without this the pointer lands on a polygon and the grid underneath —
+                        the thing that actually handles scrubbing — never hears about it.
+                    -->
+                    <Polygon
+                        x:Name="WaveformShape"
+                        IsHitTestVisible="False"
+                        Fill="{ThemeResource TextFillColorDisabledBrush}" />
+
+                    <!-- The same shape again, clipped to what has played. -->
+                    <Polygon
+                        x:Name="WaveformPlayed"
+                        IsHitTestVisible="False"
+                        Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+
+                    <Rectangle
+                        x:Name="Playhead"
+                        Width="2"
+                        IsHitTestVisible="False"
+                        HorizontalAlignment="Left"
+                        Fill="{ThemeResource TextFillColorPrimaryBrush}" />
+                </Grid>
 
                 <TextBlock
                     x:Name="TransportClock"
@@ -307,7 +391,7 @@
             </Grid>
         </Border>
 
-        <StackPanel Grid.Row="4" Spacing="8">
+        <StackPanel Grid.Row="5" Spacing="8">
             <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />
             <TextBlock
                 x:Name="StatusText"

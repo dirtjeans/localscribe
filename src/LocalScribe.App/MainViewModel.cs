@@ -82,6 +82,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Plays back whatever was last transcribed, so a line can be clicked and heard.</summary>
     public TranscriptPlayer Player { get; } = new();
 
+    /// <summary>
+    /// The loaded audio reduced to peaks for drawing. Computed here because the view model owns
+    /// the samples; the window owns only how wide to draw them.
+    /// </summary>
+    public float[] WaveformPeaks(int buckets) => Player.Peaks(buckets);
+
     /// <summary>The transcript grouped into paragraphs, which is what the window shows.</summary>
     public IReadOnlyList<TranscriptParagraph> Paragraphs { get; private set; } = [];
 

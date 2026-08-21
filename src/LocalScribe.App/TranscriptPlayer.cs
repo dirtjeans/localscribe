@@ -44,6 +44,18 @@ public sealed class TranscriptPlayer : IDisposable
     /// <summary>True when there is anything to play.</summary>
     public bool HasAudio => _samples.Length > 0;
 
+    /// <summary>
+    /// The loaded audio reduced to peaks for drawing. Taken under the lock, since the samples
+    /// can be replaced by a new recording while the window is mid-redraw.
+    /// </summary>
+    public float[] Peaks(int buckets)
+    {
+        lock (_lock)
+        {
+            return WaveformPeaks.Compute(_samples, buckets);
+        }
+    }
+
     /// <summary>Hands the player the audio a transcript describes.</summary>
     public void Load(PcmAudio audio)
     {

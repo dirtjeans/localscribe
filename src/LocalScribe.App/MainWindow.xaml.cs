@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
@@ -20,12 +21,14 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueue _dispatcher;
     private IReadOnlyList<ParagraphView> _paragraphs = [];
 
-    /// <summary>
-    /// True while the scrubber is being moved by playback rather than by the user. The same
-    /// slider carries both, and treating a playback update as a seek would restart the audio
-    /// ten times a second.
-    /// </summary>
-    private bool _suppressScrub;
+    /// <summary>Peaks the waveform is drawn from. Finer than the eye at any sane width.</summary>
+    private const int PeakCount = 480;
+
+    private string? _pendingFile;
+    private float[] _peaks = [];
+    private double _peaksFor = -1;
+    private double _position;
+    private bool _scrubbing;
 
     public MainWindow()
     {
@@ -54,6 +57,64 @@ public sealed partial class MainWindow : Window
     {
         await _viewModel.InitialiseAsync();
         await _viewModel.PreloadAsync();
+
+        // Anything handed to the window before the model was ready waited for this moment.
+        if (_pendingFile is { } path)
+        {
+            _pendingFile = null;
+            await _viewModel.TranscribeFileAsync(path);
+        }
+    }
+
+    /// <summary>
+    /// Transcribes a file as soon as the app is ready for it. Called for a file named on the
+    /// command line or dropped on the window, both of which can arrive before the hardware has
+    /// even been probed.
+    /// </summary>
+    public void OpenWhenReady(string path)
+    {
+        if (_viewModel.IsModelReady)
+        {
+            _ = _viewModel.TranscribeFileAsync(path);
+            return;
+        }
+
+        _pendingFile = path;
+    }
+
+    /// <summary>
+    /// Dropping a recording on the window is the shortest path from a file to a transcript, and
+    /// the one that does not involve a picker.
+    /// </summary>
+    private void OnDragOver(object sender, DragEventArgs e)
+    {
+        e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
+        e.DragUIOverride.Caption = "Transcribe this";
+        e.DragUIOverride.IsGlyphVisible = true;
+    }
+
+    private async void OnDrop(object sender, DragEventArgs e)
+    {
+        if (!e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+        {
+            return;
+        }
+
+        var items = await e.DataView.GetStorageItemsAsync();
+        var file = items.OfType<Windows.Storage.StorageFile>().FirstOrDefault();
+
+        if (file is null)
+        {
+            return;
+        }
+
+        if (!AudioFileLoader.SupportedExtensions.Contains(Path.GetExtension(file.Name), StringComparer.OrdinalIgnoreCase))
+        {
+            StatusText.Text = $"{file.Name} is not an audio or video file LocalScribe can read.";
+            return;
+        }
+
+        await _viewModel.TranscribeFileAsync(file.Path);
     }
 
     /// <summary>
@@ -219,25 +280,178 @@ public sealed partial class MainWindow : Window
         if (!player.HasAudio || player.DurationSeconds <= 0)
         {
             TransportBar.Visibility = Visibility.Collapsed;
+            _peaks = [];
+            _peaksFor = -1;
             return;
         }
 
         TransportBar.Visibility = Visibility.Visible;
-        Scrubber.Maximum = player.DurationSeconds;
-        UpdateClock(Scrubber.Value);
+
+        // Recomputed only when the audio changes. It is a pass over every sample in the
+        // recording, which is not something to do on a redraw.
+        if (Math.Abs(_peaksFor - player.DurationSeconds) > 1e-6)
+        {
+            _peaks = _viewModel.WaveformPeaks(PeakCount);
+            _peaksFor = player.DurationSeconds;
+        }
+
+        DrawWaveform();
     }
 
-    private void OnParagraphClick(object sender, ItemClickEventArgs e)
+    /// <summary>
+    /// Builds the waveform as one filled outline rather than hundreds of bars: a polygon across
+    /// the peaks and back along their mirror. One shape for the layout engine to handle, instead
+    /// of several hundred on every resize.
+    /// </summary>
+    private void DrawWaveform()
     {
-        if (e.ClickedItem is not ParagraphView paragraph)
+        var width = Waveform.ActualWidth;
+        var height = Waveform.ActualHeight;
+
+        if (_peaks.Length < 2 || width <= 1 || height <= 1)
         {
             return;
         }
 
+        var middle = height / 2;
+        var points = new PointCollection();
+
+        for (var i = 0; i < _peaks.Length; i++)
+        {
+            points.Add(new Windows.Foundation.Point(X(i, width), middle - Amplitude(i, middle)));
+        }
+
+        for (var i = _peaks.Length - 1; i >= 0; i--)
+        {
+            points.Add(new Windows.Foundation.Point(X(i, width), middle + Amplitude(i, middle)));
+        }
+
+        WaveformShape.Points = points;
+
+        var played = new PointCollection();
+        foreach (var point in points)
+        {
+            played.Add(point);
+        }
+
+        WaveformPlayed.Points = played;
+
+        MovePlayhead(_position);
+    }
+
+    private double X(int index, double width) => index * width / (_peaks.Length - 1.0);
+
+    /// <summary>
+    /// A floor under every peak, so silence draws as a line rather than a gap. A waveform that
+    /// disappears reads as missing audio rather than as quiet.
+    /// </summary>
+    private double Amplitude(int index, double middle) =>
+        Math.Max(_peaks[index] * middle * 0.92, 1.0);
+
+    /// <summary>Shows how far playback has got, by clipping the accent copy to it.</summary>
+    private void MovePlayhead(double seconds)
+    {
+        var duration = _viewModel.Player.DurationSeconds;
+        var width = Waveform.ActualWidth;
+
+        if (duration <= 0 || width <= 1)
+        {
+            return;
+        }
+
+        var x = Math.Clamp(seconds / duration, 0, 1) * width;
+
+        WaveformPlayed.Clip = new RectangleGeometry
+        {
+            Rect = new Windows.Foundation.Rect(0, 0, x, Math.Max(1, Waveform.ActualHeight)),
+        };
+
+        Playhead.Margin = new Thickness(Math.Max(0, x - 1), 0, 0, 0);
+
+        TransportClock.Text =
+            $"{TranscriptFormatter.Clock(seconds)} / {TranscriptFormatter.Clock(duration)}";
+    }
+
+    private void OnWaveformSizeChanged(object sender, SizeChangedEventArgs e) => DrawWaveform();
+
+    /// <summary>
+    /// A plain click on the waveform. Kept alongside the pointer handlers because a tap is a
+    /// gesture the framework recognises whatever the pointer events did, and seeking by click is
+    /// the thing most people will actually do with a waveform.
+    /// </summary>
+    private void OnWaveformTapped(object sender, TappedRoutedEventArgs e)
+    {
+        ScrubTo(e.GetPosition(Waveform).X, play: true);
+        e.Handled = true;
+    }
+
+    private void OnWaveformPressed(object sender, PointerRoutedEventArgs e)
+    {
+        _scrubbing = true;
+        Waveform.CapturePointer(e.Pointer);
+        ScrubTo(e.GetCurrentPoint(Waveform).Position.X, play: false);
+    }
+
+    private void OnWaveformMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (_scrubbing)
+        {
+            ScrubTo(e.GetCurrentPoint(Waveform).Position.X, play: false);
+        }
+    }
+
+    /// <summary>
+    /// Releasing plays from where the pointer ended up. Dragging alone makes no sound, so the
+    /// waveform can be used to read the transcript as well as to listen to it.
+    /// </summary>
+    private void OnWaveformReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_scrubbing)
+        {
+            return;
+        }
+
+        _scrubbing = false;
+        Waveform.ReleasePointerCapture(e.Pointer);
+
+        ScrubTo(e.GetCurrentPoint(Waveform).Position.X, play: true);
+    }
+
+    private void ScrubTo(double x, bool play)
+    {
+        var width = Waveform.ActualWidth;
+        var duration = _viewModel.Player.DurationSeconds;
+
+        if (width <= 1 || duration <= 0)
+        {
+            return;
+        }
+
+        var seconds = Math.Clamp(x / width, 0, 1) * duration;
+
+        _position = seconds;
+        MovePlayhead(seconds);
+        HighlightAt(seconds);
+
+        if (play || _viewModel.Player.IsPlaying)
+        {
+            StartPlayback(seconds);
+        }
+    }
+
+    private void StartPlayback(double seconds)
+    {
+        _viewModel.Player.PlayFrom(seconds);
+        StopPlaybackButton.Visibility = Visibility.Visible;
+        PlayIcon.Glyph = "\uE769";
+    }
+
+    private void PlayParagraph(ParagraphView paragraph)
+    {
         TranscriptList.SelectedItem = paragraph;
 
         // Said rather than done silently. Clicking a line and getting nothing is the failure
-        // this whole feature is supposed to avoid.
+        // this whole feature exists to avoid.
         if (!_viewModel.Player.HasAudio)
         {
             StatusText.Text = "No audio is loaded for this transcript, so there is nothing to play.";
@@ -247,24 +461,27 @@ public sealed partial class MainWindow : Window
         Seek(paragraph.StartSeconds, play: true);
     }
 
+    private void OnParagraphClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is ParagraphView paragraph)
+        {
+            PlayParagraph(paragraph);
+        }
+    }
+
     /// <summary>
     /// Moves both views at once. The transcript and the recording are the same thing seen two
     /// ways, so a position set from either has to land in both.
     /// </summary>
     private void Seek(double seconds, bool play)
     {
-        _suppressScrub = true;
-        Scrubber.Value = Math.Clamp(seconds, 0, Scrubber.Maximum);
-        _suppressScrub = false;
-
-        UpdateClock(seconds);
+        _position = seconds;
+        MovePlayhead(seconds);
         HighlightAt(seconds);
 
         if (play)
         {
-            _viewModel.Player.PlayFrom(seconds);
-            StopPlaybackButton.Visibility = Visibility.Visible;
-            PlayIcon.Glyph = "";        // pause
+            StartPlayback(seconds);
         }
     }
 
@@ -278,30 +495,6 @@ public sealed partial class MainWindow : Window
         {
             TranscriptList.SelectedItem = playing;
             TranscriptList.ScrollIntoView(playing);
-        }
-    }
-
-    private void UpdateClock(double seconds) =>
-        TransportClock.Text =
-            $"{TranscriptFormatter.Clock(seconds)} / {TranscriptFormatter.Clock(_viewModel.Player.DurationSeconds)}";
-
-    /// <summary>
-    /// Scrubbing. Only acts on changes the user made: the same slider is moved by playback, and
-    /// treating that as a seek would restart the audio ten times a second.
-    /// </summary>
-    private void OnScrub(object sender, RangeBaseValueChangedEventArgs e)
-    {
-        if (_suppressScrub)
-        {
-            return;
-        }
-
-        UpdateClock(e.NewValue);
-        HighlightAt(e.NewValue);
-
-        if (_viewModel.Player.IsPlaying)
-        {
-            _viewModel.Player.PlayFrom(e.NewValue);
         }
     }
 
@@ -319,7 +512,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        Seek(Scrubber.Value, play: true);
+        Seek(_position, play: true);
     }
 
     private void OnPlaybackFailed(string message) =>
@@ -337,6 +530,47 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void OnSearchChanged(object sender, TextChangedEventArgs e) => ApplySearch();
 
+    /// <summary>
+    /// The empty state is only for an empty transcript, not for a search that found nothing —
+    /// "start listening or open a file" is unhelpful advice when the answer is to try another
+    /// word. The match count already says that.
+    /// </summary>
+    private void UpdateEmptyState(int showing)
+    {
+        var nothingAtAll = _paragraphs.Count == 0 && !_viewModel.IsRecording && !_viewModel.IsBusy;
+
+        EmptyState.Visibility = nothingAtAll ? Visibility.Visible : Visibility.Collapsed;
+        SearchBox.IsEnabled = _paragraphs.Count > 0;
+
+        _ = showing;
+    }
+
+    private void OnFindAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        SearchBox.Focus(FocusState.Programmatic);
+        SearchBox.SelectAll();
+        args.Handled = true;
+    }
+
+    private void OnEscapeAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (SearchBox.Text.Length > 0)
+        {
+            SearchBox.Text = string.Empty;
+            args.Handled = true;
+        }
+    }
+
+    /// <summary>
+    /// Control and space rather than space alone. The transcript is a list, and a list already
+    /// uses space for the thing under the cursor.
+    /// </summary>
+    private void OnPlayAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        OnPlayPause(sender, new RoutedEventArgs());
+        args.Handled = true;
+    }
+
     private void ApplySearch()
     {
         var query = SearchBox.Text.Trim();
@@ -345,6 +579,7 @@ public sealed partial class MainWindow : Window
         {
             TranscriptList.ItemsSource = _paragraphs;
             SearchCount.Text = string.Empty;
+            UpdateEmptyState(_paragraphs.Count);
             return;
         }
 
@@ -354,6 +589,7 @@ public sealed partial class MainWindow : Window
             .ToList();
 
         TranscriptList.ItemsSource = matches;
+        UpdateEmptyState(matches.Count);
         SearchCount.Text = matches.Count switch
         {
             0 => "no matches",
@@ -369,11 +605,15 @@ public sealed partial class MainWindow : Window
     private void OnPlaybackPosition(double seconds) =>
         _dispatcher.TryEnqueue(() =>
         {
-            _suppressScrub = true;
-            Scrubber.Value = Math.Clamp(seconds, 0, Scrubber.Maximum);
-            _suppressScrub = false;
+            // Ignored while dragging: the pointer is the authority then, and letting playback
+            // fight it makes the waveform jitter under the finger.
+            if (_scrubbing)
+            {
+                return;
+            }
 
-            UpdateClock(seconds);
+            _position = seconds;
+            MovePlayhead(seconds);
             HighlightAt(seconds);
         });
 
