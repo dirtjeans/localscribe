@@ -67,6 +67,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _busy;
     private bool _recording;
     private bool _preparing;
+    private bool _warming;
 
     public MainViewModel(string? modelRoot = null)
     {
@@ -74,6 +75,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// True while the model is loading at startup and nothing has asked for it yet.
+    /// <para>
+    /// Its own state rather than a flavour of <see cref="IsPreparing"/>. Preparing means the user
+    /// pressed record and must not speak; warming up means the app is getting itself ready and
+    /// the user can do as they please. Both wait for the same load, and telling someone to hold
+    /// still when they have not asked for anything is a different and worse message.
+    /// </para>
+    /// </summary>
+    public bool IsWarmingUp
+    {
+        get => _warming;
+        private set => Set(ref _warming, value);
+    }
 
     /// <summary>True once the model is loaded and a recording can start immediately.</summary>
     public bool IsModelReady
@@ -335,6 +351,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private set => Set(ref _preparing, value);
     }
 
+    /// <summary>
+    /// What is doing the cleanup, or null when nothing is. The glossary, the summary and the
+    /// punctuation repair all depend on this, and all three silently do nothing without it —
+    /// which is worth saying where the user is looking rather than leaving them to notice.
+    /// </summary>
+    public string? CleanupModel => _languageModel?.Description;
+
     /// <summary>Terms the cleanup model should spell correctly. Edited by the user in the UI.</summary>
     public List<string> Glossary { get; } = [];
 
@@ -581,7 +604,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             PerformanceProfile.Considerate,
             WorkloadMode.Live);
 
-        Status = "Warming up the model…";
+        IsWarmingUp = true;
+        Status = "Warming up…";
 
         try
         {
@@ -595,6 +619,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Not fatal. The model will be opened on demand, slowly, and the failure will be
             // reported then with the context of what the user was trying to do.
             Status = $"Ready, but the model could not be preloaded: {exception.Message}";
+        }
+        finally
+        {
+            IsWarmingUp = false;
         }
     }
 

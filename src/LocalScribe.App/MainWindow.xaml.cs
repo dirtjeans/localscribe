@@ -161,6 +161,7 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.IsRecording):
                 case nameof(MainViewModel.IsPreparing):
+                case nameof(MainViewModel.IsWarmingUp):
                     UpdateRecordButton();
                     break;
             }
@@ -190,6 +191,30 @@ public sealed partial class MainWindow : Window
                 "Wait — not recording yet",
                 "Loading the model. The microphone is off, so anything said now is lost rather "
                 + "than queued.",
+                pulse: false);
+            return;
+        }
+
+        // Getting ready on its own account rather than because anyone asked. Nothing is
+        // disabled: the glossary, the file picker and the window itself all work, and pressing
+        // record simply waits for the load already running rather than starting a second one.
+        if (_viewModel.IsWarmingUp)
+        {
+            StartButton.Visibility = Visibility.Visible;
+            StopButton.Visibility = Visibility.Collapsed;
+
+            StartLabel.Text = "Start listening";
+            StartIcon.Glyph = "";                // microphone
+            StartButton.IsEnabled = true;
+            OpenFileButton.IsEnabled = true;
+            ProgressBarControl.IsIndeterminate = true;
+
+            ShowCue(
+                WarmingBackground,
+                "Warming up",
+                "Loading the speech model — this takes a few seconds the first time. Set up your "
+                + "glossary meanwhile if you like; pressing record now will start as soon as it "
+                + "is ready.",
                 pulse: false);
             return;
         }
@@ -232,6 +257,14 @@ public sealed partial class MainWindow : Window
 
     private static readonly SolidColorBrush ListenBackground =
         new(Windows.UI.Color.FromArgb(255, 0x15, 0x80, 0x3D));   // green
+
+    /// <summary>
+    /// Slate, and deliberately quieter than the other two. Those carry instructions the user has
+    /// to act on — hold off, speak now — and shout accordingly. This one is the app explaining
+    /// itself, which is worth saying and not worth alarming anyone about.
+    /// </summary>
+    private static readonly SolidColorBrush WarmingBackground =
+        new(Windows.UI.Color.FromArgb(255, 0x3F, 0x4A, 0x5A));
 
     private void ShowCue(SolidColorBrush background, string title, string detail, bool pulse)
     {
@@ -1052,21 +1085,68 @@ public sealed partial class MainWindow : Window
         await _viewModel.FindSpeakersAsync(speakers);
     }
 
+    /// <summary>
+    /// Collects the terms the cleanup model should spell correctly: names, products, jargon.
+    /// <para>
+    /// This is the cheapest accuracy win available and no larger Whisper model substitutes for
+    /// it — the model has never heard of your colleagues or your product, and will keep guessing
+    /// at them however big it gets. It is also the least obvious feature in the app, so the
+    /// dialog explains itself rather than presenting an empty box.
+    /// </para>
+    /// </summary>
     private async void OnEditGlossary(object sender, RoutedEventArgs e)
     {
         var textBox = new TextBox
         {
             AcceptsReturn = true,
-            Height = 240,
+            Height = 200,
             Text = string.Join(Environment.NewLine, _viewModel.Glossary),
-            PlaceholderText = "One term per line, e.g. names, products, acronyms",
+            PlaceholderText = "One per line, e.g.\r\nSiobhan\r\nKubernetes\r\nLocalScribe",
         };
+
+        var explanation = new TextBlock
+        {
+            Text = "Whisper has never heard of your colleagues, your products or your acronyms, "
+                + "and guesses at them — usually the same way every time. Terms listed here are "
+                + "given to the cleanup model, which corrects them to your spelling wherever the "
+                + "transcript clearly meant them.",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.85,
+        };
+
+        var content = new StackPanel { Spacing = 12, Children = { explanation, textBox } };
+
+        // The part worth saying loudest: without a cleanup model this list does nothing at all,
+        // and neither do the summary or the punctuation repair.
+        if (_viewModel.CleanupModel is { } model)
+        {
+            content.Children.Add(new TextBlock
+            {
+                Text = $"Cleanup is running on {model}.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.7,
+                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+            });
+        }
+        else
+        {
+            content.Children.Add(new InfoBar
+            {
+                IsOpen = true,
+                IsClosable = false,
+                Severity = InfoBarSeverity.Warning,
+                Title = "No cleanup model is running",
+                Message = "The glossary has no effect until one is. Start GenieX, or run "
+                    + "'foundry service start' for Foundry Local. Transcription itself is "
+                    + "unaffected — only the corrections, summary and action items need it.",
+            });
+        }
 
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
             Title = "Glossary",
-            Content = textBox,
+            Content = content,
             PrimaryButtonText = "Save",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
