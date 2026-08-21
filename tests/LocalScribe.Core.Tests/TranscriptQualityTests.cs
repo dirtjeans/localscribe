@@ -104,4 +104,61 @@ public class TranscriptQualityTests
     [Fact]
     public void NothingToCompareAgainstIsNotAFailure() =>
         Assert.True(TranscriptQuality.SaysTheSameThing(string.Empty, "anything at all"));
+
+    // Both of the following are real replies from phi-3.5-mini-instruct-qnn-npu asked to
+    // punctuate the line below and told, in as many words, to keep every word and add no notes.
+    private const string RawWindow =
+        "okay i am going to test the transcription ability one more time lets see how well "
+        + "it works does it punctuate well i hope so";
+
+    [Fact]
+    public void CleanupThatDropsAClauseIsRefused()
+    {
+        // "let's see how well it works" is simply gone.
+        const string lost =
+            "Okay, I'm going to test the transcription ability one more time. "
+            + "Does it punctuate well? I hope so.";
+
+        Assert.False(TranscriptQuality.IsFaithfulCleanup(RawWindow, lost));
+    }
+
+    [Fact]
+    public void CleanupThatExplainsItselfIsRefused()
+    {
+        const string chatty =
+            "Okay, I am going to test the transcription ability one more time. Let's see how "
+            + "well it works. Does it punctuate well? I hope so. "
+            + "(Note: I've added a question mark at the end of the sentence to indicate it's a "
+            + "question, and capitalized the first letter of the sentence to follow standard "
+            + "punctuation and capitalization rules.)";
+
+        Assert.False(TranscriptQuality.IsFaithfulCleanup(RawWindow, chatty));
+    }
+
+    [Fact]
+    public void AGenuineCleanupIsAccepted()
+    {
+        const string good =
+            "Okay, I am going to test the transcription ability one more time. Let's see how "
+            + "well it works. Does it punctuate well? I hope so.";
+
+        Assert.True(TranscriptQuality.IsFaithfulCleanup(RawWindow, good));
+    }
+
+    /// <summary>Removing filler is the job, not a failure of it.</summary>
+    [Fact]
+    public void DroppingFillerIsStillFaithful()
+    {
+        Assert.True(TranscriptQuality.IsFaithfulCleanup(
+            "so um i think uh we should probably just ship it you know",
+            "So I think we should probably just ship it."));
+    }
+
+    [Fact]
+    public void AnEmptyReplyIsRefused() =>
+        Assert.False(TranscriptQuality.IsFaithfulCleanup(RawWindow, "   "));
+
+    [Fact]
+    public void AnEmptyWindowNeedsNoCheck() =>
+        Assert.True(TranscriptQuality.IsFaithfulCleanup("   ", "anything"));
 }

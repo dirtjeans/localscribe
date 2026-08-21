@@ -102,6 +102,124 @@ public static class TranscriptQuality
         return kept >= before.Count * minimumShared;
     }
 
+    /// <summary>
+    /// True when a cleaned-up window is a repair of the original rather than a rewrite of it.
+    /// <para>
+    /// Checked in both directions, because the two ways cleanup goes wrong are opposites and
+    /// only one of them is caught by asking whether the words survived. A small model asked to
+    /// punctuate a transcript will sometimes drop a clause it judged redundant — given
+    /// </para>
+    /// <code>
+    /// okay i am going to test the transcription ability one more time lets see how well it
+    /// works does it punctuate well i hope so
+    /// </code>
+    /// <para>one returned</para>
+    /// <code>
+    /// Okay, I'm going to test the transcription ability one more time. Does it punctuate well?
+    /// I hope so.
+    ///
+    /// (Note: I've added a question mark at the end of the sentence…)
+    /// </code>
+    /// <para>
+    /// — losing a whole clause the speaker said, and appending an explanation nobody asked for,
+    /// in the same reply, despite being told not to. Prompting does not fix this at these model
+    /// sizes; refusing the result does. A window that fails is kept as it was, on the grounds
+    /// that unpunctuated and accurate beats polished and wrong.
+    /// </para>
+    /// </summary>
+    /// <param name="original">The raw window handed to the model.</param>
+    /// <param name="cleaned">What came back.</param>
+    public static bool IsFaithfulCleanup(string original, string cleaned)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentNullException.ThrowIfNull(cleaned);
+
+        var before = Words(original);
+        if (before.Count == 0)
+        {
+            return true;
+        }
+
+        if (Words(cleaned).Count == 0)
+        {
+            return false;
+        }
+
+        // Measured over content words only. Plain retention cannot tell the two failures apart:
+        // dropping "let's see how well it works" and dropping "um … uh … you know" both leave
+        // three quarters of the words standing, and the first is a lost sentence while the
+        // second is the job being done correctly. Which words went is the whole signal.
+        var content = ContentWords(before);
+
+        if (content.Count > 0)
+        {
+            var after = Words(cleaned).ToHashSet(StringComparer.Ordinal);
+            var kept = content.Count(word => after.Contains(word));
+
+            if (kept < content.Count * MinimumKeptWhenCleaning)
+            {
+                return false;
+            }
+        }
+
+        // Growth is the tell for commentary. Punctuating text does not lengthen it; explaining
+        // what you punctuated does.
+        return Words(cleaned).Count <= before.Count * MaximumGrowthWhenCleaning;
+    }
+
+    /// <summary>
+    /// Words a cleanup pass is expected to delete. Deliberately short: every word on this list
+    /// is one the guard stops protecting, so it holds only sounds with no meaning to lose.
+    /// Judgement calls like "well", "right", and "okay" are content until proven otherwise.
+    /// </summary>
+    private static readonly HashSet<string> Fillers = new(StringComparer.Ordinal)
+    {
+        "um", "umm", "uh", "uhh", "uhm", "er", "err", "erm", "ah", "ahh", "eh",
+        "hmm", "hm", "mm", "mmm", "mhm", "huh",
+    };
+
+    /// <summary>
+    /// Discourse markers made of words that carry meaning on their own. "You know" is filler
+    /// and cleanup is right to delete it, but "you" and "know" are ordinary words that must
+    /// stay protected everywhere else, so the pair has to be recognised as a pair.
+    /// </summary>
+    private static readonly (string First, string Second)[] FillerPhrases =
+    [
+        ("you", "know"),
+        ("i", "mean"),
+    ];
+
+    /// <summary>The words of <paramref name="words"/> that cleanup is not licensed to remove.</summary>
+    private static List<string> ContentWords(List<string> words)
+    {
+        var content = new List<string>(words.Count);
+
+        for (var i = 0; i < words.Count; i++)
+        {
+            if (Fillers.Contains(words[i]))
+            {
+                continue;
+            }
+
+            if (i + 1 < words.Count
+                && FillerPhrases.Any(phrase => phrase.First == words[i] && phrase.Second == words[i + 1]))
+            {
+                i++;
+                continue;
+            }
+
+            content.Add(words[i]);
+        }
+
+        return content;
+    }
+
+    /// <summary>Fraction of the original's content words a cleaned window must still contain.</summary>
+    private const double MinimumKeptWhenCleaning = 0.85;
+
+    /// <summary>How much longer than the original a cleaned window may be.</summary>
+    private const double MaximumGrowthWhenCleaning = 1.2;
+
     /// <summary>Words stripped to what two readings of the same speech would agree on.</summary>
     private static List<string> Words(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)

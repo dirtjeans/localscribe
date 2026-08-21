@@ -421,9 +421,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         Status = "Checking hardware…";
 
-        var capabilities = await Task.Run(() => DeviceProbe.Probe(_modelRoot));
+        // Both at once. Finding a cleanup backend can mean starting a process and waiting on it,
+        // and that has no business being added to the delay before the microphone works.
+        var probing = Task.Run(() => DeviceProbe.Probe(_modelRoot));
+        var resolving = LocalLanguageModel.ResolveAsync();
 
-        _languageModel = await LocalLanguageModel.ResolveAsync();
+        var capabilities = await probing;
+        _languageModel = await resolving;
+
         capabilities = capabilities with { LocalLanguageModelPresent = _languageModel is not null };
 
         _capabilities = capabilities;
@@ -432,8 +437,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Where the work will run, but not which weights: that is not known until they are
         // opened, and naming the size the planner asked for is how the window spent a session
         // claiming medium.en while running large-v3-turbo.
+        // Naming the cleanup backend, not just its device. Which model is doing the punctuation
+        // decides how good the punctuation is, and this is the line people read when the answer
+        // is "not very".
+        var cleanup = _languageModel is { } model
+            ? model.Description
+            : "no cleanup model found";
+
         HardwareSummary = $"encoder on {_plan.Encoder.Device}, decoder on {_plan.Decoder.Device}, "
-            + $"cleanup on {_plan.LanguageModel.Device}";
+            + $"cleanup: {cleanup}";
         Status = _plan.Warnings.Count == 0
             ? "Ready."
             : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";

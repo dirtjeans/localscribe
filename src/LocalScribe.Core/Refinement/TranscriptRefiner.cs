@@ -121,6 +121,13 @@ public sealed class TranscriptRefiner
         return new RefinementResult(cleaned, summary, actionItems);
     }
 
+    /// <summary>
+    /// How many windows came back unfaithful and were kept raw. Worth surfacing: a handful is
+    /// the model being a small model, and most of them means the backend is a poor fit for the
+    /// job rather than that the recording was difficult.
+    /// </summary>
+    public int Rejected { get; private set; }
+
     private async Task<string> CleanAsync(
         string rawText,
         IReadOnlyList<string>? glossary,
@@ -133,18 +140,29 @@ public sealed class TranscriptRefiner
 
         foreach (var window in SplitIntoWindows(rawText, WordsPerCleanupWindow))
         {
-            var cleaned = await _model.CompleteAsync(
+            var cleaned = (await _model.CompleteAsync(
                 systemPrompt,
                 window,
                 maxTokens: EstimateReplyTokens(window),
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false)).Trim();
+
+            // Checked, not trusted. The instructions already say to keep every word and add no
+            // notes, and small models disregard both often enough that a transcript cleaned
+            // without verification is a transcript that has quietly lost sentences. A window
+            // that fails goes through unchanged.
+            var faithful = TranscriptQuality.IsFaithfulCleanup(window, cleaned);
+
+            if (!faithful)
+            {
+                Rejected++;
+            }
 
             if (builder.Length > 0)
             {
                 builder.Append(' ');
             }
 
-            builder.Append(cleaned.Trim());
+            builder.Append(faithful ? cleaned : window);
             onWindowDone();
         }
 

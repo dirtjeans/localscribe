@@ -14,8 +14,15 @@ namespace LocalScribe.Core.Refinement;
 /// </summary>
 public sealed class FoundryLocalClient : ILanguageModel, IDisposable
 {
-    /// <summary>Foundry Local's default port.</summary>
-    public const int DefaultPort = 5273;
+    /// <summary>
+    /// The port older builds listened on.
+    /// <para>
+    /// Kept only as the first thing <see cref="FoundryLocalDiscovery"/> probes. Current builds
+    /// take an ephemeral port at startup, so anything that assumes this one finds nothing and
+    /// concludes, wrongly, that no cleanup backend is installed.
+    /// </para>
+    /// </summary>
+    public const int DefaultPort = FoundryLocalDiscovery.LegacyPort;
 
     /// <summary>
     /// An alias rather than a specific model id, on purpose. Passing an alias lets Foundry pick
@@ -34,6 +41,33 @@ public sealed class FoundryLocalClient : ILanguageModel, IDisposable
             model,
             endpoint ?? new Uri($"http://localhost:{DefaultPort}"),
             httpClient);
+
+    /// <summary>
+    /// Finds a running service and a model it already has, or null when there is none.
+    /// <para>
+    /// Preferred over the constructor, which can only guess at both. Nothing is downloaded: a
+    /// machine with the service running but no models cached returns null and the pipeline
+    /// produces a raw transcript, exactly as it does on a machine with no service at all.
+    /// </para>
+    /// </summary>
+    public static async Task<FoundryLocalClient?> DiscoverAsync(
+        HttpClient? httpClient = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (await FoundryLocalDiscovery.FindEndpointAsync(httpClient, cancellationToken)
+                .ConfigureAwait(false) is not { } endpoint)
+        {
+            return null;
+        }
+
+        if (await LocalModelCatalogue.ChooseAsync(endpoint, httpClient, cancellationToken)
+                .ConfigureAwait(false) is not { } model)
+        {
+            return null;
+        }
+
+        return new FoundryLocalClient(model, endpoint, httpClient);
+    }
 
     public string Description => _inner.Description;
 
