@@ -147,6 +147,7 @@ public sealed partial class MainWindow : Window
                     CopyButton.IsEnabled = _viewModel.HasTranscript;
                     SaveButton.IsEnabled = _viewModel.HasTranscript;
                     DiscardButton.IsEnabled = _viewModel.HasTranscript;
+                    SpeakersButton.IsEnabled = _viewModel.CanFindSpeakers;
                     break;
                 case nameof(MainViewModel.ProvisionalText):
                     ProvisionalTextBlock.Text = _viewModel.ProvisionalText;
@@ -156,7 +157,7 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.IsBusy):
                     OpenFileButton.IsEnabled = !_viewModel.IsBusy;
-                    CancelButton.IsEnabled = _viewModel.IsBusy;
+                    CancelButton.Visibility = _viewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
                     break;
                 case nameof(MainViewModel.IsRecording):
                 case nameof(MainViewModel.IsPreparing):
@@ -501,7 +502,6 @@ public sealed partial class MainWindow : Window
     private void StartPlayback(double seconds)
     {
         _viewModel.Player.PlayFrom(seconds);
-        StopPlaybackButton.Visibility = Visibility.Visible;
         UpdatePlayIcon();
     }
 
@@ -659,7 +659,6 @@ public sealed partial class MainWindow : Window
         _dispatcher.TryEnqueue(() =>
         {
             StatusText.Text = message;
-            StopPlaybackButton.Visibility = Visibility.Collapsed;
             UpdatePlayIcon();
         });
 
@@ -898,11 +897,9 @@ public sealed partial class MainWindow : Window
     private void OnPlaybackStopped() =>
         _dispatcher.TryEnqueue(() =>
         {
-            StopPlaybackButton.Visibility = Visibility.Collapsed;
             UpdatePlayIcon();
         });
 
-    private void OnStopPlayback(object sender, RoutedEventArgs e) => _viewModel.Player.Stop();
 
     private void OnCopy(object sender, RoutedEventArgs e)
     {
@@ -1000,6 +997,61 @@ public sealed partial class MainWindow : Window
     /// Collects the terms the cleanup model should spell correctly: names, products, jargon.
     /// This is the cheapest accuracy win available, and no larger Whisper model substitutes for it.
     /// </summary>
+    /// <summary>
+    /// Asks how many people are talking, then works the speakers out again.
+    /// <para>
+    /// The count is the one thing the listener knows and the algorithm cannot. Inferring it from
+    /// a distance threshold fails in both directions at once on a real recording — two people
+    /// who sound alike merge while one who leaned towards the microphone splits in two — and no
+    /// single threshold fixes both. Being told there are three ends the argument.
+    /// </para>
+    /// </summary>
+    private async void OnEditSpeakers(object sender, RoutedEventArgs e)
+    {
+        var choices = new ComboBox { SelectedIndex = 0, MinWidth = 220 };
+        choices.Items.Add("Work it out automatically");
+
+        for (var n = 1; n <= 10; n++)
+        {
+            choices.Items.Add(n == 1 ? "1 speaker" : $"{n} speakers");
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = "How many speakers?",
+            Content = new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    choices,
+                    new TextBlock
+                    {
+                        Text = "Telling LocalScribe the number is far more reliable than letting it "
+                            + "guess. Guessing tends to go wrong in both directions on the same "
+                            + "recording, merging two voices that sound alike while splitting one "
+                            + "that changes distance from the microphone.",
+                        TextWrapping = TextWrapping.Wrap,
+                        Opacity = 0.8,
+                    },
+                },
+            },
+            PrimaryButtonText = "Find speakers",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var speakers = choices.SelectedIndex == 0 ? (int?)null : choices.SelectedIndex;
+
+        await _viewModel.FindSpeakersAsync(speakers);
+    }
+
     private async void OnEditGlossary(object sender, RoutedEventArgs e)
     {
         var textBox = new TextBox

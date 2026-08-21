@@ -29,109 +29,112 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Where the work is running. Shown up front, because it is the thing people doubt. -->
-        <Border
-            Grid.Row="0"
-            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-            BorderThickness="1"
-            CornerRadius="8"
-            Padding="16,12">
-            <StackPanel Spacing="4">
-                <TextBlock
-                    Text="Hardware"
-                    Style="{ThemeResource CaptionTextBlockStyle}"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBlock
-                    x:Name="HardwareText"
-                    Text="Checking…"
-                    Style="{ThemeResource BodyStrongTextBlockStyle}"
-                    TextWrapping="Wrap" />
+        <!--
+            Two groups, not one row. The left makes a transcript; the right does something with
+            the one you have, and every button in it is dead until there is one. Reading them as
+            a single list of seven meant hunting for the two that mattered at any moment.
+        -->
+        <Grid Grid.Row="0" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Making a transcript. -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                <!--
+                    Two buttons rather than one recoloured at runtime. The Button template swaps
+                    its own background on hover and press, so a locally set colour survives only
+                    until the pointer touches it; overriding the brushes the template looks up is
+                    the only way to hold a colour through every state, and those overrides live
+                    on the control.
+                -->
+                <Button x:Name="StartButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon x:Name="StartIcon" Glyph="&#xE720;" FontSize="16" />
+                        <TextBlock x:Name="StartLabel" Text="Start listening" />
+                    </StackPanel>
+                </Button>
+
+                <Button
+                    x:Name="StopButton"
+                    Click="OnToggleRecording"
+                    Style="{ThemeResource AccentButtonStyle}"
+                    Visibility="Collapsed">
+                    <!-- Windows' own critical red, held through hover, press and keyboard focus. -->
+                    <Button.Resources>
+                        <SolidColorBrush x:Key="AccentButtonBackground" Color="#C42B1C" />
+                        <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#B0271A" />
+                        <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#96201A" />
+                        <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#C42B1C" />
+                        <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#B0271A" />
+                        <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="#96201A" />
+                        <SolidColorBrush x:Key="AccentButtonForeground" Color="White" />
+                        <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="White" />
+                        <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="White" />
+                    </Button.Resources>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" />
+                        <TextBlock Text="Stop listening" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="OpenFileButton" Click="OnOpenFile">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                        <TextBlock Text="Open a recording" />
+                    </StackPanel>
+                </Button>
+
+                <!-- Only ever relevant to work in progress, so it only ever appears with it. -->
+                <Button
+                    x:Name="CancelButton"
+                    Click="OnCancel"
+                    Content="Cancel"
+                    Visibility="Collapsed" />
             </StackPanel>
-        </Border>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="12">
-            <Button x:Name="OpenFileButton" Click="OnOpenFile">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE8E5;" FontSize="16" />
-                    <TextBlock Text="Transcribe a file" />
-                </StackPanel>
-            </Button>
+            <!-- Doing something with the transcript you have. -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                <Button x:Name="SpeakersButton" Click="OnEditSpeakers" IsEnabled="False">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE716;" FontSize="16" />
+                        <TextBlock Text="Speakers" />
+                    </StackPanel>
+                </Button>
 
-            <!--
-                Two buttons rather than one recoloured at runtime. The Button template swaps its
-                own background on hover and press, so a locally set colour survives only until
-                the pointer touches it; overriding the brushes the template looks up is the only
-                way to hold a colour through every state, and those overrides live on the control.
-            -->
-            <Button x:Name="StartButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon x:Name="StartIcon" Glyph="&#xE720;" FontSize="16" />
-                    <TextBlock x:Name="StartLabel" Text="Start listening" />
-                </StackPanel>
-            </Button>
+                <Button x:Name="GlossaryButton" Content="Glossary" Click="OnEditGlossary" />
 
-            <Button
-                x:Name="StopButton"
-                Click="OnToggleRecording"
-                Style="{ThemeResource AccentButtonStyle}"
-                Visibility="Collapsed">
-                <!-- Windows' own critical red, held through hover, press and keyboard focus. -->
-                <Button.Resources>
-                    <SolidColorBrush x:Key="AccentButtonBackground" Color="#C42B1C" />
-                    <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#B0271A" />
-                    <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#96201A" />
-                    <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#C42B1C" />
-                    <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#B0271A" />
-                    <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="#96201A" />
-                    <SolidColorBrush x:Key="AccentButtonForeground" Color="White" />
-                    <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="White" />
-                    <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="White" />
-                </Button.Resources>
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" />
-                    <TextBlock Text="Stop listening" />
-                </StackPanel>
-            </Button>
+                <AppBarSeparator />
 
-            <Button x:Name="CancelButton" Click="OnCancel" IsEnabled="False" Content="Cancel" />
+                <Button x:Name="CopyButton" Click="OnCopy" IsEnabled="False">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8C8;" FontSize="16" />
+                        <TextBlock Text="Copy" />
+                    </StackPanel>
+                </Button>
 
-            <Button Content="Glossary" Click="OnEditGlossary" />
+                <Button x:Name="SaveButton" Click="OnSave" IsEnabled="False">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE74E;" FontSize="16" />
+                        <TextBlock Text="Save" />
+                    </StackPanel>
+                </Button>
 
-            <Button x:Name="CopyButton" Click="OnCopy" IsEnabled="False">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE8C8;" FontSize="16" />
-                    <TextBlock Text="Copy" />
-                </StackPanel>
-            </Button>
-
-            <Button x:Name="SaveButton" Click="OnSave" IsEnabled="False">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE74E;" FontSize="16" />
-                    <TextBlock Text="Save" />
-                </StackPanel>
-            </Button>
-
-            <Button x:Name="DiscardButton" Click="OnDiscard" IsEnabled="False">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE74D;" FontSize="16" />
-                    <TextBlock Text="Discard" />
-                </StackPanel>
-            </Button>
-
-            <Button x:Name="StopPlaybackButton" Click="OnStopPlayback" Visibility="Collapsed">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon Glyph="&#xE71A;" FontSize="16" />
-                    <TextBlock Text="Stop playback" />
-                </StackPanel>
-            </Button>
-        </StackPanel>
+                <Button x:Name="DiscardButton" Click="OnDiscard" IsEnabled="False">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE74D;" FontSize="16" />
+                        <TextBlock Text="Discard" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
 
         <!--
             Whether the microphone is actually running is the one thing the user has to know, and
@@ -142,7 +145,7 @@
         -->
         <Border
             x:Name="CueBanner"
-            Grid.Row="2"
+            Grid.Row="1"
             CornerRadius="8"
             Padding="20,16"
             Visibility="Collapsed">
@@ -165,12 +168,11 @@
             </StackPanel>
         </Border>
 
-        <Grid Grid.Row="3" RowSpacing="12">
+        <Grid Grid.Row="2" RowSpacing="12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <!-- What the cleanup model made of the recording, kept apart from the recording. -->
@@ -263,17 +265,10 @@
 
                                 <!--
                                     Held to a readable measure rather than the width of the
-                                    window. Past about ninety characters the eye loses the start
-                                    of the next line, which on a wall of speech is fatal.
-                                -->
-                                <!--
-                                    Not selectable, deliberately. A TextBlock with text
-                                    selection turned on consumes the pointer, and inside a list
-                                    item that means the item is never clicked and never tapped —
-                                    which is exactly why clicking a line played nothing while
-                                    the play button worked. Clicking the words to hear them is
-                                    worth more here than selecting them; Copy takes the whole
-                                    transcript, and Save writes it out.
+                                    window, and deliberately not selectable: a TextBlock with
+                                    text selection on consumes the pointer, and inside a list
+                                    item that means the item is never clicked, which is exactly
+                                    why clicking a line once played nothing.
                                 -->
                                 <TextBlock
                                     Tag="body"
@@ -327,13 +322,12 @@
 
         <Border
             x:Name="TransportBar"
-            Grid.Row="4"
+            Grid.Row="3"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="1"
             CornerRadius="8"
             Padding="12,8"
-            Margin="0,8,0,0"
             Visibility="Collapsed">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
@@ -402,13 +396,47 @@
             </Grid>
         </Border>
 
-        <StackPanel Grid.Row="5" Spacing="8">
-            <ProgressBar x:Name="ProgressBarControl" Value="0" Maximum="1" />
+        <!--
+            The status line, and beside it where the work is running. That second thing used to
+            have a card at the top of the window, which gave the most technical sentence in the
+            app the most prominent position in it. It still matters — "is it really using the
+            NPU?" is the question everyone asks — so it stays visible, in the corner, at the size
+            of a footnote.
+        -->
+        <Grid Grid.Row="4" ColumnSpacing="16" RowSpacing="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <ProgressBar
+                x:Name="ProgressBarControl"
+                Grid.Row="0"
+                Grid.ColumnSpan="2"
+                Value="0"
+                Maximum="1" />
+
             <TextBlock
                 x:Name="StatusText"
+                Grid.Row="1"
+                Grid.Column="0"
                 Text="Starting up…"
+                TextTrimming="CharacterEllipsis"
                 Style="{ThemeResource CaptionTextBlockStyle}"
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-        </StackPanel>
+
+            <TextBlock
+                x:Name="HardwareText"
+                Grid.Row="1"
+                Grid.Column="1"
+                Text="Checking…"
+                HorizontalAlignment="Right"
+                Style="{ThemeResource CaptionTextBlockStyle}"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+        </Grid>
     </Grid>
 </Window>

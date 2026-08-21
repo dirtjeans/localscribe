@@ -48,6 +48,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private List<float>? _liveCapture;
 
+    /// <summary>
+    /// The audio behind the current transcript, and the segments as the transcriber returned
+    /// them, before any speaker was attached. Kept so diarization can be run again with a
+    /// different answer without transcribing anything twice — and run from the original
+    /// segments, since attribution splits them and splitting an already-split transcript
+    /// compounds whatever the first attempt got wrong.
+    /// </summary>
+    private PcmAudio? _audio;
+    private IReadOnlyList<TranscriptSegment> _segmentsBeforeSpeakers = [];
+
     private string _status = "Starting up…";
     private string _hardwareSummary = string.Empty;
     private string _transcript = string.Empty;
@@ -129,7 +139,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private async Task<IReadOnlyList<TranscriptSegment>> AttributeSpeakersAsync(
         IReadOnlyList<TranscriptSegment> segments,
-        PcmAudio audio)
+        PcmAudio audio,
+        int? speakers = null)
     {
         var directory = Path.Combine(_modelRoot, "diarization");
 
@@ -145,7 +156,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return await Task.Run(() =>
             {
                 using var diarizer = SpeakerDiarizer.Load(directory);
-                var turns = diarizer.Diarize(audio, cancellationToken: _cancellation?.Token ?? default);
+
+                var turns = diarizer.Diarize(
+                    audio,
+                    maxSpeakers: speakers,
+                    exactSpeakers: speakers,
+                    cancellationToken: _cancellation?.Token ?? default);
 
                 return SpeakerDiarizer.Attribute(segments, turns);
             }).ConfigureAwait(true);
@@ -159,6 +175,37 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Status = $"Transcribed, but speakers could not be identified: {exception.Message}";
             return segments;
         }
+    }
+
+    /// <summary>True when there is audio to work out speakers from.</summary>
+    public bool CanFindSpeakers => _audio is not null && _segmentsBeforeSpeakers.Count > 0;
+
+    /// <summary>
+    /// Works out the speakers again, told how many there are.
+    /// <para>
+    /// The count is the one thing a person always knows and the algorithm never does. Without it
+    /// the number of speakers has to be inferred from a distance threshold, and a threshold that
+    /// is slightly wrong for a recording fails in both directions at once — merging two people
+    /// who sound alike while splitting one who moved closer to the microphone. Being told there
+    /// are three removes the guess entirely.
+    /// </para>
+    /// </summary>
+    /// <param name="speakers">How many people are talking, or null to infer it.</param>
+    public async Task FindSpeakersAsync(int? speakers)
+    {
+        if (_audio is not { } audio || _segmentsBeforeSpeakers.Count == 0)
+        {
+            return;
+        }
+
+        Status = speakers is { } n ? $"Finding {n} speakers…" : "Working out who spoke…";
+
+        var attributed = await AttributeSpeakersAsync(_segmentsBeforeSpeakers, audio, speakers);
+
+        SetTranscript(attributed);
+
+        var found = attributed.Select(s => s.Speaker).Where(s => s is not null).Distinct().Count();
+        Status = found == 0 ? "No speakers were found." : $"Found {found} speaker(s).";
     }
 
     /// <summary>
@@ -213,6 +260,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Discard()
     {
         Player.Clear();
+
+        _audio = null;
+        _segmentsBeforeSpeakers = [];
 
         SetTranscript([]);
         ProvisionalText = string.Empty;
@@ -331,6 +381,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var audio = await Task.Run(() => AudioFileLoader.Load(path), _cancellation.Token);
 
             SourceName = Path.GetFileNameWithoutExtension(path);
+            _audio = audio;
 
             // Held so a line in the transcript can be clicked and heard. The timings refer to
             // these samples, not to the file, which is why the decoded audio is what is kept.
@@ -368,6 +419,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 RefinementOutputs.Everything,
                 progress,
                 _cancellation.Token);
+
+            _segmentsBeforeSpeakers = result.Transcript.Segments;
 
             var segments = await AttributeSpeakersAsync(result.Transcript.Segments, audio);
 
@@ -599,7 +652,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // transcribed file takes.
             if (_liveCapture is { Count: > 0 } captured)
             {
-                Player.Load(new PcmAudio([.. captured]));
+                _audio = new PcmAudio([.. captured]);
+                _segmentsBeforeSpeakers = committed;
+
+                Player.Load(_audio);
             }
 
             _liveCapture = null;

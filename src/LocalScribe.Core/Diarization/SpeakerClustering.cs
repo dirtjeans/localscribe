@@ -48,10 +48,16 @@ public static class SpeakerClustering
     /// leave more clusters than this.
     /// </param>
     /// <returns>A speaker index per embedding, numbered by first appearance.</returns>
+    /// <param name="exactSpeakers">
+    /// The known number of speakers. When given, merging continues until exactly this many
+    /// remain and stops there, whatever the distances say — the threshold is a way of guessing
+    /// the count, and there is nothing to guess once someone has said.
+    /// </param>
     public static int[] Cluster(
         IReadOnlyList<float[]> embeddings,
         double threshold = DefaultThreshold,
-        int? maxSpeakers = null)
+        int? maxSpeakers = null,
+        int? exactSpeakers = null)
     {
         ArgumentNullException.ThrowIfNull(embeddings);
 
@@ -70,9 +76,18 @@ public static class SpeakerClustering
 
         while (clusters.Count > 1)
         {
+            // Told the answer: stop the moment there are that many, however close the next pair
+            // looks.
+            if (exactSpeakers is { } exact && clusters.Count <= exact)
+            {
+                break;
+            }
+
             var (a, b, distance) = ClosestPair(clusters, normalised);
 
-            var forced = maxSpeakers is { } limit && clusters.Count > limit;
+            var forced =
+                (exactSpeakers is { } target && clusters.Count > target)
+                || (maxSpeakers is { } limit && clusters.Count > limit);
 
             if (distance > threshold && !forced)
             {

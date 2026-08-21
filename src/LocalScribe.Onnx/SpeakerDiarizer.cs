@@ -111,10 +111,16 @@ public sealed class SpeakerDiarizer : IDisposable
     /// <param name="audio">16 kHz mono, the same audio the transcriber saw.</param>
     /// <param name="threshold">Cosine distance at which two voices count as different people.</param>
     /// <param name="maxSpeakers">Upper bound on speakers, or null to let the threshold decide.</param>
+    /// <param name="exactSpeakers">
+    /// The known number of speakers, when the user has said. Far more reliable than inferring it
+    /// from a distance threshold, which on a real recording tends to fail in both directions at
+    /// once.
+    /// </param>
     public IReadOnlyList<SpeakerTurn> Diarize(
         PcmAudio audio,
         double threshold = SpeakerClustering.DefaultThreshold,
         int? maxSpeakers = null,
+        int? exactSpeakers = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(audio);
@@ -147,7 +153,7 @@ public sealed class SpeakerDiarizer : IDisposable
             return [];
         }
 
-        var labels = ClusterWithShortSpansAttached(embeddings, kept, threshold, maxSpeakers);
+        var labels = ClusterWithShortSpansAttached(embeddings, kept, threshold, maxSpeakers, exactSpeakers);
 
         var turns = kept
             .Select((span, i) => new SpeakerTurn(labels[i], span.Start, span.End))
@@ -185,7 +191,8 @@ public sealed class SpeakerDiarizer : IDisposable
         List<float[]> embeddings,
         List<(double Start, double End)> spans,
         double threshold,
-        int? maxSpeakers)
+        int? maxSpeakers,
+        int? exactSpeakers)
     {
         var reliable = Enumerable.Range(0, spans.Count)
             .Where(i => spans[i].End - spans[i].Start >= ReliableTurnSeconds)
@@ -194,11 +201,11 @@ public sealed class SpeakerDiarizer : IDisposable
         // Nothing long enough to anchor on: cluster everything and take what comes.
         if (reliable.Count < 2)
         {
-            return SpeakerClustering.Cluster(embeddings, threshold, maxSpeakers);
+            return SpeakerClustering.Cluster(embeddings, threshold, maxSpeakers, exactSpeakers);
         }
 
         var reliableLabels = SpeakerClustering.Cluster(
-            reliable.Select(i => embeddings[i]).ToList(), threshold, maxSpeakers);
+            reliable.Select(i => embeddings[i]).ToList(), threshold, maxSpeakers, exactSpeakers);
 
         var labels = new int[spans.Count];
         for (var i = 0; i < reliable.Count; i++)
