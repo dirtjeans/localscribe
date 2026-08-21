@@ -121,11 +121,12 @@ public sealed class SpeakerDiarizer : IDisposable
         double threshold = SpeakerClustering.DefaultThreshold,
         int? maxSpeakers = null,
         int? exactSpeakers = null,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(audio);
 
-        var local = CollectSpeechSpans(audio, cancellationToken);
+        var local = CollectSpeechSpans(audio, progress, cancellationToken);
         if (local.Count == 0)
         {
             return [];
@@ -134,10 +135,12 @@ public sealed class SpeakerDiarizer : IDisposable
         var embeddings = new List<float[]>(local.Count);
         var kept = new List<(double Start, double End)>(local.Count);
 
-        foreach (var (start, end) in local)
+        for (var i = 0; i < local.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            progress?.Report(ScanShare + ((1 - ScanShare) * i / local.Count));
 
+            var (start, end) = local[i];
             var embedding = Embed(audio, start, end);
             if (embedding is null)
             {
@@ -162,6 +165,13 @@ public sealed class SpeakerDiarizer : IDisposable
 
         return Tidy(turns);
     }
+
+    /// <summary>
+    /// How much of the reported progress the window scan accounts for. Measured roughly: the
+    /// scan runs the segmentation model over every window, the embeddings run a smaller model
+    /// over a few dozen short spans.
+    /// </summary>
+    private const double ScanShare = 0.8;
 
     /// <summary>
     /// Speech shorter than this identifies a voice poorly. Long enough to say "Good." and not
@@ -279,7 +289,10 @@ public sealed class SpeakerDiarizer : IDisposable
     /// identity — but within a window they separate voices, and that is worth keeping.
     /// </para>
     /// </summary>
-    private List<(double Start, double End)> CollectSpeechSpans(PcmAudio audio, CancellationToken cancellationToken)
+    private List<(double Start, double End)> CollectSpeechSpans(
+        PcmAudio audio,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
     {
         var shift = (int)(_windowSamples * WindowShiftFraction);
         var spans = new List<(double Start, double End)>();
@@ -287,6 +300,10 @@ public sealed class SpeakerDiarizer : IDisposable
         for (var offset = 0; offset < audio.Samples.Length; offset += shift)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Scanning is most of the work, so it gets most of the bar. The embeddings that
+            // follow are a few dozen short runs and finish quickly by comparison.
+            progress?.Report(ScanShare * offset / audio.Samples.Length);
 
             var window = new float[_windowSamples];
             var available = Math.Min(_windowSamples, audio.Samples.Length - offset);

@@ -4,11 +4,29 @@ using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.Core.Pipeline;
 
-/// <summary>Progress for the UI: which window we are on, and the text so far.</summary>
-/// <param name="ChunksCompleted">Windows finished.</param>
-/// <param name="ChunksTotal">Windows in the recording.</param>
+/// <summary>Which stage of the run is being reported.</summary>
+public enum TranscriptionPhase
+{
+    /// <summary>Whisper, window by window.</summary>
+    Transcribing,
+
+    /// <summary>The language model repairing punctuation, names, and writing a summary.</summary>
+    CleaningUp,
+}
+
+/// <summary>Progress for the UI: which stage, how far through it, and the text so far.</summary>
+/// <param name="ChunksCompleted">Units of this stage finished.</param>
+/// <param name="ChunksTotal">Units in this stage.</param>
 /// <param name="LatestText">Text from the window that just finished, for a live-updating view.</param>
-public sealed record TranscriptionProgress(int ChunksCompleted, int ChunksTotal, string LatestText)
+/// <param name="Phase">
+/// Which stage this is. A run has more than one, and they take comparable amounts of time, so a
+/// bar that reaches the end and then sits there for a minute is worse than no bar at all.
+/// </param>
+public sealed record TranscriptionProgress(
+    int ChunksCompleted,
+    int ChunksTotal,
+    string LatestText,
+    TranscriptionPhase Phase = TranscriptionPhase.Transcribing)
 {
     public double Fraction => ChunksTotal == 0 ? 0 : ChunksCompleted / (double)ChunksTotal;
 }
@@ -98,8 +116,14 @@ public sealed class TranscriptionPipeline
             return new TranscriptionResult(transcript, Refinement: null);
         }
 
+        var cleanup = new Progress<double>(fraction => progress?.Report(new TranscriptionProgress(
+            (int)Math.Round(fraction * 100),
+            100,
+            string.Empty,
+            TranscriptionPhase.CleaningUp)));
+
         var refinement = await _refiner
-            .RefineAsync(transcript, glossary, outputs, cancellationToken)
+            .RefineAsync(transcript, glossary, outputs, cleanup, cancellationToken)
             .ConfigureAwait(false);
 
         return new TranscriptionResult(transcript, refinement);

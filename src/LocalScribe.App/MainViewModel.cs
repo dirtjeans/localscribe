@@ -133,6 +133,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Paragraphs = TranscriptFormatter.Paragraphs(segments);
         Transcript = TranscriptFormatter.ToPlainText(Paragraphs);
 
+        // Counted here rather than where diarization finishes, so that renaming keeps it honest:
+        // merging two labels that were the same person really is one speaker fewer, and the
+        // badge should say so the moment it happens.
+        SpeakerCount = DistinctSpeakers(segments);
+
         Raise(nameof(Paragraphs));
         Raise(nameof(HasTranscript));
     }
@@ -166,6 +171,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         Status = "Working out who spoke…";
+        Progress = 0;
+
+        var found = new Progress<double>(fraction =>
+        {
+            Progress = fraction;
+            Status = $"Working out who spoke… {(int)(fraction * 100)}%";
+        });
 
         try
         {
@@ -177,6 +189,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     audio,
                     maxSpeakers: speakers,
                     exactSpeakers: speakers,
+                    progress: found,
                     cancellationToken: _cancellation?.Token ?? default);
 
                 return SpeakerDiarizer.Attribute(segments, turns);
@@ -192,6 +205,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return segments;
         }
     }
+
+    /// <summary>How many distinct people the transcript is currently attributed to.</summary>
+    public int SpeakerCount
+    {
+        get;
+        private set
+        {
+            if (field == value)
+            {
+                return;
+            }
+
+            field = value;
+            Raise(nameof(SpeakerCount));
+        }
+    }
+
+    private static int DistinctSpeakers(IReadOnlyList<TranscriptSegment> segments) =>
+        segments
+            .Select(segment => segment.Speaker)
+            .Where(speaker => !string.IsNullOrWhiteSpace(speaker))
+            .Distinct(StringComparer.Ordinal)
+            .Count();
 
     /// <summary>True when there is audio to work out speakers from.</summary>
     public bool CanFindSpeakers => _audio is not null && _segmentsBeforeSpeakers.Count > 0;
@@ -216,12 +252,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         Status = speakers is { } n ? $"Finding {n} speakers…" : "Working out who spoke…";
 
-        var attributed = await AttributeSpeakersAsync(_segmentsBeforeSpeakers, audio, speakers);
+        IsBusy = true;
+
+        IReadOnlyList<TranscriptSegment> attributed;
+
+        try
+        {
+            attributed = await AttributeSpeakersAsync(_segmentsBeforeSpeakers, audio, speakers);
+        }
+        finally
+        {
+            IsBusy = false;
+            Progress = 0;
+        }
 
         SetTranscript(attributed);
 
-        var found = attributed.Select(s => s.Speaker).Where(s => s is not null).Distinct().Count();
-        Status = found == 0 ? "No speakers were found." : $"Found {found} speaker(s).";
+        Status = SpeakerCount switch
+        {
+            0 => "No speakers were found.",
+            1 => "Found one speaker.",
+            var many => $"Found {many} speakers.",
+        };
     }
 
     /// <summary>
@@ -377,7 +429,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _capabilities = capabilities;
         _plan = AcceleratorPlanner.Plan(capabilities);
 
-        HardwareSummary = _plan.Summary;
+        // Where the work will run, but not which weights: that is not known until they are
+        // opened, and naming the size the planner asked for is how the window spent a session
+        // claiming medium.en while running large-v3-turbo.
+        HardwareSummary = $"encoder on {_plan.Encoder.Device}, decoder on {_plan.Decoder.Device}, "
+            + $"cleanup on {_plan.LanguageModel.Device}";
         Status = _plan.Warnings.Count == 0
             ? "Ready."
             : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
@@ -423,9 +479,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var progress = new Progress<TranscriptionProgress>(update =>
             {
                 Progress = update.Fraction;
-                Status = $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
 
-                if (update.LatestText.Length > 0)
+                // Named per stage. A run is transcription then cleanup then speakers, each
+                // taking a comparable while, and a bar that fills up and then sits there for a
+                // minute is worse than no bar at all.
+                Status = update.Phase == TranscriptionPhase.CleaningUp
+                    ? $"Cleaning up the transcript… {update.ChunksCompleted}%"
+                    : $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
+
+                if (update.Phase == TranscriptionPhase.Transcribing && update.LatestText.Length > 0)
                 {
                     streamed.Add(new TranscriptSegment(
                         update.LatestText,
@@ -570,6 +632,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _transcriber = opened;
             _transcriberKey = key;
 
+            // Said here rather than only after a preload, so the line is right however the model
+            // came to be loaded.
+            HardwareSummary = opened.Description;
+
             return opened;
         }
         finally
@@ -612,7 +678,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var transcriber = await Task.Run(() => TranscriberFor(livePlan));
 
             IsModelReady = true;
-            Status = $"Ready. {transcriber.Description}";
+
+            // The hardware line now names what was loaded rather than what was asked for. The
+            // two differ whenever the installed weights are not the size the planner chose, and
+            // reporting the request as though it were the result is how the window ended up
+            // claiming medium.en while running large-v3-turbo.
+            Status = "Ready.";
         }
         catch (Exception exception)
         {

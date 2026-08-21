@@ -1,12 +1,14 @@
 using System.ComponentModel;
 using LocalScribe.Core.Transcription;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Windows.Graphics;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 
@@ -50,9 +52,64 @@ public sealed partial class MainWindow : Window
             _viewModel.Dispose();
         };
 
+        SizeToContent();
+
         // Probe, then warm the model while the user is still reading the hardware line.
         _ = InitialiseAsync();
     }
+
+    /// <summary>Initial window size, in logical pixels, before any display scaling.</summary>
+    private const int InitialWidth = 1040;
+
+    private const int InitialHeight = 720;
+
+    /// <summary>
+    /// Opens at a size the content actually needs, centred, rather than at the framework
+    /// default.
+    /// <para>
+    /// Only the opening size — the window stays freely resizable, and a transcript long enough
+    /// to want more room is exactly the case for dragging it larger. The width is set by the
+    /// toolbar, which is the widest thing here and looks broken when its two groups collide;
+    /// the height by wanting several paragraphs visible above the transport bar.
+    /// </para>
+    /// <para>
+    /// Sized in logical pixels and scaled by the window's DPI, so that a 200% display gets a
+    /// window of the same apparent size rather than one of half of it.
+    /// </para>
+    /// </summary>
+    private void SizeToContent()
+    {
+        var handle = WindowNative.GetWindowHandle(this);
+        var scale = GetDpiForWindow(handle) / 96.0;
+
+        var width = (int)(InitialWidth * scale);
+        var height = (int)(InitialHeight * scale);
+
+        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
+
+        if (area is not null)
+        {
+            // Never larger than the screen it opens on. The chosen size is comfortable on a
+            // laptop and too tall for a small one, and a window taller than the desktop puts its
+            // own transport bar out of reach.
+            width = Math.Min(width, area.WorkArea.Width);
+            height = Math.Min(height, area.WorkArea.Height);
+        }
+
+        AppWindow.Resize(new SizeInt32(width, height));
+
+        if (area is not null)
+        {
+            AppWindow.Move(new PointInt32(
+                area.WorkArea.X + ((area.WorkArea.Width - width) / 2),
+                area.WorkArea.Y + ((area.WorkArea.Height - height) / 2)));
+        }
+    }
+
+    // DllImport rather than the newer LibraryImport, which generates unsafe marshalling code and
+    // would mean turning unsafe on for the whole app to ask one number of one function.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint hwnd);
 
     private async Task InitialiseAsync()
     {
@@ -149,6 +206,9 @@ public sealed partial class MainWindow : Window
                     DiscardButton.IsEnabled = _viewModel.HasTranscript;
                     SpeakersButton.IsEnabled = _viewModel.CanFindSpeakers;
                     break;
+                case nameof(MainViewModel.SpeakerCount):
+                    UpdateSpeakerCount();
+                    break;
                 case nameof(MainViewModel.ProvisionalText):
                     ProvisionalTextBlock.Text = _viewModel.ProvisionalText;
                     break;
@@ -166,6 +226,29 @@ public sealed partial class MainWindow : Window
                     break;
             }
         });
+    }
+
+    /// <summary>
+    /// Puts the number of speakers found on the button that edits them.
+    /// <para>
+    /// Diarization is the step most likely to be quietly wrong, and wrong in a way that is
+    /// obvious to the person who was in the room and invisible in a status line they have
+    /// already scrolled past. Two people talking and a badge reading 5 is a whole diagnosis at a
+    /// glance, and the fix is behind the button it is sitting on.
+    /// </para>
+    /// </summary>
+    private void UpdateSpeakerCount()
+    {
+        var count = _viewModel.SpeakerCount;
+
+        SpeakerCountText.Text = count.ToString();
+        SpeakerCountBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        ToolTipService.SetToolTip(
+            SpeakersButton,
+            count == 0
+                ? "Work out who spoke"
+                : $"{count} {(count == 1 ? "speaker" : "speakers")} found — click to rename or recount");
     }
 
     /// <summary>
@@ -195,9 +278,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // Getting ready on its own account rather than because anyone asked. Nothing is
-        // disabled: the glossary, the file picker and the window itself all work, and pressing
-        // record simply waits for the load already running rather than starting a second one.
+        // Warming up needs no banner. The moving bar and the status line already say it, and the
+        // banner style is reserved for the two states that are instructions to act on — hold off,
+        // speak now.
         if (_viewModel.IsWarmingUp)
         {
             StartButton.Visibility = Visibility.Visible;
@@ -205,17 +288,22 @@ public sealed partial class MainWindow : Window
 
             StartLabel.Text = "Start listening";
             StartIcon.Glyph = "";                // microphone
-            StartButton.IsEnabled = true;
-            OpenFileButton.IsEnabled = true;
-            ProgressBarControl.IsIndeterminate = true;
 
-            ShowCue(
-                WarmingBackground,
-                "Warming up",
-                "Loading the speech model — this takes a few seconds the first time. Set up your "
-                + "glossary meanwhile if you like; pressing record now will start as soon as it "
-                + "is ready.",
-                pulse: false);
+            // Greyed out rather than live but useless. Recording cannot start before the model
+            // is loaded, so an enabled button would take the click and appear to do nothing;
+            // disabled, with the reason on hover, says so where the user is already looking.
+            StartButton.IsEnabled = false;
+            ToolTipService.SetToolTip(
+                StartButton,
+                "Warming up — the model takes a few seconds the first time");
+
+            // The file picker stays open. Choosing a recording takes long enough that the load
+            // finishes underneath it, and a run queued meanwhile simply waits.
+            OpenFileButton.IsEnabled = true;
+
+            ProgressBarControl.IsIndeterminate = true;
+            PulseStoryboard.Stop();
+            CueBanner.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -228,6 +316,7 @@ public sealed partial class MainWindow : Window
         StopButton.Visibility = _viewModel.IsRecording ? Visibility.Visible : Visibility.Collapsed;
 
         StartButton.IsEnabled = true;
+        ToolTipService.SetToolTip(StartButton, null);
         StartLabel.Text = "Start listening";
         StartIcon.Glyph = "";                      // microphone
         OpenFileButton.IsEnabled = !_viewModel.IsRecording;

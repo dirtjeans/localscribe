@@ -60,14 +60,27 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     /// <summary>What the loaded pair of graphs turned out to be.</summary>
     public WhisperModelSignature Signature { get; }
 
+    /// <summary>
+    /// The weights actually loaded, named after the directory they came from.
+    /// <para>
+    /// Not the size the plan asked for, which is a different thing and was being reported as
+    /// though it were this one. The planner asks for medium.en; what is installed may be a
+    /// published build under its own name, and the loader takes it rather than failing. Showing
+    /// the request instead of the result told the user they were running a model they were not.
+    /// </para>
+    /// </summary>
+    public string ModelName { get; }
+
     private WhisperOnnxTranscriber(
         InferenceSession encoder,
         InferenceSession decoder,
         WhisperTokenizer tokenizer,
         ExecutionPlan plan,
         WhisperModelSignature signature,
+        string modelName,
         int maxTokensPerWindow)
     {
+        ModelName = modelName;
         _encoder = encoder;
         _decoder = decoder;
         _tokenizer = tokenizer;
@@ -126,9 +139,10 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         {
             var signature = DetectSignature(encoder, decoder);
             var tokenizer = WhisperTokenizer.LoadFromDirectory(modelDirectory);
+            var name = new DirectoryInfo(modelDirectory.TrimEnd(Path.DirectorySeparatorChar)).Name;
 
             return new WhisperOnnxTranscriber(
-                encoder, decoder, tokenizer, plan, signature, maxTokensPerWindow);
+                encoder, decoder, tokenizer, plan, signature, name, maxTokensPerWindow);
         }
         catch
         {
@@ -172,7 +186,7 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         {
             var language = DetectedLanguage is { } code ? $", {code}" : string.Empty;
 
-            return $"Whisper {_plan.WhisperModel}: encoder on {_plan.Encoder.Device}, "
+            return $"Whisper {ModelName}: encoder on {_plan.Encoder.Device}, "
                 + $"decoder on {_plan.Decoder.Device} ({Signature.Describe()}{language})";
         }
     }

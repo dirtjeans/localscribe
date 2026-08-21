@@ -57,10 +57,16 @@ public sealed class TranscriptRefiner
         _model = model ?? throw new ArgumentNullException(nameof(model));
     }
 
+    /// <param name="progress">
+    /// Fraction of the cleanup done, from 0 to 1. Worth reporting because this runs a language
+    /// model over the whole transcript a window at a time, which on a long recording is minutes
+    /// during which nothing else says anything is happening.
+    /// </param>
     public async Task<RefinementResult> RefineAsync(
         Transcript transcript,
         IReadOnlyList<string>? glossary = null,
         RefinementOutputs outputs = RefinementOutputs.Default,
+        IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transcript);
@@ -71,8 +77,22 @@ public sealed class TranscriptRefiner
             return new RefinementResult(rawText);
         }
 
-        var cleaned = outputs.HasFlag(RefinementOutputs.Punctuation) || outputs.HasFlag(RefinementOutputs.Glossary)
-            ? await CleanAsync(rawText, glossary, outputs, cancellationToken).ConfigureAwait(false)
+        // Every call to the model is one step, counted up front so the fraction means something
+        // from the first one rather than jumping about as the work reveals itself.
+        var cleanupWindows = outputs.HasFlag(RefinementOutputs.Punctuation) || outputs.HasFlag(RefinementOutputs.Glossary)
+            ? SplitIntoWindows(rawText, WordsPerCleanupWindow).Count()
+            : 0;
+
+        var totalSteps = Math.Max(1,
+            cleanupWindows
+            + (outputs.HasFlag(RefinementOutputs.Summary) ? 1 : 0)
+            + (outputs.HasFlag(RefinementOutputs.ActionItems) ? 1 : 0));
+
+        var completed = 0;
+        void Step() => progress?.Report(Math.Min(1.0, ++completed / (double)totalSteps));
+
+        var cleaned = cleanupWindows > 0
+            ? await CleanAsync(rawText, glossary, outputs, Step, cancellationToken).ConfigureAwait(false)
             : rawText;
 
         string? summary = null;
@@ -83,6 +103,8 @@ public sealed class TranscriptRefiner
                 cleaned,
                 maxTokens: 512,
                 cancellationToken).ConfigureAwait(false)).Trim();
+
+            Step();
         }
 
         IReadOnlyList<string>? actionItems = null;
@@ -103,6 +125,7 @@ public sealed class TranscriptRefiner
         string rawText,
         IReadOnlyList<string>? glossary,
         RefinementOutputs outputs,
+        Action onWindowDone,
         CancellationToken cancellationToken)
     {
         var systemPrompt = BuildCleanupSystemPrompt(glossary, outputs);
@@ -122,6 +145,7 @@ public sealed class TranscriptRefiner
             }
 
             builder.Append(cleaned.Trim());
+            onWindowDone();
         }
 
         return builder.ToString();
