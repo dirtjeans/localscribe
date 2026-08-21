@@ -22,12 +22,86 @@ public sealed class WhisperTokenizer
     private readonly IReadOnlyDictionary<int, string> _idToToken;
     private readonly Dictionary<char, byte> _unicodeToByte;
 
+    private readonly Dictionary<string, int> _tokenToId;
+    private readonly Dictionary<byte, char> _byteToUnicode;
+    private readonly int _longestToken;
+
     private WhisperTokenizer(IReadOnlyDictionary<int, string> idToToken, SpecialTokens specialTokens)
     {
         _idToToken = idToToken;
         Special = specialTokens;
         _unicodeToByte = BuildByteDecoder();
         Languages = FindLanguages(idToToken, specialTokens);
+
+        _byteToUnicode = _unicodeToByte.ToDictionary(pair => pair.Value, pair => pair.Key);
+
+        // Ordinary text tokens only. A prompt made of special markers would be nonsense, and
+        // <|startoftranscript|> arriving inside one would end the prompt early.
+        _tokenToId = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (id, token) in idToToken)
+        {
+            if (id < specialTokens.StartOfTranscript && !_tokenToId.ContainsKey(token))
+            {
+                _tokenToId[token] = id;
+            }
+        }
+
+        _longestToken = _tokenToId.Count == 0 ? 1 : _tokenToId.Keys.Max(t => t.Length);
+    }
+
+    /// <summary>
+    /// Turns text into token ids, for use as a prompt.
+    /// <para>
+    /// Longest-match rather than true byte-pair encoding, which would need the merge table this
+    /// export does not ship. The difference matters when encoding text the model must reproduce
+    /// exactly; it does not matter for a prompt, which is only ever conditioning. Any valid
+    /// sequence of tokens spelling the right characters does the job.
+    /// </para>
+    /// <para>
+    /// Byte-level, like the vocabulary: text becomes UTF-8 bytes, each byte becomes the printable
+    /// stand-in the vocabulary is written in, and the result is matched against it. That is what
+    /// makes a leading space part of a word rather than a token of its own.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<int> Encode(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        var builder = new StringBuilder();
+        foreach (var value in Encoding.UTF8.GetBytes(text))
+        {
+            builder.Append(_byteToUnicode.TryGetValue(value, out var character) ? character : (char)value);
+        }
+
+        var encoded = builder.ToString();
+        var tokens = new List<int>();
+        var at = 0;
+
+        while (at < encoded.Length)
+        {
+            var length = Math.Min(_longestToken, encoded.Length - at);
+            var matched = false;
+
+            for (; length > 0; length--)
+            {
+                if (_tokenToId.TryGetValue(encoded.Substring(at, length), out var id))
+                {
+                    tokens.Add(id);
+                    at += length;
+                    matched = true;
+                    break;
+                }
+            }
+
+            // A character the vocabulary cannot spell at all. Skipping it keeps the rest of the
+            // prompt usable, which is worth more than refusing the lot.
+            if (!matched)
+            {
+                at++;
+            }
+        }
+
+        return tokens;
     }
 
     /// <summary>
@@ -114,6 +188,10 @@ public sealed class WhisperTokenizer
     /// <param name="StartOfTranscript">Opens every decode.</param>
     /// <param name="EndOfText">Ends a decode.</param>
     /// <param name="Transcribe">Selects transcription rather than translation.</param>
+    /// <param name="StartOfPrev">
+    /// Id of <c>&lt;|startofprev|&gt;</c>, which opens a prompt of earlier or example text. -1
+    /// when the export has no such token.
+    /// </param>
     /// <param name="English">
     /// Id of <c>&lt;|en|&gt;</c>, or -1 on an English-only model, which has no language tokens
     /// because it needs none.
@@ -130,7 +208,8 @@ public sealed class WhisperTokenizer
         int NoTimestamps,
         int NoSpeech,
         int FirstTimestamp,
-        int English = -1)
+        int English = -1,
+        int StartOfPrev = -1)
     {
         /// <summary>True when this vocabulary carries language tokens and therefore needs one.</summary>
         public bool IsMultilingual => English >= 0;
@@ -209,7 +288,8 @@ public sealed class WhisperTokenizer
                 NoTimestamps: Find("<|notimestamps|>", required: false),
                 NoSpeech: Find("<|nospeech|>", required: false),
                 FirstTimestamp: Find("<|0.00|>", required: false),
-                English: Find("<|en|>", required: false)));
+                English: Find("<|en|>", required: false),
+                StartOfPrev: Find("<|startofprev|>", required: false)));
     }
 
     /// <summary>
@@ -273,9 +353,25 @@ public sealed class WhisperTokenizer
     /// is multilingual, because naming a language is what keeps the output stable — an empty
     /// slot is the one option that is always wrong.
     /// </param>
-    public IReadOnlyList<int> BuildPrompt(bool withTimestamps = true, int languageToken = -1)
+    /// <param name="priorTokens">
+    /// Text to condition on, as tokens, or null for none. Emitted after
+    /// <c>&lt;|startofprev|&gt;</c> and before the start marker, which is where Whisper expects
+    /// a prompt and the only place it is read as context rather than as speech.
+    /// </param>
+    public IReadOnlyList<int> BuildPrompt(
+        bool withTimestamps = true,
+        int languageToken = -1,
+        IReadOnlyList<int>? priorTokens = null)
     {
-        var prompt = new List<int> { Special.StartOfTranscript };
+        var prompt = new List<int>();
+
+        if (priorTokens is { Count: > 0 } && Special.StartOfPrev >= 0)
+        {
+            prompt.Add(Special.StartOfPrev);
+            prompt.AddRange(priorTokens);
+        }
+
+        prompt.Add(Special.StartOfTranscript);
 
         var language = languageToken >= 0 ? languageToken : Special.English;
         if (language >= 0)

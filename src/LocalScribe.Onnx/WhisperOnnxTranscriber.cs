@@ -42,6 +42,21 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     /// </summary>
     public const int DefaultMaxTokensPerWindow = WhisperModelSignature.PortableMaxDecodeLength;
 
+    /// <summary>
+    /// A short, ordinary, well-punctuated line shown to the model when a window comes back
+    /// without punctuation.
+    /// <para>
+    /// Chosen to be unremarkable. A prompt is conditioning rather than instruction, and anything
+    /// distinctive in it can surface in the transcript, so this demonstrates capitals, commas,
+    /// full stops and an apostrophe while saying nothing worth stealing.
+    /// </para>
+    /// </summary>
+    private const string PrimerText = "Hello, and thank you. Yes, that is right. Let's begin.";
+
+    private IReadOnlyList<int>? _primer;
+
+    private IReadOnlyList<int> PunctuationPrimer() => _primer ??= _tokenizer.Encode(PrimerText);
+
     /// <summary>What the loaded pair of graphs turned out to be.</summary>
     public WhisperModelSignature Signature { get; }
 
@@ -179,7 +194,33 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         var mel = _spectrogram.Compute(chunk.Samples);
         var frames = mel.Length / _spectrogram.MelBands;
 
-        var tokens = _strategy.Decode(mel, frames, cancellationToken);
+        var tokens = _strategy.Decode(mel, frames, prompt: null, cancellationToken);
+
+        // Whisper has two output conventions and picks between them per window. The other one is
+        // a bare lowercase run of words, and on some recordings it takes it for most of them,
+        // which leaves a transcript that is accurate and close to unreadable. Nudging the audio
+        // does not shake it loose — the same window decodes the same way however it is aligned —
+        // but showing the model punctuated text does, because that is what the prompt slot is
+        // for.
+        //
+        // Only on a window that came back unformatted, so nothing is conditioned that did not
+        // need it, and a recording that never degenerates costs nothing.
+        if (TranscriptQuality.LooksUnformatted(_tokenizer.Decode(tokens)))
+        {
+            var retried = _strategy.Decode(mel, frames, PunctuationPrimer(), cancellationToken);
+            var candidate = _tokenizer.Decode(retried);
+
+            // Formatted is not enough. Conditioning on example text can leave the example in the
+            // output, giving a confidently punctuated sentence made partly of words nobody said,
+            // and that reads as a worse failure than the flat one it replaced. The retry is only
+            // taken when it is still saying the same thing.
+            if (retried.Count > 0
+                && !TranscriptQuality.LooksUnformatted(candidate)
+                && TranscriptQuality.SaysTheSameThing(_tokenizer.Decode(tokens), candidate))
+            {
+                tokens = retried;
+            }
+        }
 
         return BuildSegments(tokens, chunk);
     }

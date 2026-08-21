@@ -68,4 +68,40 @@ public class TranscriptQualityTests
 
         Assert.True(TranscriptQuality.PreferCandidate(current, candidate));
     }
+
+    /// <summary>
+    /// The check that stops a repair becoming a rewrite. Conditioning the model on example text
+    /// can leave the example in the output — a confidently punctuated sentence made partly of
+    /// words nobody said, which reads worse than the flat one it replaced.
+    /// </summary>
+    [Fact]
+    public void ARetryThatInventsWordsIsNotTheSameThing()
+    {
+        const string original = "okay i am going to test the transcription ability one more time";
+        const string garbled = ". and I you for Okay, that is right. Okay's see. Okay";
+
+        Assert.False(TranscriptQuality.SaysTheSameThing(original, garbled));
+    }
+
+    [Fact]
+    public void TheSameWordsPunctuatedDifferentlyStillCount()
+    {
+        Assert.True(TranscriptQuality.SaysTheSameThing(
+            "okay i am going to test this one more time",
+            "Okay, I am going to test this one more time."));
+    }
+
+    [Fact]
+    public void ALittleDriftIsTolerated()
+    {
+        // Two readings of the same speech rarely agree on every word, and demanding they do
+        // would reject every genuine repair.
+        Assert.True(TranscriptQuality.SaysTheSameThing(
+            "one two three four five six seven eight nine ten",
+            "One, two, three, four, five, six, seven, eight, nine."));
+    }
+
+    [Fact]
+    public void NothingToCompareAgainstIsNotAFailure() =>
+        Assert.True(TranscriptQuality.SaysTheSameThing(string.Empty, "anything at all"));
 }

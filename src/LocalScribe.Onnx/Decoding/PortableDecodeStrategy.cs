@@ -27,7 +27,11 @@ internal sealed class PortableDecodeStrategy(
     int maxTokensPerWindow,
     DecodeSession session) : IWhisperDecodeStrategy
 {
-    public List<int> Decode(float[] mel, int frames, CancellationToken cancellationToken)
+    public List<int> Decode(
+        float[] mel,
+        int frames,
+        IReadOnlyList<int>? prompt,
+        CancellationToken cancellationToken)
     {
         var encoderInput = encoder.InputMetadata.Keys.First();
 
@@ -53,7 +57,8 @@ internal sealed class PortableDecodeStrategy(
 
         var tokens = new List<int>(tokenizer.BuildPrompt(
             withTimestamps: true,
-            languageToken: session.Language ?? -1));
+            languageToken: session.Language ?? -1,
+            priorTokens: prompt));
 
         var promptLength = tokens.Count;
         var limit = Math.Min(maxTokensPerWindow, signature.MaxDecodeLength);

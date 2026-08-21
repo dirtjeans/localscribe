@@ -40,7 +40,11 @@ internal sealed class QnnCachedDecodeStrategy(
     /// </summary>
     private const float MaskedScore = -100.0f;
 
-    public List<int> Decode(float[] mel, int frames, CancellationToken cancellationToken)
+    public List<int> Decode(
+        float[] mel,
+        int frames,
+        IReadOnlyList<int>? prompt,
+        CancellationToken cancellationToken)
     {
         var encoderInput = encoder.InputMetadata.Keys.First();
 
@@ -55,19 +59,28 @@ internal sealed class QnnCachedDecodeStrategy(
                 OnnxTensors.ElementTypeOf(encoder, encoderInput)),
         ]);
 
-        return DecodeWithCaches(crossCaches, cancellationToken);
+        return DecodeWithCaches(crossCaches, prompt, cancellationToken);
     }
 
     private List<int> DecodeWithCaches(
         IDisposableReadOnlyCollection<DisposableNamedOnnxValue> crossCaches,
+        IReadOnlyList<int>? prompt,
         CancellationToken cancellationToken)
     {
         var layers = signature.DecoderLayers;
         var window = signature.MaxDecodeLength;
 
-        // Starts as just the start token. The language is not known until the model has scored
-        // it, and the rest of the prompt is appended once it has.
-        var forced = new List<int> { tokenizer.Special.StartOfTranscript };
+        // With a prompt the whole opening is known in advance and fed as one: a prompt is only
+        // ever used on a retry, by which point the language has already been established, so
+        // there is nothing left to detect.
+        var forced = prompt is { Count: > 0 }
+            ? new List<int>(tokenizer.BuildPrompt(
+                withTimestamps: true,
+                languageToken: session.Language ?? -1,
+                priorTokens: prompt))
+            : [tokenizer.Special.StartOfTranscript];
+
+        var detecting = prompt is not { Count: > 0 };
         var tokens = new List<int>(forced);
         var emitted = new List<int>();
 
@@ -114,7 +127,7 @@ internal sealed class QnnCachedDecodeStrategy(
 
                     // The token after the start marker is where Whisper says what language it
                     // heard, so this step is a detection rather than a prediction.
-                    if (step == 0)
+                    if (step == 0 && detecting)
                     {
                         forced.AddRange(PromptAfterDetection(logits));
                     }

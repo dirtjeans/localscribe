@@ -16,6 +16,14 @@ internal interface IWhisperDecodeStrategy
     /// <summary>Runs encoder and decoder over one 30-second window.</summary>
     /// <param name="mel">Flat mel data in mel-major order.</param>
     /// <param name="frames">Frame count, so the mel tensor can be shaped.</param>
+    /// <param name="prompt">
+    /// Tokens to condition on, or null. Used to show the model the shape of output wanted, which
+    /// is the only lever available when it decides to return a window unpunctuated.
+    /// </param>
     /// <returns>Token ids, prompt excluded.</returns>
-    List<int> Decode(float[] mel, int frames, CancellationToken cancellationToken);
+    List<int> Decode(
+        float[] mel,
+        int frames,
+        IReadOnlyList<int>? prompt,
+        CancellationToken cancellationToken);
 }

@@ -71,4 +71,41 @@ public static class TranscriptQuality
 
     private static int WordCount(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+
+    /// <summary>
+    /// True when two readings are of the same speech rather than two different things.
+    /// <para>
+    /// A second attempt at a window can come back better formatted and wrong — conditioning the
+    /// model on example text can leave the example in the output, which produces a confidently
+    /// punctuated sentence made partly of words nobody said. Formatting alone cannot tell that
+    /// apart from a genuine improvement, so the words have to be checked too. A repair that
+    /// changes what was said is not a repair.
+    /// </para>
+    /// </summary>
+    /// <param name="original">The reading being replaced.</param>
+    /// <param name="candidate">The reading offered instead.</param>
+    /// <param name="minimumShared">Fraction of the original's words the candidate must still contain.</param>
+    public static bool SaysTheSameThing(string original, string candidate, double minimumShared = 0.7)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        var before = Words(original);
+        if (before.Count == 0)
+        {
+            return true;
+        }
+
+        var after = Words(candidate).ToHashSet(StringComparer.Ordinal);
+        var kept = before.Count(word => after.Contains(word));
+
+        return kept >= before.Count * minimumShared;
+    }
+
+    /// <summary>Words stripped to what two readings of the same speech would agree on.</summary>
+    private static List<string> Words(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(word => new string(word.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray()))
+            .Where(word => word.Length > 0)
+            .ToList();
 }
