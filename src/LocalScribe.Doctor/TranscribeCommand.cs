@@ -2,6 +2,7 @@ using System.Diagnostics;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Pipeline;
+using LocalScribe.Core.Refinement;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Onnx;
 
@@ -100,20 +101,23 @@ internal static class TranscribeCommand
         Console.WriteLine($"  Loaded in  {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
-        var chunker = new AudioChunker();
-        var chunks = chunker.Chunk(audio);
-        var results = new List<IReadOnlyList<TranscriptSegment>>();
+        // The real pipeline, not a loop of its own. A diagnostic that takes a different path
+        // through the code cannot report on the path the app uses, and the difference between
+        // the two is exactly where a window-boundary bug hides.
+        var pipeline = new TranscriptionPipeline(transcriber);
 
         var decoding = Stopwatch.StartNew();
+        TranscriptionResult result;
+
+        var progress = new Progress<TranscriptionProgress>(update =>
+            Console.WriteLine($"  window {update.ChunksCompleted} of about {update.ChunksTotal}: "
+                + $"{Trim(update.LatestText)}"));
 
         try
         {
-            foreach (var chunk in chunks)
-            {
-                var segments = await transcriber.TranscribeChunkAsync(chunk).ConfigureAwait(false);
-                results.Add(segments);
-                Console.WriteLine($"  chunk at {chunk.StartSeconds,5:F1}s -> {segments.Count} segment(s)");
-            }
+            result = await pipeline
+                .RunAsync(audio, glossary: null, RefinementOutputs.Punctuation, progress)
+                .ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -126,7 +130,8 @@ internal static class TranscribeCommand
 
         decoding.Stop();
 
-        var transcript = new Transcript(new TranscriptStitcher().Stitch(results));
+        var transcript = result.Transcript;
+
 
         Heading("Transcript");
         Console.WriteLine(transcript.FullText.Length == 0 ? "  (empty)" : transcript.FullText);
@@ -274,6 +279,14 @@ internal static class TranscribeCommand
             : "  DIFFERENT — the stop changed the text.");
 
         return 0;
+    }
+
+    /// <summary>One line of a window's text, so a long window does not flood the output.</summary>
+    private static string Trim(string text)
+    {
+        var single = text.ReplaceLineEndings(" ").Trim();
+
+        return single.Length <= 96 ? single : single[..96] + "…";
     }
 
     private static int Punctuation(string text) =>

@@ -55,6 +55,37 @@ public sealed class AudioChunker
     private int AdvanceSamples => Math.Max(1, WindowSamples - (int)(_overlapSeconds * _sampleRate));
 
     /// <summary>
+    /// One window starting at a given offset.
+    /// <para>
+    /// Exposed so a caller can decide where the next window begins rather than taking a fixed
+    /// stride. Whisper routinely stops transcribing before the end of a window — it prefers to
+    /// finish on a sentence rather than cut one — and when it stops further back than the fixed
+    /// overlap, the audio in between is transcribed by nobody.
+    /// </para>
+    /// </summary>
+    public AudioChunk WindowAt(PcmAudio audio, double startSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(audio);
+
+        var start = Math.Clamp((int)(startSeconds * _sampleRate), 0, Math.Max(0, audio.Samples.Length));
+        var available = Math.Max(0, Math.Min(WindowSamples, audio.Samples.Length - start));
+
+        var window = new float[WindowSamples];
+        if (available > 0)
+        {
+            Array.Copy(audio.Samples, start, window, 0, available);
+        }
+
+        return new AudioChunk(window, start / (double)_sampleRate, available / (double)_sampleRate);
+    }
+
+    /// <summary>How far a window steps when nothing better is known.</summary>
+    public double DefaultAdvanceSeconds => AdvanceSamples / (double)_sampleRate;
+
+    /// <summary>How far back to step from the end of transcribed speech, to avoid clipping it.</summary>
+    public double OverlapSeconds => _overlapSeconds;
+
+    /// <summary>
     /// Cuts audio into encoder-sized windows. Silence-only trailing padding is included so the
     /// tensor shape stays fixed, but is reported through <see cref="AudioChunk.ContentSeconds"/>.
     /// </summary>

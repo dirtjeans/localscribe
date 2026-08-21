@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
@@ -372,7 +373,65 @@ public sealed partial class MainWindow : Window
             $"{TranscriptFormatter.Clock(seconds)} / {TranscriptFormatter.Clock(duration)}";
     }
 
-    private void OnWaveformSizeChanged(object sender, SizeChangedEventArgs e) => DrawWaveform();
+    private void OnWaveformSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        DrawWaveform();
+        DrawSearchMarks();
+    }
+
+    /// <summary>
+    /// Marks on the waveform where the search term is said.
+    /// <para>
+    /// This is what turns the waveform into a map of the search rather than only of the sound:
+    /// four marks spread across an hour tells you at a glance whether a topic came up once or
+    /// ran through the whole meeting, which no amount of scrolling the text does.
+    /// </para>
+    /// </summary>
+    private void DrawSearchMarks()
+    {
+        WaveformMarks.Children.Clear();
+
+        var query = SearchBox.Text.Trim();
+        var duration = _viewModel.Player.DurationSeconds;
+        var width = Waveform.ActualWidth;
+        var height = Waveform.ActualHeight;
+
+        if (query.Length == 0 || duration <= 0 || width <= 1 || height <= 1)
+        {
+            return;
+        }
+
+        foreach (var (start, end) in _paragraphs.SelectMany(p => p.MatchSpans(query)))
+        {
+            var left = Math.Clamp(start / duration, 0, 1) * width;
+            var right = Math.Clamp(end / duration, 0, 1) * width;
+
+            // A brief mention is still a mention: a span narrower than this would be invisible,
+            // so it is widened rather than left off the map.
+            var markWidth = Math.Max(right - left, 3);
+
+            var mark = new Microsoft.UI.Xaml.Shapes.Rectangle
+            {
+                Width = markWidth,
+                Height = height,
+                Fill = MarkBrush,
+                RadiusX = 1,
+                RadiusY = 1,
+            };
+
+            Canvas.SetLeft(mark, Math.Min(left, Math.Max(0, width - markWidth)));
+            Canvas.SetTop(mark, 0);
+
+            WaveformMarks.Children.Add(mark);
+        }
+    }
+
+    /// <summary>
+    /// The same yellow as the marks in the text, translucent so the waveform reads through it.
+    /// One colour for one meaning: this is where the search term is.
+    /// </summary>
+    private static readonly SolidColorBrush MarkBrush =
+        new(Windows.UI.Color.FromArgb(0x88, 0xFF, 0xC1, 0x07));
 
     /// <summary>
     /// A plain click on the waveform. Kept alongside the pointer handlers because a tap is a
@@ -531,10 +590,120 @@ public sealed partial class MainWindow : Window
     private void OnSearchChanged(object sender, TextChangedEventArgs e) => ApplySearch();
 
     /// <summary>
+    /// Marks the search term wherever it appears, as each row is realised.
+    /// <para>
+    /// Done here rather than by rebuilding the text because a list only realises what is on
+    /// screen, so a transcript of any length costs the same. Highlighting is worth having on top
+    /// of the filter: the filter says which paragraphs matched, and this says where in them,
+    /// which is the part you actually want to read.
+    /// </para>
+    /// </summary>
+    private void OnContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+    {
+        if (args.InRecycleQueue || args.ItemContainer?.ContentTemplateRoot is not FrameworkElement root)
+        {
+            return;
+        }
+
+        if (FindBodyText(root) is { } body)
+        {
+            HighlightMatches(body);
+        }
+    }
+
+    /// <summary>The paragraph's own text, found by its tag rather than by position in the tree.</summary>
+    private static TextBlock? FindBodyText(DependencyObject element)
+    {
+        if (element is TextBlock { Tag: "body" } tagged)
+        {
+            return tagged;
+        }
+
+        var children = VisualTreeHelper.GetChildrenCount(element);
+
+        for (var i = 0; i < children; i++)
+        {
+            if (FindBodyText(VisualTreeHelper.GetChild(element, i)) is { } found)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    private void HighlightMatches(TextBlock body)
+    {
+        body.TextHighlighters.Clear();
+
+        var query = SearchBox.Text.Trim();
+        if (query.Length == 0)
+        {
+            return;
+        }
+
+        var highlighter = new TextHighlighter
+        {
+            Background = HighlightBackground,
+            Foreground = HighlightForeground,
+        };
+
+        var text = body.Text;
+        var at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+
+        while (at >= 0)
+        {
+            highlighter.Ranges.Add(new TextRange { StartIndex = at, Length = query.Length });
+            at = text.IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (highlighter.Ranges.Count > 0)
+        {
+            body.TextHighlighters.Add(highlighter);
+        }
+    }
+
+    /// <summary>
+    /// A literal highlighter pen rather than the accent colour. The accent already means "this
+    /// is the paragraph playing", and two different meanings in one colour is worse than a
+    /// second colour.
+    /// </summary>
+    private static readonly SolidColorBrush HighlightBackground =
+        new(Windows.UI.Color.FromArgb(255, 0xFF, 0xE1, 0x6A));
+
+    private static readonly SolidColorBrush HighlightForeground =
+        new(Windows.UI.Color.FromArgb(255, 0x1A, 0x1A, 0x1A));
+
+    /// <summary>
     /// The empty state is only for an empty transcript, not for a search that found nothing —
     /// "start listening or open a file" is unhelpful advice when the answer is to try another
     /// word. The match count already says that.
     /// </summary>
+    /// <summary>
+    /// Re-marks rows already on screen, once the list has actually built them.
+    /// <para>
+    /// Queued rather than run directly. Setting ItemsSource does not realise containers
+    /// synchronously, so asking for them on the same tick finds nothing and the marks never
+    /// appear — which is exactly how this failed the first time.
+    /// </para>
+    /// </summary>
+    private void QueueHighlightRefresh() =>
+        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, RefreshHighlights);
+
+    private void RefreshHighlights()
+    {
+        DrawSearchMarks();
+
+        for (var i = 0; i < TranscriptList.Items.Count; i++)
+        {
+            if (TranscriptList.ContainerFromIndex(i) is FrameworkElement container
+                && FindBodyText(container) is { } body)
+            {
+                HighlightMatches(body);
+            }
+        }
+    }
+
     private void UpdateEmptyState(int showing)
     {
         var nothingAtAll = _paragraphs.Count == 0 && !_viewModel.IsRecording && !_viewModel.IsBusy;
@@ -580,6 +749,7 @@ public sealed partial class MainWindow : Window
             TranscriptList.ItemsSource = _paragraphs;
             SearchCount.Text = string.Empty;
             UpdateEmptyState(_paragraphs.Count);
+            QueueHighlightRefresh();
             return;
         }
 
@@ -590,6 +760,7 @@ public sealed partial class MainWindow : Window
 
         TranscriptList.ItemsSource = matches;
         UpdateEmptyState(matches.Count);
+        QueueHighlightRefresh();
         SearchCount.Text = matches.Count switch
         {
             0 => "no matches",

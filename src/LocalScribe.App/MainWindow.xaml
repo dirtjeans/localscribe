@@ -223,6 +223,7 @@
                 SelectionMode="Single"
                 IsItemClickEnabled="True"
                 ItemClick="OnParagraphClick"
+                ContainerContentChanging="OnContainerContentChanging"
                 ShowsScrollingPlaceholders="False">
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:ParagraphView">
@@ -269,6 +270,7 @@
                                     transcript, and Save writes it out.
                                 -->
                                 <TextBlock
+                                    Tag="body"
                                     Text="{x:Bind Text}"
                                     TextWrapping="Wrap"
                                     MaxWidth="760"
@@ -372,6 +374,9 @@
                         x:Name="WaveformPlayed"
                         IsHitTestVisible="False"
                         Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+
+                    <!-- Where the search term is said. Under the playhead, over the waveform. -->
+                    <Canvas x:Name="WaveformMarks" IsHitTestVisible="False" />
 
                     <Rectangle
                         x:Name="Playhead"
