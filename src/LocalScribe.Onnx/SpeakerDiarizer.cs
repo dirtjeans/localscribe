@@ -383,13 +383,36 @@ public sealed class SpeakerDiarizer : IDisposable
     /// identity — but within a window they separate voices, and that is worth keeping.
     /// </para>
     /// </summary>
-    private List<(double Start, double End)> CollectSpeechSpans(
+    /// <summary>
+    /// One pass of the segmentation model: which local speakers were talking, and when.
+    /// <para>
+    /// "Local" because the numbering means nothing outside the window. The segmentation model
+    /// answers "how many people are talking here and when does each start and stop" without
+    /// identifying anyone, and it stays reliable on audio far too poor for the embedding model
+    /// to work on. Joining those local tracks into people across a whole recording is the job
+    /// the embeddings do, and the job that fails first.
+    /// </para>
+    /// </summary>
+    /// <param name="StartSeconds">Where the window begins in the recording.</param>
+    /// <param name="Speakers">Spans per local speaker, indexed by the window's own numbering.</param>
+    public sealed record Window(
+        double StartSeconds,
+        IReadOnlyList<IReadOnlyList<(double Start, double End)>> Speakers);
+
+    /// <summary>
+    /// Runs the segmentation model across the recording and reports each window untouched, with
+    /// no deduplication and no clustering. For diagnosis, and for anything that wants to work
+    /// from local speaker tracks rather than from embeddings.
+    /// </summary>
+    public IReadOnlyList<Window> DescribeWindows(
         PcmAudio audio,
-        IProgress<double>? progress,
-        CancellationToken cancellationToken)
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(audio);
+
         var shift = (int)(_windowSamples * WindowShiftFraction);
-        var spans = new List<(double Start, double End)>();
+        var windows = new List<Window>();
 
         for (var offset = 0; offset < audio.Samples.Length; offset += shift)
         {
@@ -423,11 +446,27 @@ public sealed class SpeakerDiarizer : IDisposable
             var active = PowersetDecoder.Decode(scores, frames, _mapping, _localSpeakers);
             var windowStart = offset / (double)audio.SampleRate;
 
+            var bySpeaker = new List<IReadOnlyList<(double Start, double End)>>(_localSpeakers);
             for (var speaker = 0; speaker < _localSpeakers; speaker++)
             {
-                spans.AddRange(SpansFor(active, frames, speaker, windowStart, available, audio.SampleRate));
+                bySpeaker.Add(
+                    [.. SpansFor(active, frames, speaker, windowStart, available, audio.SampleRate)]);
             }
+
+            windows.Add(new Window(windowStart, bySpeaker));
         }
+
+        return windows;
+    }
+
+    private List<(double Start, double End)> CollectSpeechSpans(
+        PcmAudio audio,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        var spans = DescribeWindows(audio, progress, cancellationToken)
+            .SelectMany(window => window.Speakers.SelectMany(spans => spans))
+            .ToList();
 
         // Windows overlap by ninety percent, so the same speech arrives many times over. Near
         // duplicates are dropped rather than merged: merging would join neighbours across a
