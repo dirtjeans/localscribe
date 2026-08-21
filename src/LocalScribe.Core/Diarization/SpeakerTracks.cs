@@ -448,81 +448,77 @@ public static class SpeakerTracks
     public static int[] GroupWithConstraints(
         IReadOnlyList<float[]> voices,
         IReadOnlyList<IReadOnlyList<int>> conflicts,
-        int wanted)
+        int wanted,
+        double threshold = SpeakerClustering.DefaultThreshold)
     {
         ArgumentNullException.ThrowIfNull(voices);
         ArgumentNullException.ThrowIfNull(conflicts);
 
-        var members = Enumerable.Range(0, voices.Count).Select(i => new List<int> { i }).ToList();
-        var forbidden = conflicts.Select(list => list.ToHashSet()).ToList();
-        var alive = Enumerable.Range(0, voices.Count).ToList();
+        var people = new int[voices.Count];
+        Array.Fill(people, -1);
 
-        while (alive.Count > wanted)
+        if (voices.Count == 0 || wanted <= 0)
         {
-            var bestDistance = double.MaxValue;
-            var bestA = -1;
-            var bestB = -1;
-
-            for (var i = 0; i < alive.Count; i++)
-            {
-                for (var j = i + 1; j < alive.Count; j++)
-                {
-                    var (a, b) = (alive[i], alive[j]);
-
-                    // Illegal if anybody in one group was talking over anybody in the other.
-                    if (members[a].Any(x => members[b].Any(y => forbidden[x].Contains(y))))
-                    {
-                        continue;
-                    }
-
-                    // Average linkage, as the unconstrained clustering uses: the mean distance
-                    // over every pair, which is steadier than the nearest or the furthest when
-                    // individual embeddings are noisy.
-                    var total = 0.0;
-                    var pairs = 0;
-
-                    foreach (var x in members[a])
-                    {
-                        foreach (var y in members[b])
-                        {
-                            total += SpeakerClustering.CosineDistance(voices[x], voices[y]);
-                            pairs++;
-                        }
-                    }
-
-                    if (pairs > 0 && total / pairs < bestDistance)
-                    {
-                        bestDistance = total / pairs;
-                        bestA = a;
-                        bestB = b;
-                    }
-                }
-            }
-
-            // Every remaining merge would put two people who talked over each other together.
-            // Stopping above the requested count is the honest outcome: the recording contains
-            // more distinguishable people than were asked for.
-            if (bestA < 0)
-            {
-                break;
-            }
-
-            members[bestA].AddRange(members[bestB]);
-            members[bestB].Clear();
-            forbidden[bestA].UnionWith(forbidden[bestB]);
-            alive.Remove(bestB);
+            return people;
         }
 
-        var labels = new int[voices.Count];
-        for (var i = 0; i < alive.Count; i++)
+        // Hardest first. A track that cannot sit with many others has the fewest places to go,
+        // and placing it early is what keeps the colouring tight; leaving it late is how a
+        // colouring ends up needing more colours than the graph does.
+        var order = Enumerable.Range(0, voices.Count)
+            .OrderByDescending(i => conflicts[i].Count)
+            .ToList();
+
+        var members = Enumerable.Range(0, wanted).Select(_ => new List<int>()).ToList();
+
+        foreach (var track in order)
         {
-            foreach (var track in members[alive[i]])
+            var barred = conflicts[track]
+                .Where(other => people[other] >= 0)
+                .Select(other => people[other])
+                .ToHashSet();
+
+            var legal = Enumerable.Range(0, wanted).Where(p => !barred.Contains(p)).ToList();
+
+            if (legal.Count == 0)
             {
-                labels[track] = i;
+                // More people talking at once than we were told were in the room. Somebody has
+                // to take it; the group they clash with least is the least wrong answer.
+                people[track] = Enumerable.Range(0, wanted)
+                    .OrderBy(p => conflicts[track].Count(other => people[other] == p))
+                    .First();
+
+                members[people[track]].Add(track);
+                continue;
             }
+
+            var occupied = legal.Where(p => members[p].Count > 0).ToList();
+            var empty = legal.FirstOrDefault(p => members[p].Count == 0, -1);
+
+            double DistanceTo(int person) =>
+                members[person].Average(other => SpeakerClustering.CosineDistance(voices[track], voices[other]));
+
+            var nearest = occupied.Count == 0 ? -1 : occupied.OrderBy(DistanceTo).First();
+
+            // An empty group is opened for someone who sounds like nobody already placed. Where
+            // the voices cannot be told apart this rarely fires, and the constraints above are
+            // doing the work instead — which is the intended division of labour, not a
+            // shortcoming.
+            people[track] = nearest < 0 || (empty >= 0 && DistanceTo(nearest) > threshold)
+                ? (empty >= 0 ? empty : nearest)
+                : nearest;
+
+            members[people[track]].Add(track);
         }
 
-        return labels;
+        // Numbered by how much of the recording each holds, so speaker 1 is the main voice.
+        var ranking = Enumerable.Range(0, wanted)
+            .Where(p => members[p].Count > 0)
+            .OrderByDescending(p => members[p].Count)
+            .Select((p, rank) => (p, rank))
+            .ToDictionary(x => x.p, x => x.rank);
+
+        return [.. people.Select(p => p >= 0 && ranking.TryGetValue(p, out var rank) ? rank : 0)];
     }
 
     /// <summary>
