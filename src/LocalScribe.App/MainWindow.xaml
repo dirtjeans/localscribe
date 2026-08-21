@@ -131,19 +131,6 @@
 
                 <Button x:Name="GlossaryButton" Content="Glossary" Click="OnEditGlossary" />
 
-                <!-- Off by default. A summary is a different thing to want than a transcript,
-                     it costs more than the transcript does, and asking for it every time is how
-                     a recording came back as five sentences about itself. -->
-                <ToggleButton
-                    x:Name="SummaryToggle"
-                    Click="OnToggleSummary"
-                    ToolTipService.ToolTip="Also write a summary and list action items. Slower.">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE8A5;" FontSize="16" />
-                        <TextBlock Text="Summarise" />
-                    </StackPanel>
-                </ToggleButton>
-
                 <AppBarSeparator />
 
                 <Button x:Name="CopyButton" Click="OnCopy" IsEnabled="False">
@@ -204,29 +191,11 @@
         <Grid Grid.Row="2" RowSpacing="12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <!-- What the cleanup model made of the recording, kept apart from the recording. -->
-            <Border
-                x:Name="SummaryCard"
-                Grid.Row="0"
-                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="16,12"
-                Visibility="Collapsed">
-                <TextBlock
-                    x:Name="SummaryText"
-                    TextWrapping="Wrap"
-                    IsTextSelectionEnabled="True"
-                    Style="{ThemeResource BodyTextBlockStyle}" />
-            </Border>
-
             <!-- Finding a moment in a long transcript, then clicking it to hear it. -->
-            <Grid Grid.Row="1" ColumnSpacing="12" Margin="0,0,0,8">
+            <Grid Grid.Row="0" ColumnSpacing="12" Margin="0,0,0,8">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -254,7 +223,7 @@
             -->
             <ListView
                 x:Name="TranscriptList"
-                Grid.Row="2"
+                Grid.Row="1"
                 SelectionMode="Single"
                 IsItemClickEnabled="True"
                 ItemClick="OnParagraphClick"
@@ -319,7 +288,7 @@
 
             <StackPanel
                 x:Name="EmptyState"
-                Grid.Row="2"
+                Grid.Row="1"
                 VerticalAlignment="Center"
                 HorizontalAlignment="Center"
                 MaxWidth="420"
@@ -346,7 +315,7 @@
             <!-- Words still moving. Dimmed, because showing them as settled is a small lie. -->
             <TextBlock
                 x:Name="ProvisionalTextBlock"
-                Grid.Row="2"
+                Grid.Row="1"
                 Text=""
                 TextWrapping="Wrap"
                 FontStyle="Italic"

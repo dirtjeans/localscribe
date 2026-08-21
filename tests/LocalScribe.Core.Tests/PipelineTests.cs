@@ -347,50 +347,41 @@ public sealed class TranscriptRefinerTests
         Assert.Contains(windows, window => window.Count == 1 && window[0] == segments[1]);
     }
 
-    [Theory]
-    [InlineData("- Ship the fix\n- Email Priya", 2)]
-    [InlineData("1. Ship the fix\n2. Email Priya", 2)]
-    [InlineData("• Ship the fix", 1)]
-    [InlineData("NONE", 0)]
-    [InlineData("", 0)]
-    public void ActionItemParsingToleratesTheBulletStylesModelsDriftBetween(string raw, int expected)
-    {
-        Assert.Equal(expected, TranscriptRefiner.ParseActionItems(raw).Count);
-    }
-
+    /// <summary>
+    /// The cleanup model is asked to repair a transcript and nothing else. It used to also write
+    /// summaries and pull out action items on every run — a different product, costing about
+    /// twice what the transcript did, and the only part large enough to overflow the model's
+    /// context and lose the run with it.
+    /// </summary>
     [Fact]
-    public void ActionItemsKeepTheirTextWithoutTheBullet()
-    {
-        var items = TranscriptRefiner.ParseActionItems("- Ship the fix by Friday");
-
-        Assert.Equal("Ship the fix by Friday", Assert.Single(items));
-    }
-
-    [Fact]
-    public async Task SummaryAndActionItemsAreOnlyRequestedWhenAskedFor()
+    public async Task TheModelIsOnlyEverAskedToRepairTheTranscript()
     {
         var model = new FakeLanguageModel();
         var transcript = new Transcript([new TranscriptSegment("we agreed to ship on friday", 0, 3)]);
 
-        await new TranscriptRefiner(model).RefineAsync(transcript, null, RefinementOutputs.Punctuation);
+        await new TranscriptRefiner(model).RefineAsync(transcript, null, RefinementOutputs.Everything);
 
+        Assert.NotEmpty(model.SystemPrompts);
         Assert.All(model.SystemPrompts, prompt =>
-            Assert.DoesNotContain("Summarise", prompt, StringComparison.Ordinal));
+        {
+            Assert.DoesNotContain("summar", prompt, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("action item", prompt, StringComparison.OrdinalIgnoreCase);
+        });
     }
 
+    /// <summary>There is nothing left for "everything" to mean beyond repairing the words.</summary>
     [Fact]
-    public async Task EverythingModeAsksForAllFourOutputs()
+    public async Task EverythingIsTheSameAsTheDefault()
     {
-        var model = new FakeLanguageModel((system, user) =>
-            system.Contains("action items", StringComparison.OrdinalIgnoreCase) ? "- Ship it" : user);
         var transcript = new Transcript([new TranscriptSegment("we agreed to ship on friday", 0, 3)]);
 
-        var result = await new TranscriptRefiner(model)
-            .RefineAsync(transcript, ["Friday"], RefinementOutputs.Everything);
+        var everything = new FakeLanguageModel();
+        await new TranscriptRefiner(everything).RefineAsync(transcript, null, RefinementOutputs.Everything);
 
-        Assert.NotNull(result.Summary);
-        Assert.NotNull(result.ActionItems);
-        Assert.Single(result.ActionItems);
+        var byDefault = new FakeLanguageModel();
+        await new TranscriptRefiner(byDefault).RefineAsync(transcript, null, RefinementOutputs.Default);
+
+        Assert.Equal(everything.SystemPrompts.Count, byDefault.SystemPrompts.Count);
     }
 
     [Fact]

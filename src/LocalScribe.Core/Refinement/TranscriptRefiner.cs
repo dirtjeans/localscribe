@@ -3,7 +3,15 @@ using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.Core.Refinement;
 
-/// <summary>Optional extras the cleanup pass can produce beyond a tidied transcript.</summary>
+/// <summary>
+/// What the cleanup pass may do to a transcript.
+/// <para>
+/// Repairs only. This once also wrote summaries and pulled out action items, which is a
+/// different product that happened to be possible with the same model — and it was running on
+/// every recording, costing about twice what the transcript did and overflowing the model's
+/// context on anything long. This app transcribes recordings.
+/// </para>
+/// </summary>
 [Flags]
 public enum RefinementOutputs
 {
@@ -15,19 +23,11 @@ public enum RefinementOutputs
     /// <summary>Correct names and domain terms against a supplied glossary.</summary>
     Glossary = 2,
 
-    /// <summary>Write a short summary of the recording.</summary>
-    Summary = 4,
-
-    /// <summary>Pull out action items.</summary>
-    ActionItems = 8,
-
     Default = Punctuation | Glossary,
-    Everything = Punctuation | Glossary | Summary | ActionItems,
+    Everything = Punctuation | Glossary,
 }
 
 /// <param name="CleanedText">The transcript after punctuation and glossary repair.</param>
-/// <param name="Summary">Present only when <see cref="RefinementOutputs.Summary"/> was requested.</param>
-/// <param name="ActionItems">Present only when <see cref="RefinementOutputs.ActionItems"/> was requested.</param>
 /// <param name="CleanedSegments">
 /// The same text, back in the segments it came from, with every timing intact.
 /// <para>
@@ -41,8 +41,6 @@ public enum RefinementOutputs
 /// </param>
 public sealed record RefinementResult(
     string CleanedText,
-    string? Summary = null,
-    IReadOnlyList<string>? ActionItems = null,
     IReadOnlyList<TranscriptSegment>? CleanedSegments = null);
 
 /// <summary>
@@ -92,7 +90,7 @@ public sealed class TranscriptRefiner
         var rawText = transcript.FullText;
         if (rawText.Length == 0 || outputs == RefinementOutputs.None)
         {
-            return new RefinementResult(rawText, CleanedSegments: transcript.Segments);
+            return new RefinementResult(rawText, transcript.Segments);
         }
 
         var wantsCleanup = outputs.HasFlag(RefinementOutputs.Punctuation)
@@ -106,10 +104,7 @@ public sealed class TranscriptRefiner
             ? SplitSegmentsIntoWindows(transcript.Segments, WordsPerCleanupWindow)
             : [];
 
-        var totalSteps = Math.Max(1,
-            windows.Count
-            + (outputs.HasFlag(RefinementOutputs.Summary) ? 1 : 0)
-            + (outputs.HasFlag(RefinementOutputs.ActionItems) ? 1 : 0));
+        var totalSteps = Math.Max(1, windows.Count);
 
         var completed = 0;
         void Step() => progress?.Report(Math.Min(1.0, ++completed / (double)totalSteps));
@@ -122,28 +117,7 @@ public sealed class TranscriptRefiner
             " ",
             cleanedSegments.Select(segment => segment.Text.Trim()).Where(text => text.Length > 0));
 
-        string? summary = null;
-        if (outputs.HasFlag(RefinementOutputs.Summary))
-        {
-            summary = await CondenseAsync(
-                SummarySystemPrompt, SummaryMergePrompt, cleaned, SplitDepth, cancellationToken)
-                .ConfigureAwait(false);
-
-            Step();
-        }
-
-        IReadOnlyList<string>? actionItems = null;
-        if (outputs.HasFlag(RefinementOutputs.ActionItems))
-        {
-            var raw = await CondenseAsync(
-                ActionItemsSystemPrompt, ActionItemsMergePrompt, cleaned, SplitDepth, cancellationToken)
-                .ConfigureAwait(false);
-
-            actionItems = raw is null ? null : ParseActionItems(raw);
-            Step();
-        }
-
-        return new RefinementResult(cleaned, summary, actionItems, cleanedSegments);
+        return new RefinementResult(cleaned, cleanedSegments);
     }
 
     /// <summary>
@@ -244,78 +218,6 @@ public sealed class TranscriptRefiner
 
         Rejected++;
         return window;
-    }
-
-    /// <summary>
-    /// Summarises, or lists action items, over text of any length.
-    /// <para>
-    /// The whole transcript used to go up in a single prompt. On anything longer than a short
-    /// meeting that is more than the model can hold, and the request came back as a context
-    /// length error that ended the run — after cleanup had already finished, so the cost was the
-    /// entire result. Long text is now folded: each half is condensed on its own and the pieces
-    /// condensed together.
-    /// </para>
-    /// </summary>
-    /// <param name="leafPrompt">Asked of each piece of the transcript.</param>
-    /// <param name="foldPrompt">
-    /// Asked of the pieces' answers, which is a different job and needs saying differently.
-    /// Reusing the extraction prompt here is what produced fifteen "action items" from one
-    /// meeting: asked to list the action items in a list of action items, a model returns the
-    /// list it was given. Merging means dropping what does not belong, and nothing had told it
-    /// to.
-    /// </param>
-    private async Task<string?> CondenseAsync(
-        string leafPrompt,
-        string foldPrompt,
-        string text,
-        int depth,
-        CancellationToken cancellationToken)
-    {
-        var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-
-        // Long text is split without asking first. The request would fail, and a failure costs
-        // a round trip through a language model to learn something already visible.
-        if (words.Length <= WordsPerCleanupWindow || depth <= 0)
-        {
-            return await TryCompleteAsync(leafPrompt, text, 512, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        // One pass over window-sized pieces, then one call to fold the answers together.
-        // Halving repeatedly reaches the same leaves but pays for a fold at every level of the
-        // tree: on a 2,500-word transcript that was fifteen calls against eight, and each one is
-        // several seconds of a language model.
-        var pieces = new List<string>();
-
-        for (var start = 0; start < words.Length; start += WordsPerCleanupWindow)
-        {
-            var chunk = string.Join(' ', words.Skip(start).Take(WordsPerCleanupWindow));
-
-            if (await TryCompleteAsync(leafPrompt, chunk, 512, cancellationToken).ConfigureAwait(false)
-                is { Length: > 0 } piece && !IsNothing(piece))
-            {
-                pieces.Add(piece);
-            }
-        }
-
-        // A passage with no action items answers NONE, and most passages have none. Carrying
-        // those through would put the word in the middle of the merged list.
-        if (pieces.Count == 0)
-        {
-            return null;
-        }
-
-        if (pieces.Count == 1)
-        {
-            return pieces[0];
-        }
-
-        var joined = string.Join(Environment.NewLine, pieces);
-
-        // Folded together, or left as the pieces if even that will not fit. Two summaries in
-        // sequence still say what happened.
-        return await CondenseAsync(foldPrompt, foldPrompt, joined, depth - 1, cancellationToken)
-            .ConfigureAwait(false) ?? joined;
     }
 
     /// <summary>
@@ -450,79 +352,6 @@ public sealed class TranscriptRefiner
         return builder.ToString();
     }
 
-    private const string SummarySystemPrompt =
-        """
-        Summarise this transcript in three to five sentences.
-
-        Cover what was discussed and what was decided. Use only what the transcript says;
-        if something is unclear, leave it out rather than guessing.
-
-        Reply with the summary and nothing else.
-        """;
-
-    /// <summary>Asked of several partial summaries rather than of a transcript.</summary>
-    private const string SummaryMergePrompt =
-        """
-        These are summaries of consecutive parts of one recording.
-
-        Combine them into a single summary of three to five sentences, covering what was
-        discussed and what was decided. Do not repeat a point that appears more than once, and
-        do not add anything that is not already in them.
-
-        Reply with the summary and nothing else.
-        """;
-
-    /// <summary>
-    /// Asked of one passage at a time.
-    /// <para>
-    /// The emphasis on what does not count is load-bearing, and its absence is what turned one
-    /// meeting into fifteen items reading "Ask if the objective is click through" and "See
-    /// engagement in those accounts go up" — a question somebody asked and a result somebody
-    /// hoped for, rewritten as instructions. A passage is asked in isolation and has no idea
-    /// whether it is the part of the meeting where things were decided, so it has to be told
-    /// that finding nothing is the usual answer.
-    /// </para>
-    /// </summary>
-    private const string ActionItemsSystemPrompt =
-        """
-        List the action items in this part of a transcript.
-
-        An action item is something a specific person agreed to do. These are not action items:
-        - a question somebody asked
-        - an opinion, a hope, or a result somebody wants
-        - a topic that was discussed but not assigned
-        - a restatement of what the conversation was about
-
-        Put one per line, starting each line with "- ", written as the task itself. Name who
-        owns it when the transcript says.
-
-        Most passages contain no action items at all. If this one contains none, reply with
-        exactly: NONE
-
-        Reply with the list and nothing else.
-        """;
-
-    /// <summary>Asked of the extracted lists rather than of a transcript.</summary>
-    private const string ActionItemsMergePrompt =
-        """
-        These are action items taken from different parts of one meeting. They overlap, and some
-        of them are not action items at all.
-
-        Return one consolidated list. Merge the ones that say the same thing, keeping the clearer
-        wording. Drop anything that is not a task a specific person has to do — questions,
-        opinions, hoped-for results, and descriptions of what was discussed.
-
-        Put one per line, starting each line with "- ". Do not invent anything that is not in
-        the list. If nothing is left, reply with exactly: NONE
-
-        Reply with the list and nothing else.
-        """;
-
-    /// <summary>True for a reply meaning "there was nothing here".</summary>
-    private static bool IsNothing(string reply) =>
-        reply.Trim().TrimEnd('.').Equals("NONE", StringComparison.OrdinalIgnoreCase);
-
-
     /// <summary>
     /// Cleanup output is about the same length as its input, plus headroom for the punctuation
     /// being added. Four tokens per three words is a safe overestimate for English.
@@ -531,36 +360,5 @@ public sealed class TranscriptRefiner
     {
         var words = window.Count(c => c == ' ') + 1;
         return Math.Clamp((int)(words * 2.0), 256, 4096);
-    }
-
-    /// <summary>Parses the action-item reply, tolerating the bullet styles small models drift between.</summary>
-    internal static IReadOnlyList<string> ParseActionItems(string raw)
-    {
-        // Deduplicated at the end of this method. A long transcript is condensed in pieces and
-        // the pieces folded together, so a point made twice in the recording arrives twice here.
-        if (string.IsNullOrWhiteSpace(raw) || raw.Trim().Equals("NONE", StringComparison.OrdinalIgnoreCase))
-        {
-            return [];
-        }
-
-        var items = new List<string>();
-        foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var trimmed = line.TrimStart('-', '*', '•', ' ', '\t');
-
-            // Numbered lists show up often enough to be worth handling.
-            var dotIndex = trimmed.IndexOf('.');
-            if (dotIndex is > 0 and <= 2 && trimmed[..dotIndex].All(char.IsDigit))
-            {
-                trimmed = trimmed[(dotIndex + 1)..].TrimStart();
-            }
-
-            if (trimmed.Length > 0 && !trimmed.Equals("NONE", StringComparison.OrdinalIgnoreCase))
-            {
-                items.Add(trimmed);
-            }
-        }
-
-        return [.. items.DistinctBy(item => item.ToLowerInvariant())];
     }
 }

@@ -194,12 +194,6 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.Paragraphs):
                     ShowParagraphs();
                     break;
-                case nameof(MainViewModel.Summary):
-                    SummaryText.Text = _viewModel.Summary;
-                    SummaryCard.Visibility = _viewModel.Summary.Length > 0
-                        ? Visibility.Visible
-                        : Visibility.Collapsed;
-                    break;
                 case nameof(MainViewModel.HasTranscript):
                     CopyButton.IsEnabled = _viewModel.HasTranscript;
                     SaveButton.IsEnabled = _viewModel.HasTranscript;
@@ -760,9 +754,6 @@ public sealed partial class MainWindow : Window
                 break;
         }
     }
-
-    private void OnToggleSummary(object sender, RoutedEventArgs e) =>
-        _viewModel.WantsSummary = SummaryToggle.IsChecked == true;
 
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
     {

@@ -99,13 +99,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private set => Set(ref _modelReady, value);
     }
 
-    /// <summary>Summary and action items from the cleanup model, empty when there was none.</summary>
-    public string Summary
-    {
-        get => _summary;
-        private set => Set(ref _summary, value);
-    }
-
     /// <summary>Plays back whatever was last transcribed, so a line can be clicked and heard.</summary>
     public TranscriptPlayer Player { get; } = new();
 
@@ -141,25 +134,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         Raise(nameof(Paragraphs));
         Raise(nameof(HasTranscript));
-    }
-
-    /// <summary>
-    /// Whether to also write a summary and pull out action items. Off: the transcript is what
-    /// the app is for, and this is a slow, separate thing to want.
-    /// </summary>
-    public bool WantsSummary
-    {
-        get;
-        set
-        {
-            if (field == value)
-            {
-                return;
-            }
-
-            field = value;
-            Raise(nameof(WantsSummary));
-        }
     }
 
     /// <summary>The transcript in one of the formats the save dialog offers.</summary>
@@ -569,10 +543,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // boundaries to divide at.
         SetTranscript(turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns));
 
-        if (refinement is not null)
-        {
-            Summary = Format(refinement);
-        }
     }
 
     private async Task<RefinementResult?> CleanAsync(
@@ -583,14 +553,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         await refiner.RefineAsync(
             transcript,
             Glossary,
-
-            // Punctuation and the glossary, and nothing else unless it was asked for. The app
-            // transcribes recordings; a summary is a different product that happens to be
-            // possible with the same model, and running it by default meant every transcript
-            // paid for one. It was also most of the wait — cleanup visits each window once,
-            // while the summary and the action items each re-read the whole transcript — and
-            // the only part big enough to overflow a model's context and take the run with it.
-            WantsSummary ? RefinementOutputs.Everything : RefinementOutputs.Default,
+            RefinementOutputs.Default,
             new Progress<double>(stages.Cleanup),
 
             // Shown as it lands, window by window, so the transcript is visibly gaining
@@ -685,7 +648,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         SetTranscript([]);
         ProvisionalText = string.Empty;
-        Summary = string.Empty;
         Progress = 0;
         SourceName = "Transcript";
         Status = "Discarded.";
@@ -813,7 +775,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         IsBusy = true;
         Progress = 0;
-        Summary = string.Empty;
         SetTranscript([]);
         _cancellation = new CancellationTokenSource();
 
@@ -1199,36 +1160,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private TranscriptRefiner? BuildRefiner() =>
         _languageModel is null ? null : new TranscriptRefiner(_languageModel);
-
-    /// <summary>
-    /// The cleanup model's summary and action items, shown above the transcript rather than
-    /// spliced into it. They are about the recording; the transcript is the recording.
-    /// </summary>
-    private static string Format(RefinementResult result)
-    {
-        var builder = new StringBuilder();
-
-        if (result.Summary is { Length: > 0 } summary)
-        {
-            builder.AppendLine("Summary").AppendLine(summary);
-        }
-
-        if (result.ActionItems is { Count: > 0 } actions)
-        {
-            if (builder.Length > 0)
-            {
-                builder.AppendLine();
-            }
-
-            builder.AppendLine("Action items");
-            foreach (var action in actions)
-            {
-                builder.AppendLine($"- {action}");
-            }
-        }
-
-        return builder.ToString().TrimEnd();
-    }
 
     /// <summary>Cancels whatever is running.</summary>
     public void Cancel() => _cancellation?.Cancel();
