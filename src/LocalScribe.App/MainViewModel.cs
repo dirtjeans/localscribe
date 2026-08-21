@@ -492,6 +492,83 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private const double ShortestComparableParagraph = 1.0;
 
     /// <summary>
+    /// Everything that happens once the words exist: cleanup and speaker detection, run side by
+    /// side, then combined.
+    /// <para>
+    /// Shared by both routes in. A recording used to stop here with neither — the live session
+    /// committed its segments and that was the end of it, so a transcript made in the app was
+    /// never punctuated at all, whatever cleanup model was running. That was the same complaint
+    /// the file path had, in the one path that had never been wired up.
+    /// </para>
+    /// <para>
+    /// The two stages share no data in either direction: the cleanup model rewrites text and
+    /// never looks at the audio, the diarizer reads the audio and never looks at the words.
+    /// Running them in sequence cost the shorter of the two for nothing.
+    /// </para>
+    /// </summary>
+    /// <param name="spoken">The words as transcribed, before cleanup.</param>
+    /// <param name="audio">The recording, or null when there is none to listen to again.</param>
+    private async Task FinishTranscriptAsync(
+        IReadOnlyList<TranscriptSegment> spoken,
+        PcmAudio? audio,
+        CancellationToken cancellationToken)
+    {
+        var refiner = BuildRefiner();
+
+        if (refiner is null && audio is null)
+        {
+            _segmentsBeforeSpeakers = spoken;
+            SetTranscript(spoken);
+            return;
+        }
+
+        var stages = new SharedBar(this);
+        var transcript = new Transcript(spoken);
+
+        var cleaning = refiner is null
+            ? Task.FromResult<RefinementResult?>(null)
+            : CleanAsync(refiner, transcript, stages, cancellationToken);
+
+        var listening = audio is null
+            ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
+            : FindTurnsAsync(audio, speakers: null, new Progress<double>(stages.Speakers));
+
+        await Task.WhenAll(cleaning, listening);
+
+        var refinement = await cleaning;
+        var turns = await listening;
+
+        // The cleaned segments when cleanup ran, the raw ones when it did not. This is the line
+        // that was missing for a long time: the cleaned text used to be computed and dropped,
+        // and what the user read was always the raw transcript.
+        var cleaned = refinement?.CleanedSegments ?? spoken;
+
+        _segmentsBeforeSpeakers = cleaned;
+
+        // Attribution last, on the cleaned text rather than the raw. Segments spanning a speaker
+        // change are divided at sentence boundaries, and by this point there are real sentence
+        // boundaries to divide at.
+        SetTranscript(turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns));
+
+        if (refinement is not null)
+        {
+            Summary = Format(refinement);
+        }
+    }
+
+    private async Task<RefinementResult?> CleanAsync(
+        TranscriptRefiner refiner,
+        Transcript transcript,
+        SharedBar stages,
+        CancellationToken cancellationToken) =>
+        await refiner.RefineAsync(
+            transcript,
+            Glossary,
+            RefinementOutputs.Everything,
+            new Progress<double>(stages.Cleanup),
+            cancellationToken).ConfigureAwait(true);
+
+    /// <summary>
     /// One progress bar shared by two stages running at once.
     /// <para>
     /// Reported as the mean of the two, which is a fair account of the wait: they start together
@@ -749,45 +826,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token);
 
-            // Cleanup and diarization at the same time. They share no data in either direction:
-            // the cleanup model rewrites text and never looks at the audio, the diarizer reads
-            // the audio and never looks at the words. Running them in sequence was costing the
-            // shorter of the two for nothing.
-            var stages = new SharedBar(this);
+            await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 
-            var cleaning = pipeline.RefineAsync(
-                transcript,
-                Glossary,
-                RefinementOutputs.Everything,
-                new Progress<TranscriptionProgress>(update => stages.Cleanup(update.ChunksCompleted / 100.0)),
-                _cancellation.Token);
-
-            var listening = FindTurnsAsync(
-                audio,
-                speakers: null,
-                new Progress<double>(stages.Speakers));
-
-            await Task.WhenAll(cleaning, listening);
-
-            var refinement = await cleaning;
-            var turns = await listening;
-
-            // The cleaned segments when cleanup ran, the raw ones when it did not. This is the
-            // line that was missing for a long time: the cleaned text used to be computed and
-            // dropped, and what the user read was always the raw transcript.
-            var cleaned = refinement?.CleanedSegments ?? transcript.Segments;
-
-            _segmentsBeforeSpeakers = cleaned;
-
-            // Attribution last, on the cleaned text rather than the raw text. Segments that span
-            // a speaker change are divided at sentence boundaries, and by this point there are
-            // real sentence boundaries to divide at.
-            var segments = turns is null
-                ? cleaned
-                : SpeakerDiarizer.Attribute(cleaned, turns);
-
-            SetTranscript(segments);
-            Summary = Format(new TranscriptionResult(transcript, refinement));
             Status = "Done.";
         }
         catch (OperationCanceledException)
@@ -850,6 +890,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _cancellation = new CancellationTokenSource();
         _diagnostics = SessionDiagnostics.StartIfEnabled(livePlan.Summary, transcriber.Description);
         _liveCapture = [];
+
+        // The previous recording goes now, not when this one produces its own. Everything that
+        // reads _audio — playback, the speakers button, and now the diarizer that runs when this
+        // recording stops — would otherwise be working from the last file opened, and a
+        // recording that captures nothing would have its speakers taken from that instead.
+        _audio = null;
+        _segmentsBeforeSpeakers = [];
 
         Player.Clear();
         SourceName = $"Recording {DateTime.Now:yyyy-MM-dd HH.mm}";
@@ -1021,6 +1068,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var committed = await session.FinishAsync();
+
+            // Shown straight away, unpunctuated. Cleanup takes a while and the words the user
+            // just spoke should not wait behind it.
             SetTranscript(committed);
             ProvisionalText = string.Empty;
 
@@ -1036,6 +1086,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             _liveCapture = null;
 
+            // Diagnostics record what the model emitted, so they are written before anything
+            // rewrites it.
             if (_diagnostics is not null)
             {
                 _diagnostics.Finished(committed);
@@ -1045,6 +1097,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             else
             {
                 Status = "Stopped.";
+            }
+
+            // The same finishing a transcribed file gets. Without this a recording made in the
+            // app was never cleaned up and never had its speakers worked out.
+            IsBusy = true;
+
+            try
+            {
+                await FinishTranscriptAsync(committed, _audio, _cancellation?.Token ?? default);
+                Status = "Done.";
+            }
+            finally
+            {
+                IsBusy = false;
+                Progress = 0;
             }
         }
         catch (OperationCanceledException)
@@ -1105,16 +1172,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// The cleanup model's summary and action items, shown above the transcript rather than
     /// spliced into it. They are about the recording; the transcript is the recording.
     /// </summary>
-    private static string Format(TranscriptionResult result)
+    private static string Format(RefinementResult result)
     {
         var builder = new StringBuilder();
 
-        if (result.Refinement?.Summary is { Length: > 0 } summary)
+        if (result.Summary is { Length: > 0 } summary)
         {
             builder.AppendLine("Summary").AppendLine(summary);
         }
 
-        if (result.Refinement?.ActionItems is { Count: > 0 } actions)
+        if (result.ActionItems is { Count: > 0 } actions)
         {
             if (builder.Length > 0)
             {
