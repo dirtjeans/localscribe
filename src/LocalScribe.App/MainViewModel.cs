@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using LocalScribe.Core.Audio;
+using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
 using LocalScribe.Core.Pipeline;
@@ -320,6 +321,156 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         SetTranscript(updated);
         Status = everywhere ? $"Renamed to {name} throughout." : $"Renamed to {name} for that part.";
     }
+
+    /// <summary>
+    /// Renames one paragraph and every other one that sounds like the same person.
+    /// <para>
+    /// The answer to a merge, which renaming cannot fix on its own. "Rename everywhere" moves
+    /// every paragraph carrying a label, which is right when two labels are one person and
+    /// exactly wrong when one label is two: after peeling off the first paragraph by hand, the
+    /// remaining label still means both people, so there is nothing left to point at. This
+    /// takes the paragraph the user identified as an example and sorts the others against it by
+    /// voice.
+    /// </para>
+    /// <para>
+    /// It can decline. If the paragraphs do not divide into two voices, nothing is renamed
+    /// beyond the one the user clicked, and the caller is told — a user can be wrong about a
+    /// paragraph, and forcing a split on a single voice would scatter a correctly-labelled
+    /// speaker across two names.
+    /// </para>
+    /// </summary>
+    /// <returns>How many other paragraphs were moved, or -1 when there was no split to make.</returns>
+    public async Task<int> RenameSpeakerByVoiceAsync(
+        double startSeconds,
+        double endSeconds,
+        string? currentName,
+        string newName)
+    {
+        if (string.IsNullOrWhiteSpace(newName) || _segments.Count == 0 || _audio is not { } audio)
+        {
+            return -1;
+        }
+
+        var directory = Path.Combine(_modelRoot, "diarization");
+        if (!File.Exists(Path.Combine(directory, "embedding.onnx")))
+        {
+            return -1;
+        }
+
+        var name = newName.Trim();
+
+        // The paragraph the user pointed at, and the others still carrying the old label.
+        var example = Paragraphs.FirstOrDefault(paragraph =>
+            paragraph.StartSeconds <= startSeconds && paragraph.EndSeconds >= endSeconds);
+
+        if (example is null)
+        {
+            return -1;
+        }
+
+        var others = Paragraphs
+            .Where(paragraph => !ReferenceEquals(paragraph, example))
+            .Where(paragraph => string.Equals(paragraph.Speaker, currentName, StringComparison.Ordinal))
+            .Where(paragraph => paragraph.EndSeconds - paragraph.StartSeconds >= ShortestComparableParagraph)
+            .ToList();
+
+        if (others.Count == 0)
+        {
+            RenameSpeaker(startSeconds, endSeconds, currentName, name, everywhere: false);
+            return 0;
+        }
+
+        IsBusy = true;
+        Status = "Listening to the other parts…";
+        Progress = 0;
+
+        SpeakerSplit.Result split;
+
+        try
+        {
+            split = await Task.Run(() =>
+            {
+                using var diarizer = SpeakerDiarizer.Load(directory);
+
+                if (diarizer.EmbedSpan(audio, example.StartSeconds, example.EndSeconds)
+                    is not { } exampleVoice)
+                {
+                    return new SpeakerSplit.Result([], 0, false);
+                }
+
+                var voices = new List<float[]>(others.Count);
+                var kept = new List<int>(others.Count);
+
+                for (var i = 0; i < others.Count; i++)
+                {
+                    Progress = (i + 1) / (double)others.Count;
+
+                    if (diarizer.EmbedSpan(audio, others[i].StartSeconds, others[i].EndSeconds)
+                        is { } voice)
+                    {
+                        voices.Add(voice);
+                        kept.Add(i);
+                    }
+                }
+
+                var found = SpeakerSplit.ByExample(exampleVoice, voices);
+
+                // Indexes come back against the embeddings that succeeded, which is a shorter
+                // list than the paragraphs whenever one was too quiet to measure.
+                return found with
+                {
+                    JoinsExample = found.JoinsExample.Select(index => kept[index]).ToList(),
+                };
+            }).ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            Status = $"Could not compare the voices: {exception.Message}";
+            return -1;
+        }
+        finally
+        {
+            IsBusy = false;
+            Progress = 0;
+        }
+
+        if (!split.Split)
+        {
+            RenameSpeaker(startSeconds, endSeconds, currentName, name, everywhere: false);
+            Status = $"Renamed that part to {name}. The other parts sound like the same voice, "
+                + "so they were left alone.";
+            return -1;
+        }
+
+        // Applied in one pass. Paragraphs are grouped by speaker, so renaming them one at a time
+        // would regroup the transcript underneath the ranges still waiting to be renamed.
+        var moving = split.JoinsExample.Select(index => others[index]).Append(example).ToList();
+
+        var updated = _segments.Select(segment =>
+        {
+            var midpoint = Midpoint(segment);
+
+            var inScope = moving.Any(paragraph =>
+                midpoint >= paragraph.StartSeconds && midpoint <= paragraph.EndSeconds);
+
+            return inScope ? segment with { Speaker = name } : segment;
+        }).ToList();
+
+        SetTranscript(updated);
+
+        var moved = split.JoinsExample.Count;
+        Status = moved == 0
+            ? $"Renamed that part to {name}. No other part sounded like them."
+            : $"Renamed that part and {moved} other{(moved == 1 ? "" : "s")} to {name}.";
+
+        return moved;
+    }
+
+    /// <summary>
+    /// Below this a paragraph identifies a voice too poorly to sort, so it keeps its label
+    /// rather than being assigned on a guess.
+    /// </summary>
+    private const double ShortestComparableParagraph = 1.0;
 
     private static double Midpoint(TranscriptSegment segment) =>
         segment.StartSeconds + ((segment.EndSeconds - segment.StartSeconds) / 2);

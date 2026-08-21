@@ -683,6 +683,21 @@ public sealed partial class MainWindow : Window
             SelectionLength = paragraph.Speaker.Length,
         };
 
+        // Three scopes, so radio buttons rather than three verbs across the bottom of the
+        // dialog. The buttons said "Rename everywhere" and "This part only", which read as
+        // opposites and hid the fact that the interesting case is neither.
+        var scope = new RadioButtons
+        {
+            Header = "Apply to",
+            SelectedIndex = 0,
+            ItemsSource = new[]
+            {
+                "This part only",
+                $"Every part labelled {paragraph.Speaker}",
+                "This part and others that sound like them",
+            },
+        };
+
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -693,33 +708,57 @@ public sealed partial class MainWindow : Window
                 Children =
                 {
                     input,
+                    scope,
                     new TextBlock
                     {
-                        Text = "Rename every part attributed to this speaker, or only this one — "
-                            + "useful when two people have been run together, or one person split in two.",
+                        Text = "Use \u201cevery part\u201d when two labels turn out to be one person, "
+                            + "and \u201cothers that sound like them\u201d when one label turns out to "
+                            + "be two \u2014 that compares the voices and moves only the matching parts.",
                         TextWrapping = TextWrapping.Wrap,
                         Opacity = 0.8,
+                        Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
                     },
                 },
             },
-            PrimaryButtonText = "Rename everywhere",
-            SecondaryButtonText = "This part only",
+            PrimaryButtonText = "Rename",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
 
         var choice = await dialog.ShowAsync();
-        if (choice == ContentDialogResult.None || input.Text.Trim().Length == 0)
+        if (choice != ContentDialogResult.Primary || input.Text.Trim().Length == 0)
         {
             return;
         }
 
-        _viewModel.RenameSpeaker(
-            paragraph.StartSeconds,
-            paragraph.EndSeconds,
-            paragraph.Speaker,
-            input.Text,
-            everywhere: choice == ContentDialogResult.Primary);
+        switch (scope.SelectedIndex)
+        {
+            case 1:
+                _viewModel.RenameSpeaker(
+                    paragraph.StartSeconds,
+                    paragraph.EndSeconds,
+                    paragraph.Speaker,
+                    input.Text,
+                    everywhere: true);
+                break;
+
+            case 2:
+                await _viewModel.RenameSpeakerByVoiceAsync(
+                    paragraph.StartSeconds,
+                    paragraph.EndSeconds,
+                    paragraph.Speaker,
+                    input.Text);
+                break;
+
+            default:
+                _viewModel.RenameSpeaker(
+                    paragraph.StartSeconds,
+                    paragraph.EndSeconds,
+                    paragraph.Speaker,
+                    input.Text,
+                    everywhere: false);
+                break;
+        }
     }
 
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
