@@ -22,10 +22,21 @@ public static class SpeakerClustering
     /// Empirical, and the single number most worth tuning: too low splits one speaker into
     /// several, too high merges two into one. Splitting is the kinder failure — a transcript
     /// with "Speaker 3" appearing spuriously is readable, one that attributes a sentence to the
-    /// wrong person is worse than one with no labels at all.
+    /// wrong person is worse than one with no labels at all, and a label is now something the
+    /// user can correct in one click.
+    /// </para>
+    /// <para>
+    /// Measured rather than guessed. On a two-speaker recording, 0.30 split them into four,
+    /// 0.50 merged them into one, and everything between 0.40 and 0.45 attributed every turn
+    /// correctly. This sits in the middle of that band, a little towards splitting.
+    /// </para>
+    /// <para>
+    /// It was calibrated against synthesised voices, which are cleaner and more consistent than
+    /// people, so real recordings may want it moved. The doctor takes --threshold for exactly
+    /// that.
     /// </para>
     /// </summary>
-    public const double DefaultThreshold = 0.55;
+    public const double DefaultThreshold = 0.42;
 
     /// <summary>
     /// Assigns each embedding a speaker index.

@@ -520,6 +520,68 @@ public sealed partial class MainWindow : Window
         Seek(paragraph.StartSeconds, play: true);
     }
 
+    /// <summary>
+    /// Renames a speaker, asking how far the change should reach.
+    /// <para>
+    /// The scope is the question, not an afterthought. Diarization splits one person into two
+    /// often enough that "this part is also Kim" has to be possible, and having named someone
+    /// once, naming the rest of what they said has to be one action rather than thirty.
+    /// </para>
+    /// </summary>
+    private async void OnRenameSpeaker(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: ParagraphView paragraph })
+        {
+            return;
+        }
+
+        var input = new TextBox
+        {
+            Text = paragraph.Speaker,
+            PlaceholderText = "Name",
+            SelectionStart = 0,
+            SelectionLength = paragraph.Speaker.Length,
+        };
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = $"Rename {paragraph.Speaker}",
+            Content = new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    input,
+                    new TextBlock
+                    {
+                        Text = "Rename every part attributed to this speaker, or only this one — "
+                            + "useful when two people have been run together, or one person split in two.",
+                        TextWrapping = TextWrapping.Wrap,
+                        Opacity = 0.8,
+                    },
+                },
+            },
+            PrimaryButtonText = "Rename everywhere",
+            SecondaryButtonText = "This part only",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        var choice = await dialog.ShowAsync();
+        if (choice == ContentDialogResult.None || input.Text.Trim().Length == 0)
+        {
+            return;
+        }
+
+        _viewModel.RenameSpeaker(
+            paragraph.StartSeconds,
+            paragraph.EndSeconds,
+            paragraph.Speaker,
+            input.Text,
+            everywhere: choice == ContentDialogResult.Primary);
+    }
+
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is ParagraphView paragraph)
@@ -704,6 +766,26 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>Non-overlapping, case-insensitive occurrences of a term in a paragraph.</summary>
+    private static int Occurrences(string text, string query)
+    {
+        if (query.Length == 0)
+        {
+            return 0;
+        }
+
+        var count = 0;
+        var at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+
+        while (at >= 0)
+        {
+            count++;
+            at = text.IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return count;
+    }
+
     private void UpdateEmptyState(int showing)
     {
         var nothingAtAll = _paragraphs.Count == 0 && !_viewModel.IsRecording && !_viewModel.IsBusy;
@@ -761,11 +843,17 @@ public sealed partial class MainWindow : Window
         TranscriptList.ItemsSource = matches;
         UpdateEmptyState(matches.Count);
         QueueHighlightRefresh();
-        SearchCount.Text = matches.Count switch
+
+        // Occurrences, not paragraphs. Every one of them is marked in the text and on the
+        // waveform, so counting the paragraphs they happen to sit in reports a different number
+        // from the one on screen.
+        var hits = matches.Sum(p => Occurrences(p.Text, query));
+
+        SearchCount.Text = hits switch
         {
             0 => "no matches",
             1 => "1 match",
-            _ => $"{matches.Count} matches",
+            _ => $"{hits} matches",
         };
     }
 

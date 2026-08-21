@@ -248,12 +248,18 @@
                                 Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
                             <StackPanel Grid.Column="1" Spacing="3">
-                                <TextBlock
-                                    Text="{x:Bind Speaker}"
+                                <!--
+                                    A button, because a machine-guessed name is a first draft.
+                                    Diarization splits one person in two often enough that
+                                    correcting a label has to be as easy as reading it.
+                                -->
+                                <HyperlinkButton
+                                    Content="{x:Bind Speaker}"
                                     Visibility="{x:Bind HasSpeaker}"
+                                    Click="OnRenameSpeaker"
+                                    Padding="0"
                                     FontWeight="SemiBold"
-                                    FontSize="12"
-                                    Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                    FontSize="12" />
 
                                 <!--
                                     Held to a readable measure rather than the width of the

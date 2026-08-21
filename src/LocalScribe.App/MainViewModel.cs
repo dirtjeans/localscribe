@@ -119,6 +119,96 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _ => TranscriptFormatter.ToPlainText(Paragraphs),
     };
 
+    /// <summary>
+    /// Works out who spoke when, if the speaker models are installed.
+    /// <para>
+    /// Optional on purpose. Whisper does not separate voices and the models that do are a
+    /// separate download, so a machine without them transcribes exactly as before rather than
+    /// failing. A failure here costs the labels, not the transcript.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<TranscriptSegment>> AttributeSpeakersAsync(
+        IReadOnlyList<TranscriptSegment> segments,
+        PcmAudio audio)
+    {
+        var directory = Path.Combine(_modelRoot, "diarization");
+
+        if (!File.Exists(Path.Combine(directory, "segmentation.onnx")))
+        {
+            return segments;
+        }
+
+        Status = "Working out who spoke…";
+
+        try
+        {
+            return await Task.Run(() =>
+            {
+                using var diarizer = SpeakerDiarizer.Load(directory);
+                var turns = diarizer.Diarize(audio, cancellationToken: _cancellation?.Token ?? default);
+
+                return SpeakerDiarizer.Attribute(segments, turns);
+            }).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            Status = $"Transcribed, but speakers could not be identified: {exception.Message}";
+            return segments;
+        }
+    }
+
+    /// <summary>
+    /// Renames a speaker, either for one paragraph or throughout.
+    /// <para>
+    /// Both are needed and they are not the same operation. Diarization splits one person into
+    /// two often enough that "this part is also Kim" has to be possible, and having named
+    /// someone once, naming every other thing they said has to be one action rather than
+    /// thirty.
+    /// </para>
+    /// </summary>
+    /// <param name="startSeconds">Start of the paragraph being renamed.</param>
+    /// <param name="endSeconds">End of the paragraph being renamed.</param>
+    /// <param name="currentName">The label as it stands, used to find the rest of them.</param>
+    /// <param name="newName">What to call them.</param>
+    /// <param name="everywhere">True to rename every paragraph currently sharing the label.</param>
+    public void RenameSpeaker(
+        double startSeconds,
+        double endSeconds,
+        string? currentName,
+        string newName,
+        bool everywhere)
+    {
+        if (string.IsNullOrWhiteSpace(newName) || _segments.Count == 0)
+        {
+            return;
+        }
+
+        var name = newName.Trim();
+
+        var updated = _segments.Select(segment =>
+        {
+            var inScope = everywhere
+                ? string.Equals(segment.Speaker, currentName, StringComparison.Ordinal)
+
+                // Otherwise only the segments inside the paragraph that was clicked. Compared on
+                // midpoint so a segment straddling a boundary belongs to one paragraph rather
+                // than to both or to neither.
+                : Midpoint(segment) >= startSeconds && Midpoint(segment) <= endSeconds;
+
+            return inScope ? segment with { Speaker = name } : segment;
+        }).ToList();
+
+        SetTranscript(updated);
+        Status = everywhere ? $"Renamed to {name} throughout." : $"Renamed to {name} for that part.";
+    }
+
+    private static double Midpoint(TranscriptSegment segment) =>
+        segment.StartSeconds + ((segment.EndSeconds - segment.StartSeconds) / 2);
+
     /// <summary>Throws the transcript away and releases the audio behind it.</summary>
     public void Discard()
     {
@@ -279,7 +369,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 progress,
                 _cancellation.Token);
 
-            SetTranscript(result.Transcript.Segments);
+            var segments = await AttributeSpeakersAsync(result.Transcript.Segments, audio);
+
+            SetTranscript(segments);
             Summary = Format(result);
             Status = "Done.";
         }
