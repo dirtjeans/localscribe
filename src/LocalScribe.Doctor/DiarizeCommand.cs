@@ -16,6 +16,126 @@ namespace LocalScribe.Doctor;
 /// </summary>
 internal static class DiarizeCommand
 {
+    /// <summary>
+    /// Runs the models once, then clusters the same embeddings at every threshold in turn.
+    /// <para>
+    /// The threshold decides whether two people are told apart, and the right value is a
+    /// property of the recording rather than of the code — how alike the voices are, how much
+    /// room noise there is, how long anyone talks uninterrupted. It has been calibrated twice on
+    /// a sample of synthesised speech, which is cleaner and more consistent than people, and
+    /// been wrong about real recordings both times.
+    /// </para>
+    /// <para>
+    /// So this shows the answer rather than assuming it: what the speaker count does across the
+    /// range, and how the distances between stretches of speech are actually distributed. Two
+    /// speakers who are genuinely distinguishable leave a gap in that distribution, and the
+    /// threshold belongs in the gap.
+    /// </para>
+    /// </summary>
+    public static int Sweep(string audioPath, string modelDirectory)
+    {
+        if (!File.Exists(audioPath))
+        {
+            Console.Error.WriteLine($"No such file: {audioPath}");
+            return 1;
+        }
+
+        Heading("Threshold sweep");
+        Console.WriteLine($"  Audio      {audioPath}");
+
+        var audio = WavReader.Read(audioPath);
+        audio.EnsureWhisperFormat();
+        Console.WriteLine($"  Duration   {audio.DurationSeconds:F1}s");
+
+        IReadOnlyList<SpeakerDiarizer.Voice> voices;
+        var watch = Stopwatch.StartNew();
+
+        try
+        {
+            using var diarizer = SpeakerDiarizer.Load(modelDirectory);
+            voices = diarizer.Describe(audio);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"  Failed: {exception.GetType().Name}: {exception.Message}");
+            return 1;
+        }
+
+        if (voices.Count < 2)
+        {
+            Console.Error.WriteLine($"  Only {voices.Count} stretch(es) of speech found — nothing to compare.");
+            return 1;
+        }
+
+        Console.WriteLine($"  Speech     {voices.Count} stretches, "
+            + $"{voices.Sum(v => v.DurationSeconds):F1}s, median {Median([.. voices.Select(v => v.DurationSeconds)]):F1}s");
+        Console.WriteLine($"  Measured   in {watch.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine();
+
+        var points = voices.Select(v => Unit(v.Embedding)).ToList();
+
+        var distances = new List<double>();
+        for (var i = 0; i < points.Count; i++)
+        {
+            for (var j = i + 1; j < points.Count; j++)
+            {
+                distances.Add(SpeakerClustering.CosineDistance(points[i], points[j]));
+            }
+        }
+
+        distances.Sort();
+
+        Heading("How far apart the stretches of speech are");
+        foreach (var percentile in new[] { 5, 10, 25, 50, 75, 90, 95 })
+        {
+            Console.WriteLine($"  {percentile,3}%      {distances[(int)((percentile / 100.0) * (distances.Count - 1))]:F3}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  A recording with two distinguishable speakers has two humps here: the");
+        Console.WriteLine("  low one is the same person twice, the high one is two people. If the");
+        Console.WriteLine("  numbers climb smoothly with no gap, the voices are not separable and no");
+        Console.WriteLine("  threshold will help.");
+        Console.WriteLine();
+
+        Heading("Speakers found, by threshold");
+        Console.WriteLine("  threshold   speakers   largest share of speech");
+
+        for (var threshold = 0.10; threshold <= 0.75001; threshold += 0.05)
+        {
+            // The diarizer's own clustering, not the plain kind: short stretches get attached to
+            // whichever neighbour they sound like rather than forming speakers of their own, and
+            // that changes the count. Sweeping the plain kind reported three speakers where the
+            // app finds two.
+            var labels = SpeakerDiarizer.Assign(voices, threshold);
+            var found = labels.Distinct().Count();
+
+            var biggest = labels
+                .Select((label, i) => (label, seconds: voices[i].DurationSeconds))
+                .GroupBy(x => x.label)
+                .Max(g => g.Sum(x => x.seconds));
+
+            var share = biggest / voices.Sum(v => v.DurationSeconds);
+            var marker = Math.Abs(threshold - SpeakerClustering.DefaultThreshold) < 0.025 ? "  <- current" : string.Empty;
+
+            Console.WriteLine($"  {threshold,6:F2}      {found,5}      {share,6:P0}{marker}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  Pick the threshold where the count matches the number of people in the");
+        Console.WriteLine("  room and stays there across a few rows. A count that changes at every");
+        Console.WriteLine("  row means the voices are not well separated in this recording.");
+        Console.WriteLine();
+
+        return 0;
+    }
+
+    private static double Median(double[] values)
+    {
+        Array.Sort(values);
+        return values.Length == 0 ? 0 : values[values.Length / 2];
+    }
+
     public static int Run(string audioPath, string modelDirectory, string? speakers, string? threshold)
     {
         if (!File.Exists(audioPath))

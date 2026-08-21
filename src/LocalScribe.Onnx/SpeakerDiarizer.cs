@@ -124,16 +124,79 @@ public sealed class SpeakerDiarizer : IDisposable
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(audio);
-
-        var local = CollectSpeechSpans(audio, progress, cancellationToken);
-        if (local.Count == 0)
+        var voices = Describe(audio, progress, cancellationToken);
+        if (voices.Count == 0)
         {
             return [];
         }
 
-        var embeddings = new List<float[]>(local.Count);
-        var kept = new List<(double Start, double End)>(local.Count);
+        var labels = Assign(voices, threshold, maxSpeakers, exactSpeakers);
+
+        var turns = voices
+            .Select((voice, i) => new SpeakerTurn(labels[i], voice.StartSeconds, voice.EndSeconds))
+            .OrderBy(t => t.StartSeconds)
+            .ToList();
+
+        return Tidy(turns);
+    }
+
+    /// <summary>
+    /// Decides who is who, given the stretches <see cref="Describe"/> found.
+    /// <para>
+    /// The half of diarization that has no models in it, split out so that the doctor can sweep
+    /// a threshold across a real recording without paying for the scan each time — and, more to
+    /// the point, so that what it sweeps is the same code the app runs. A sweep that clustered
+    /// differently from the thing being calibrated would be worse than no sweep at all.
+    /// </para>
+    /// </summary>
+    public static int[] Assign(
+        IReadOnlyList<Voice> voices,
+        double threshold = SpeakerClustering.DefaultThreshold,
+        int? maxSpeakers = null,
+        int? exactSpeakers = null)
+    {
+        ArgumentNullException.ThrowIfNull(voices);
+
+        if (voices.Count == 0)
+        {
+            return [];
+        }
+
+        return ClusterWithShortSpansAttached(
+            [.. voices.Select(voice => voice.Embedding)],
+            [.. voices.Select(voice => (Start: voice.StartSeconds, End: voice.EndSeconds))],
+            threshold,
+            maxSpeakers,
+            exactSpeakers);
+    }
+
+    /// <summary>A stretch of speech and what the embedding model made of it.</summary>
+    public sealed record Voice(double StartSeconds, double EndSeconds, float[] Embedding)
+    {
+        public double DurationSeconds => EndSeconds - StartSeconds;
+    }
+
+    /// <summary>
+    /// Everything the clustering works from: where the speech is, and an embedding of each
+    /// stretch — but no decision about who is who.
+    /// <para>
+    /// Exposed for diagnosis. Whether two people are told apart comes down to one distance
+    /// threshold, and the right value for it is a property of the recording rather than of the
+    /// code: how alike the voices are, how much room noise there is, how long anyone speaks
+    /// uninterrupted. Guessing it from a sample of synthesised speech and hoping is how it came
+    /// to be wrong. This lets the doctor sweep the threshold over a real recording and show
+    /// where the answer actually changes.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<Voice> Describe(
+        PcmAudio audio,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(audio);
+
+        var local = CollectSpeechSpans(audio, progress, cancellationToken);
+        var voices = new List<Voice>(local.Count);
 
         for (var i = 0; i < local.Count; i++)
         {
@@ -141,29 +204,14 @@ public sealed class SpeakerDiarizer : IDisposable
             progress?.Report(ScanShare + ((1 - ScanShare) * i / local.Count));
 
             var (start, end) = local[i];
-            var embedding = Embed(audio, start, end);
-            if (embedding is null)
+
+            if (Embed(audio, start, end) is { } embedding)
             {
-                continue;
+                voices.Add(new Voice(start, end, embedding));
             }
-
-            embeddings.Add(embedding);
-            kept.Add((start, end));
         }
 
-        if (embeddings.Count == 0)
-        {
-            return [];
-        }
-
-        var labels = ClusterWithShortSpansAttached(embeddings, kept, threshold, maxSpeakers, exactSpeakers);
-
-        var turns = kept
-            .Select((span, i) => new SpeakerTurn(labels[i], span.Start, span.End))
-            .OrderBy(t => t.StartSeconds)
-            .ToList();
-
-        return Tidy(turns);
+        return voices;
     }
 
     /// <summary>

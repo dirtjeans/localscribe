@@ -145,6 +145,14 @@ internal static class Program
         var diarizeAudio = ArgumentValue(args, "--diarize");
         if (diarizeAudio is not null)
         {
+            if (args.Contains("--sweep", StringComparer.Ordinal))
+            {
+                return DiarizeCommand.Sweep(
+                    diarizeAudio,
+                    ArgumentValue(args, "--diarization-models")
+                        ?? Path.Combine(modelDirectory, "diarization"));
+            }
+
             return DiarizeCommand.Run(
                 diarizeAudio,
                 ArgumentValue(args, "--diarization-models")
@@ -216,6 +224,7 @@ internal static class Program
         Console.WriteLine("  --diarize <f>    Work out who spoke when in a WAV, and print the turns.");
         Console.WriteLine("  --speakers <n>   Upper bound on speakers for --diarize.");
         Console.WriteLine("  --threshold <d>  Cosine distance at which two voices are different people.");
+        Console.WriteLine("  --sweep          With --diarize: try every threshold and show where the answer changes.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
