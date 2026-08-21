@@ -22,8 +22,8 @@ public static class SpeakerSplit
     /// Indexes into the candidate list, of the ones that belong with the example.
     /// </param>
     /// <param name="Separation">
-    /// How much farther apart the two groups are than each is scattered within itself. One
-    /// means no structure at all; the two-speaker sample measures about two.
+    /// Mean cosine distance between the two groups. Two voices measure about 0.29; one voice cut
+    /// arbitrarily in half measures about 0.03.
     /// </param>
     /// <param name="Split">
     /// False when the candidates do not divide into two voices, in which case
@@ -37,8 +37,9 @@ public static class SpeakerSplit
     /// <param name="example">Embedding of the paragraph the user identified.</param>
     /// <param name="candidates">Embeddings of the other paragraphs sharing the label.</param>
     /// <param name="threshold">
-    /// Cosine distance past which two embeddings are different people. Used only when there is
-    /// a single candidate and so nothing to measure scatter against.
+    /// Cosine distance past which two embeddings are different people, used for the clustering
+    /// itself. Whether the result is worth acting on is a separate question with a separate
+    /// number — see <see cref="MinimumSeparation"/>.
     /// </param>
     public static Result ByExample(
         float[] example,
@@ -76,85 +77,50 @@ public static class SpeakerSplit
             }
         }
 
-        var (separation, apart) = SeparationOf(points, labels, threshold);
+        var separation = BetweenGroups(points, labels);
 
         // Refuse to split what does not divide. Asking for two groups always returns two, however
         // alike the voices are, and a user can be wrong about a paragraph; forcing a split on a
         // single voice would scatter a correctly-labelled speaker across two names.
-        //
-        // Measured as a ratio rather than against a fixed distance, because the scale is not
-        // knowable in advance. The threshold that separates individual embeddings is calibrated
-        // for exactly that and means nothing applied to group centroids, which sit systematically
-        // closer together; comparing the two was why a clean two-speaker split scored 0.338
-        // against a 0.42 bar and was refused.
-        // Two conditions, because each catches what the other misses. The ratio asks whether
-        // there is any structure here; it can be fooled by a set of near-identical embeddings,
-        // where both figures approach zero and their quotient stops meaning anything. The
-        // absolute distance asks whether the structure is large enough to be two people rather
-        // than one person's variation between sentences.
-        var divides = separation >= MinimumSeparation
-            && apart >= threshold * MinimumShareOfThreshold;
-
-        return divides
+        return separation >= MinimumSeparation
             ? new Result(joined, separation, true)
             : new Result([], separation, false);
     }
 
     /// <summary>
-    /// How many times farther apart the groups must be than they are internally scattered.
-    /// Below this there is one voice being cut in half.
-    /// </summary>
-    private const double MinimumSeparation = 1.5;
-
-    /// <summary>
-    /// How much of the different-speaker threshold the groups must be apart in absolute terms.
-    /// Below one because the figure is a mean over every crossing pair, which includes the
-    /// closest ones, so it sits under the distance at which a single pair would be called two
-    /// people. The two-speaker sample measures 0.44 against a 0.42 threshold.
-    /// </summary>
-    private const double MinimumShareOfThreshold = 0.7;
-
-    /// <summary>
-    /// Mean distance between the groups over mean distance within them.
+    /// How far apart the two groups must be, as a mean cosine distance, to be two people.
     /// <para>
-    /// With a single candidate there are no within-group pairs to measure, so the one distance
-    /// available is compared against the calibrated threshold instead and expressed on the same
-    /// scale as the ratio, so that callers have one number to reason about.
+    /// Measured over paragraph-length embeddings, which is what this works on and is a different
+    /// scale from the single spans the clustering threshold was fitted to. Two speakers sit at
+    /// 0.33 when paragraphs are five seconds and 0.29 when they are forty-five — remarkably
+    /// steady. One speaker's paragraphs forced into two groups sit at 0.036 and 0.005. This is
+    /// the middle of a gap of nearly an order of magnitude.
+    /// </para>
+    /// <para>
+    /// An earlier version required 0.7 of the clustering threshold, which is 0.294, and so sat
+    /// just above where real pairs of speakers actually land. It refused every split on any
+    /// recording whose paragraphs ran longer than a few seconds.
     /// </para>
     /// </summary>
-    private static (double Ratio, double Apart) SeparationOf(
-        List<float[]> points,
-        int[] labels,
-        double threshold)
+    private const double MinimumSeparation = 0.15;
+
+    /// <summary>Mean distance between the groups, or zero when everything landed in one.</summary>
+    private static double BetweenGroups(List<float[]> points, int[] labels)
     {
-        var within = new List<double>();
         var between = new List<double>();
 
         for (var i = 0; i < points.Count; i++)
         {
             for (var j = i + 1; j < points.Count; j++)
             {
-                var distance = SpeakerClustering.CosineDistance(points[i], points[j]);
-                ((labels[i] == labels[j]) ? within : between).Add(distance);
+                if (labels[i] != labels[j])
+                {
+                    between.Add(SpeakerClustering.CosineDistance(points[i], points[j]));
+                }
             }
         }
 
-        if (between.Count == 0)
-        {
-            return (0, 0);
-        }
-
-        var apart = between.Average();
-
-        if (within.Count == 0)
-        {
-            return (apart / threshold, apart);
-        }
-
-        var scatter = within.Average();
-
-        // Identical embeddings would divide by zero; the absolute test decides those.
-        return (scatter < 1e-9 ? double.PositiveInfinity : apart / scatter, apart);
+        return between.Count == 0 ? 0 : between.Average();
     }
 
     /// <summary>Scales to unit length, so that a dot product is a cosine.</summary>

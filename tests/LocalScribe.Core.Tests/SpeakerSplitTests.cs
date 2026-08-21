@@ -94,7 +94,55 @@ public class SpeakerSplitTests
             Voice(Alice),
             [Voice(Bob), Voice(Alice, 0.02)]);
 
-        Assert.True(clear.Separation > SpeakerClustering.DefaultThreshold);
+        Assert.True(clear.Separation > RealTwoSpeakerDistance);
+    }
+
+    // The two cases below are calibrated to distances measured on real audio rather than chosen,
+    // because choosing them is how the refusal test came to reject every genuine split. Two
+    // speakers' paragraphs sit 0.29 apart in cosine distance and barely move with paragraph
+    // length: 0.33 at five seconds, 0.29 at fifteen, 0.29 at forty-five. One speaker's
+    // paragraphs forced into two groups sit at 0.036 and 0.005.
+    private const double RealTwoSpeakerDistance = 0.29;
+
+    private const double RealOneSpeakerDistance = 0.036;
+
+    /// <summary>An angle whose cosine distance from zero is <paramref name="distance"/>.</summary>
+    private static double Apart(double distance) => Math.Acos(1 - distance);
+
+    /// <summary>
+    /// The failure the user hit. Two speakers really are only about 0.29 apart at paragraph
+    /// length, and an earlier refusal test demanded 0.294 — so it declined to split anything on
+    /// any recording whose paragraphs ran longer than a few seconds, which is most of them.
+    /// </summary>
+    [Fact]
+    public void TwoVoicesAtTheDistanceRealSpeakersSitApartAreSplit()
+    {
+        var them = Apart(RealTwoSpeakerDistance);
+
+        var result = SpeakerSplit.ByExample(
+            Voice(Alice),
+            [Voice(them), Voice(Alice, 0.02), Voice(them, 0.03), Voice(them, -0.02)]);
+
+        Assert.True(result.Split);
+        Assert.Equal([1], result.JoinsExample);
+    }
+
+    /// <summary>
+    /// And the other side of the same number. A ratio of between-group to within-group scatter
+    /// cannot tell this apart — one speaker cut in half scores 2.25, well past any sane ratio
+    /// bar — so the absolute distance has to be what decides it.
+    /// </summary>
+    [Fact]
+    public void OneVoiceAtTheDistanceOneSpeakerVariesByIsNotSplit()
+    {
+        var drift = Apart(RealOneSpeakerDistance);
+
+        var result = SpeakerSplit.ByExample(
+            Voice(Alice),
+            [Voice(drift), Voice(drift, 0.01), Voice(Alice, 0.005), Voice(drift, -0.01)]);
+
+        Assert.False(result.Split);
+        Assert.Empty(result.JoinsExample);
     }
 
     /// <summary>
