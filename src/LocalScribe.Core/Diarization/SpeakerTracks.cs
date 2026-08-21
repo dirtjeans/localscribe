@@ -255,7 +255,12 @@ public static class SpeakerTracks
                 at++;
             }
 
-            turns.Add(new SpeakerTurn(speaker, start * FrameSeconds, at * FrameSeconds));
+            // A run of one frame is a flicker in the vote, not a turn. Twenty milliseconds of
+            // somebody is nothing a reader can click on and nothing a listener would notice.
+            if (at - start > 1)
+            {
+                turns.Add(new SpeakerTurn(speaker, start * FrameSeconds, at * FrameSeconds));
+            }
         }
 
         return turns;

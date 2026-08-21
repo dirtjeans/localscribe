@@ -200,6 +200,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 using var diarizer = SpeakerDiarizer.Load(directory);
 
+                // Told there are two, follow them through the audio instead of comparing their
+                // voices. Two local speakers in one window are two different people, which the
+                // segmentation model reports directly and which survives recordings the
+                // embedding model cannot read: on a phone-quality interview that is the
+                // difference between a 56/44 split and a 98/2 one.
+                //
+                // Any other count falls back to clustering, because the reasoning is a
+                // two-colouring and does not extend to three people.
+                if (speakers == 2)
+                {
+                    return diarizer.DiarizeByTracking(
+                        audio,
+                        maxSpeakers: speakers,
+                        exactSpeakers: speakers,
+                        progress: progress,
+                        cancellationToken: _cancellation?.Token ?? default);
+                }
+
                 return diarizer.Diarize(
                     audio,
                     maxSpeakers: speakers,
