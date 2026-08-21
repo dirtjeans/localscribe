@@ -101,7 +101,7 @@ public sealed class TranscriptPlayer : IDisposable
                 _source.PositionChanged += OnPositionChanged;
 
                 _output = new WaveOutEvent();
-                _output.PlaybackStopped += (_, _) => Stopped?.Invoke();
+                _output.PlaybackStopped += OnDeviceStopped;
 
                 // Converted to 16-bit rather than handed over as float. The samples are float
                 // and WaveOutEvent will accept an ISampleProvider directly, but that hands the
@@ -133,6 +133,18 @@ public sealed class TranscriptPlayer : IDisposable
 
     private void OnPositionChanged(double seconds) => PositionChanged?.Invoke(seconds);
 
+    private void OnDeviceStopped(object? sender, StoppedEventArgs e) => Stopped?.Invoke();
+
+    /// <summary>
+    /// Releases the device, without letting it announce the fact.
+    /// <para>
+    /// Detaching before disposing matters more than it looks. Disposing an output raises
+    /// PlaybackStopped, and that arrives on another thread — so restarting playback fired a stop
+    /// for the device just replaced, landing after the new one had started and telling the
+    /// window that nothing was playing. The button showed play throughout, while audio came out
+    /// of the speakers.
+    /// </para>
+    /// </summary>
     private void Teardown()
     {
         if (_source is not null)
@@ -141,8 +153,12 @@ public sealed class TranscriptPlayer : IDisposable
             _source = null;
         }
 
-        _output?.Dispose();
-        _output = null;
+        if (_output is { } output)
+        {
+            output.PlaybackStopped -= OnDeviceStopped;
+            _output = null;
+            output.Dispose();
+        }
     }
 
     public void Dispose()

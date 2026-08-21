@@ -119,7 +119,7 @@ public sealed class SpeakerDiarizer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(audio);
 
-        var local = FindLocalTurns(audio, cancellationToken);
+        var local = CollectSpeechSpans(audio, cancellationToken);
         if (local.Count == 0)
         {
             return [];
@@ -147,22 +147,132 @@ public sealed class SpeakerDiarizer : IDisposable
             return [];
         }
 
-        var labels = SpeakerClustering.Cluster(embeddings, threshold, maxSpeakers);
+        var labels = ClusterWithShortSpansAttached(embeddings, kept, threshold, maxSpeakers);
 
         var turns = kept
             .Select((span, i) => new SpeakerTurn(labels[i], span.Start, span.End))
             .OrderBy(t => t.StartSeconds)
             .ToList();
 
-        return Merge(turns);
+        return Tidy(turns);
+    }
+
+    /// <summary>
+    /// Speech shorter than this identifies a voice poorly. Long enough to say "Good." and not
+    /// much else, and an embedding built from that clusters by accident as often as by speaker.
+    /// </summary>
+    private const double ReliableTurnSeconds = 0.9;
+
+    /// <summary>
+    /// How much a second of separation counts against a match, when placing a short span. Small
+    /// enough that a clearly different voice still wins, large enough to decide between two that
+    /// sound alike.
+    /// </summary>
+    private const double GapWeightPerSecond = 0.02;
+
+    /// <summary>
+    /// Clusters the spans long enough to be trusted, then attaches the short ones to whichever
+    /// of those they most resemble.
+    /// <para>
+    /// Short turns are not noise — "Good.", "Right.", "Mm." are most of what a conversation is
+    /// made of — but they are too brief to identify on their own. Left in the clustering they
+    /// invent speakers: half a second of one word became a third person in a two-person
+    /// recording. Attached afterwards, they go to the nearest voice actually established
+    /// elsewhere, which is the answer a listener would give.
+    /// </para>
+    /// </summary>
+    private static int[] ClusterWithShortSpansAttached(
+        List<float[]> embeddings,
+        List<(double Start, double End)> spans,
+        double threshold,
+        int? maxSpeakers)
+    {
+        var reliable = Enumerable.Range(0, spans.Count)
+            .Where(i => spans[i].End - spans[i].Start >= ReliableTurnSeconds)
+            .ToList();
+
+        // Nothing long enough to anchor on: cluster everything and take what comes.
+        if (reliable.Count < 2)
+        {
+            return SpeakerClustering.Cluster(embeddings, threshold, maxSpeakers);
+        }
+
+        var reliableLabels = SpeakerClustering.Cluster(
+            reliable.Select(i => embeddings[i]).ToList(), threshold, maxSpeakers);
+
+        var labels = new int[spans.Count];
+        for (var i = 0; i < reliable.Count; i++)
+        {
+            labels[reliable[i]] = reliableLabels[i];
+        }
+
+        for (var i = 0; i < spans.Count; i++)
+        {
+            if (reliable.Contains(i))
+            {
+                continue;
+            }
+
+            var nearest = 0;
+            var best = double.MaxValue;
+
+            for (var r = 0; r < reliable.Count; r++)
+            {
+                var distance = SpeakerClustering.CosineDistance(
+                    Unit(embeddings[i]), Unit(embeddings[reliable[r]]));
+
+                // Weighted by how far away in time it is, gently. Half a second of speech does
+                // not identify anyone confidently, and when the voice is ambiguous the next best
+                // evidence is who was talking either side of it — an interjection belongs to the
+                // conversation around it far more often than to someone across the recording.
+                var gap = Math.Max(0, Math.Max(
+                    spans[reliable[r]].Start - spans[i].End,
+                    spans[i].Start - spans[reliable[r]].End));
+
+                var score = distance + (GapWeightPerSecond * gap);
+
+                if (score < best)
+                {
+                    best = score;
+                    nearest = reliableLabels[r];
+                }
+            }
+
+            labels[i] = nearest;
+        }
+
+        return labels;
+    }
+
+    private static float[] Unit(float[] vector)
+    {
+        var sum = 0.0;
+        foreach (var value in vector)
+        {
+            sum += value * value;
+        }
+
+        var magnitude = Math.Sqrt(sum);
+
+        return magnitude < 1e-12 ? vector : vector.Select(v => (float)(v / magnitude)).ToArray();
     }
 
     /// <summary>
     /// Runs the segmentation model across the recording and collects every stretch where one
-    /// local speaker was active, as a span of time. Local speaker numbering is discarded here:
-    /// it is meaningless between windows, and the embeddings decide identity.
+    /// local speaker was active.
+    /// <para>
+    /// Kept separate, one span per speaker per window, and deliberately not merged. Merging them
+    /// into a single timeline first is the obvious thing to do and it is wrong: two people
+    /// either side of a boundary become one span, and every speaker change inside a window
+    /// disappears before anything has a chance to notice it. What survives is a recording that
+    /// looks like one long turn each.
+    /// </para>
+    /// <para>
+    /// Local speaker numbers are still meaningless between windows — the embeddings decide
+    /// identity — but within a window they separate voices, and that is worth keeping.
+    /// </para>
     /// </summary>
-    private List<(double Start, double End)> FindLocalTurns(PcmAudio audio, CancellationToken cancellationToken)
+    private List<(double Start, double End)> CollectSpeechSpans(PcmAudio audio, CancellationToken cancellationToken)
     {
         var shift = (int)(_windowSamples * WindowShiftFraction);
         var spans = new List<(double Start, double End)>();
@@ -201,7 +311,42 @@ public sealed class SpeakerDiarizer : IDisposable
             }
         }
 
-        return Merge(spans);
+        // Windows overlap by ninety percent, so the same speech arrives many times over. Near
+        // duplicates are dropped rather than merged: merging would join neighbours across a
+        // speaker change, which is the thing this is avoiding.
+        return Deduplicate(spans);
+    }
+
+    /// <summary>
+    /// Drops spans that say the same thing as one already kept. Two spans covering nearly the
+    /// same seconds come from adjacent windows seeing the same voice; the longer is the better
+    /// look at it.
+    /// </summary>
+    private static List<(double Start, double End)> Deduplicate(List<(double Start, double End)> spans)
+    {
+        var ordered = spans
+            .OrderByDescending(s => s.End - s.Start)
+            .ToList();
+
+        var kept = new List<(double Start, double End)>();
+
+        foreach (var span in ordered)
+        {
+            var duration = span.End - span.Start;
+
+            var covered = kept.Any(k =>
+            {
+                var overlap = Math.Min(k.End, span.End) - Math.Max(k.Start, span.Start);
+                return overlap > 0 && overlap >= duration * 0.75;
+            });
+
+            if (!covered)
+            {
+                kept.Add(span);
+            }
+        }
+
+        return kept.OrderBy(s => s.Start).ToList();
     }
 
     /// <summary>Runs of consecutive active frames for one local speaker, as times.</summary>
@@ -247,38 +392,15 @@ public sealed class SpeakerDiarizer : IDisposable
     }
 
     /// <summary>
-    /// Joins spans that touch or overlap. Windows overlap by ninety percent, so the same speech
-    /// arrives as a dozen near-identical spans and only the union of them is a turn.
+    /// Joins consecutive turns the clustering gave the same speaker, and only those.
+    /// <para>
+    /// The gap allowed is small on purpose. Someone pausing for breath mid-thought should read
+    /// as one turn, but a second of silence is also exactly where the other person starts
+    /// talking, and joining across that is how a speaker change gets lost after surviving
+    /// everything else.
+    /// </para>
     /// </summary>
-    private static List<(double Start, double End)> Merge(List<(double Start, double End)> spans)
-    {
-        if (spans.Count == 0)
-        {
-            return spans;
-        }
-
-        var ordered = spans.OrderBy(s => s.Start).ToList();
-        var merged = new List<(double Start, double End)> { ordered[0] };
-
-        foreach (var span in ordered.Skip(1))
-        {
-            var last = merged[^1];
-
-            if (span.Start <= last.End)
-            {
-                merged[^1] = (last.Start, Math.Max(last.End, span.End));
-            }
-            else
-            {
-                merged.Add(span);
-            }
-        }
-
-        return merged;
-    }
-
-    /// <summary>Joins adjacent turns the clustering gave the same speaker.</summary>
-    private static IReadOnlyList<SpeakerTurn> Merge(List<SpeakerTurn> turns)
+    private static IReadOnlyList<SpeakerTurn> Tidy(List<SpeakerTurn> turns)
     {
         var merged = new List<SpeakerTurn>();
 
@@ -286,7 +408,7 @@ public sealed class SpeakerDiarizer : IDisposable
         {
             if (merged.Count > 0
                 && merged[^1].Speaker == turn.Speaker
-                && turn.StartSeconds - merged[^1].EndSeconds < 0.5)
+                && turn.StartSeconds - merged[^1].EndSeconds < 0.75)
             {
                 merged[^1] = merged[^1] with { EndSeconds = Math.Max(merged[^1].EndSeconds, turn.EndSeconds) };
                 continue;
@@ -332,34 +454,13 @@ public sealed class SpeakerDiarizer : IDisposable
     }
 
     /// <summary>
-    /// Attaches speakers to a transcript by overlap: each segment gets whichever speaker was
-    /// talking for most of it. Words and voices are found independently and their boundaries
-    /// never line up exactly, so this has to be a majority rather than a match.
+    /// Attaches speakers to a transcript, splitting segments that span more than one turn.
+    /// The work is in <see cref="SpeakerAttribution"/>, which is pure and tested.
     /// </summary>
     public static IReadOnlyList<TranscriptSegment> Attribute(
         IReadOnlyList<TranscriptSegment> segments,
-        IReadOnlyList<SpeakerTurn> turns)
-    {
-        ArgumentNullException.ThrowIfNull(segments);
-        ArgumentNullException.ThrowIfNull(turns);
-
-        if (turns.Count == 0)
-        {
-            return segments;
-        }
-
-        return segments.Select(segment =>
-        {
-            var best = turns
-                .Select(turn => (turn, overlap: turn.OverlapWith(segment.StartSeconds, segment.EndSeconds)))
-                .Where(x => x.overlap > 0)
-                .OrderByDescending(x => x.overlap)
-                .Select(x => x.turn)
-                .FirstOrDefault();
-
-            return best is null ? segment : segment with { Speaker = best.Label };
-        }).ToList();
-    }
+        IReadOnlyList<SpeakerTurn> turns) =>
+        SpeakerAttribution.Apply(segments, turns);
 
     private static int Read(IReadOnlyDictionary<string, string> metadata, string key, int fallback) =>
         metadata.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) ? parsed : fallback;

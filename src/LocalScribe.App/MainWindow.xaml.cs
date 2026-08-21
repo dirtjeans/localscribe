@@ -502,7 +502,25 @@ public sealed partial class MainWindow : Window
     {
         _viewModel.Player.PlayFrom(seconds);
         StopPlaybackButton.Visibility = Visibility.Visible;
-        PlayIcon.Glyph = "\uE769";
+        UpdatePlayIcon();
+    }
+
+    /// <summary>
+    /// Shows what the button will do, read from the player rather than assumed.
+    /// <para>
+    /// Set from three code paths it drifted out of step with what was actually happening. Asked
+    /// for in one place, from the thing that knows, it cannot.
+    /// </para>
+    /// </summary>
+    private void UpdatePlayIcon()
+    {
+        var playing = _viewModel.Player.IsPlaying;
+
+        // Segoe Fluent Icons: pause while it plays, play while it does not.
+        PlayIcon.Glyph = playing ? "\uE769" : "\uE768";
+
+        ToolTipService.SetToolTip(PlayButton, playing ? "Pause" : "Play");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(PlayButton, playing ? "Pause" : "Play");
     }
 
     private void PlayParagraph(ParagraphView paragraph)
@@ -630,6 +648,7 @@ public sealed partial class MainWindow : Window
         if (_viewModel.Player.IsPlaying)
         {
             _viewModel.Player.Stop();
+            UpdatePlayIcon();
             return;
         }
 
@@ -640,8 +659,8 @@ public sealed partial class MainWindow : Window
         _dispatcher.TryEnqueue(() =>
         {
             StatusText.Text = message;
-            PlayIcon.Glyph = "";
             StopPlaybackButton.Visibility = Visibility.Collapsed;
+            UpdatePlayIcon();
         });
 
     /// <summary>
@@ -880,7 +899,7 @@ public sealed partial class MainWindow : Window
         _dispatcher.TryEnqueue(() =>
         {
             StopPlaybackButton.Visibility = Visibility.Collapsed;
-            PlayIcon.Glyph = "";
+            UpdatePlayIcon();
         });
 
     private void OnStopPlayback(object sender, RoutedEventArgs e) => _viewModel.Player.Stop();
