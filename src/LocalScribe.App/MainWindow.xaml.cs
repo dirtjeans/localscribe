@@ -761,6 +761,9 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void OnToggleSummary(object sender, RoutedEventArgs e) =>
+        _viewModel.WantsSummary = SummaryToggle.IsChecked == true;
+
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is ParagraphView paragraph)

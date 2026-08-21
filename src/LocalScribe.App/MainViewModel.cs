@@ -143,6 +143,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Raise(nameof(HasTranscript));
     }
 
+    /// <summary>
+    /// Whether to also write a summary and pull out action items. Off: the transcript is what
+    /// the app is for, and this is a slow, separate thing to want.
+    /// </summary>
+    public bool WantsSummary
+    {
+        get;
+        set
+        {
+            if (field == value)
+            {
+                return;
+            }
+
+            field = value;
+            Raise(nameof(WantsSummary));
+        }
+    }
+
     /// <summary>The transcript in one of the formats the save dialog offers.</summary>
     public string Export(TranscriptFormat format) => format switch
     {
@@ -564,7 +583,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         await refiner.RefineAsync(
             transcript,
             Glossary,
-            RefinementOutputs.Everything,
+
+            // Punctuation and the glossary, and nothing else unless it was asked for. The app
+            // transcribes recordings; a summary is a different product that happens to be
+            // possible with the same model, and running it by default meant every transcript
+            // paid for one. It was also most of the wait — cleanup visits each window once,
+            // while the summary and the action items each re-read the whole transcript — and
+            // the only part big enough to overflow a model's context and take the run with it.
+            WantsSummary ? RefinementOutputs.Everything : RefinementOutputs.Default,
             new Progress<double>(stages.Cleanup),
 
             // Shown as it lands, window by window, so the transcript is visibly gaining

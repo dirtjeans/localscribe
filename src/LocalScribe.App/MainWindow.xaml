@@ -131,6 +131,19 @@
 
                 <Button x:Name="GlossaryButton" Content="Glossary" Click="OnEditGlossary" />
 
+                <!-- Off by default. A summary is a different thing to want than a transcript,
+                     it costs more than the transcript does, and asking for it every time is how
+                     a recording came back as five sentences about itself. -->
+                <ToggleButton
+                    x:Name="SummaryToggle"
+                    Click="OnToggleSummary"
+                    ToolTipService.ToolTip="Also write a summary and list action items. Slower.">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                        <TextBlock Text="Summarise" />
+                    </StackPanel>
+                </ToggleButton>
+
                 <AppBarSeparator />
 
                 <Button x:Name="CopyButton" Click="OnCopy" IsEnabled="False">

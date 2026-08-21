@@ -125,7 +125,8 @@ public sealed class TranscriptRefiner
         string? summary = null;
         if (outputs.HasFlag(RefinementOutputs.Summary))
         {
-            summary = await CondenseAsync(SummarySystemPrompt, cleaned, SplitDepth, cancellationToken)
+            summary = await CondenseAsync(
+                SummarySystemPrompt, SummaryMergePrompt, cleaned, SplitDepth, cancellationToken)
                 .ConfigureAwait(false);
 
             Step();
@@ -134,7 +135,8 @@ public sealed class TranscriptRefiner
         IReadOnlyList<string>? actionItems = null;
         if (outputs.HasFlag(RefinementOutputs.ActionItems))
         {
-            var raw = await CondenseAsync(ActionItemsSystemPrompt, cleaned, SplitDepth, cancellationToken)
+            var raw = await CondenseAsync(
+                ActionItemsSystemPrompt, ActionItemsMergePrompt, cleaned, SplitDepth, cancellationToken)
                 .ConfigureAwait(false);
 
             actionItems = raw is null ? null : ParseActionItems(raw);
@@ -254,8 +256,17 @@ public sealed class TranscriptRefiner
     /// condensed together.
     /// </para>
     /// </summary>
+    /// <param name="leafPrompt">Asked of each piece of the transcript.</param>
+    /// <param name="foldPrompt">
+    /// Asked of the pieces' answers, which is a different job and needs saying differently.
+    /// Reusing the extraction prompt here is what produced fifteen "action items" from one
+    /// meeting: asked to list the action items in a list of action items, a model returns the
+    /// list it was given. Merging means dropping what does not belong, and nothing had told it
+    /// to.
+    /// </param>
     private async Task<string?> CondenseAsync(
-        string systemPrompt,
+        string leafPrompt,
+        string foldPrompt,
         string text,
         int depth,
         CancellationToken cancellationToken)
@@ -266,7 +277,7 @@ public sealed class TranscriptRefiner
         // a round trip through a language model to learn something already visible.
         if (words.Length <= WordsPerCleanupWindow || depth <= 0)
         {
-            return await TryCompleteAsync(systemPrompt, text, 512, cancellationToken)
+            return await TryCompleteAsync(leafPrompt, text, 512, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -280,23 +291,30 @@ public sealed class TranscriptRefiner
         {
             var chunk = string.Join(' ', words.Skip(start).Take(WordsPerCleanupWindow));
 
-            if (await TryCompleteAsync(systemPrompt, chunk, 512, cancellationToken).ConfigureAwait(false)
-                is { Length: > 0 } piece)
+            if (await TryCompleteAsync(leafPrompt, chunk, 512, cancellationToken).ConfigureAwait(false)
+                is { Length: > 0 } piece && !IsNothing(piece))
             {
                 pieces.Add(piece);
             }
         }
 
+        // A passage with no action items answers NONE, and most passages have none. Carrying
+        // those through would put the word in the middle of the merged list.
         if (pieces.Count == 0)
         {
             return null;
+        }
+
+        if (pieces.Count == 1)
+        {
+            return pieces[0];
         }
 
         var joined = string.Join(Environment.NewLine, pieces);
 
         // Folded together, or left as the pieces if even that will not fit. Two summaries in
         // sequence still say what happened.
-        return await CondenseAsync(systemPrompt, joined, depth - 1, cancellationToken)
+        return await CondenseAsync(foldPrompt, foldPrompt, joined, depth - 1, cancellationToken)
             .ConfigureAwait(false) ?? joined;
     }
 
@@ -442,15 +460,67 @@ public sealed class TranscriptRefiner
         Reply with the summary and nothing else.
         """;
 
+    /// <summary>Asked of several partial summaries rather than of a transcript.</summary>
+    private const string SummaryMergePrompt =
+        """
+        These are summaries of consecutive parts of one recording.
+
+        Combine them into a single summary of three to five sentences, covering what was
+        discussed and what was decided. Do not repeat a point that appears more than once, and
+        do not add anything that is not already in them.
+
+        Reply with the summary and nothing else.
+        """;
+
+    /// <summary>
+    /// Asked of one passage at a time.
+    /// <para>
+    /// The emphasis on what does not count is load-bearing, and its absence is what turned one
+    /// meeting into fifteen items reading "Ask if the objective is click through" and "See
+    /// engagement in those accounts go up" — a question somebody asked and a result somebody
+    /// hoped for, rewritten as instructions. A passage is asked in isolation and has no idea
+    /// whether it is the part of the meeting where things were decided, so it has to be told
+    /// that finding nothing is the usual answer.
+    /// </para>
+    /// </summary>
     private const string ActionItemsSystemPrompt =
         """
-        List the action items in this transcript.
+        List the action items in this part of a transcript.
 
-        Put one per line, starting each line with "- ". Name who owns the item when the
-        transcript says. If there are no action items, reply with exactly: NONE
+        An action item is something a specific person agreed to do. These are not action items:
+        - a question somebody asked
+        - an opinion, a hope, or a result somebody wants
+        - a topic that was discussed but not assigned
+        - a restatement of what the conversation was about
+
+        Put one per line, starting each line with "- ", written as the task itself. Name who
+        owns it when the transcript says.
+
+        Most passages contain no action items at all. If this one contains none, reply with
+        exactly: NONE
 
         Reply with the list and nothing else.
         """;
+
+    /// <summary>Asked of the extracted lists rather than of a transcript.</summary>
+    private const string ActionItemsMergePrompt =
+        """
+        These are action items taken from different parts of one meeting. They overlap, and some
+        of them are not action items at all.
+
+        Return one consolidated list. Merge the ones that say the same thing, keeping the clearer
+        wording. Drop anything that is not a task a specific person has to do — questions,
+        opinions, hoped-for results, and descriptions of what was discussed.
+
+        Put one per line, starting each line with "- ". Do not invent anything that is not in
+        the list. If nothing is left, reply with exactly: NONE
+
+        Reply with the list and nothing else.
+        """;
+
+    /// <summary>True for a reply meaning "there was nothing here".</summary>
+    private static bool IsNothing(string reply) =>
+        reply.Trim().TrimEnd('.').Equals("NONE", StringComparison.OrdinalIgnoreCase);
 
 
     /// <summary>
