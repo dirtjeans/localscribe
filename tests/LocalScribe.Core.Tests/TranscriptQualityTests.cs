@@ -101,6 +101,23 @@ public class TranscriptQualityTests
             "One, two, three, four, five, six, seven, eight, nine."));
     }
 
+    /// <summary>
+    /// Whisper does not fall silent on audio it cannot read — it invents fluent sentences with
+    /// no change in tone to warn anybody. Its own confidence is the only thing that tells them
+    /// apart, and -1 is the figure OpenAI's implementation uses for a decode worth retrying.
+    /// </summary>
+    [Theory]
+    [InlineData(-0.15, false)]   // ordinary clear speech
+    [InlineData(-0.62, false)]   // unremarkable
+    [InlineData(-1.10, true)]    // past the point the model would retry itself
+    [InlineData(-2.40, true)]    // noise
+    public void GuessworkIsRecognisedByTheModelsOwnConfidence(double confidence, bool guessing) =>
+        Assert.Equal(guessing, TranscriptQuality.SoundsLikeGuesswork(confidence));
+
+    [Fact]
+    public void ConfidentWordsOverSilenceAreStillDisbelieved() =>
+        Assert.True(TranscriptQuality.SoundsLikeGuesswork(-0.2, noSpeechProbability: 0.9));
+
     [Fact]
     public void NothingToCompareAgainstIsNotAFailure() =>
         Assert.True(TranscriptQuality.SaysTheSameThing(string.Empty, "anything at all"));

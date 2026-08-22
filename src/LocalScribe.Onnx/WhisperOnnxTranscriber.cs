@@ -208,7 +208,7 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         var mel = _spectrogram.Compute(chunk.Samples);
         var frames = mel.Length / _spectrogram.MelBands;
 
-        var tokens = _strategy.Decode(mel, frames, prompt: null, cancellationToken);
+        var decoded = _strategy.Decode(mel, frames, prompt: null, cancellationToken);
 
         // Whisper has two output conventions and picks between them per window. The other one is
         // a bare lowercase run of words, and on some recordings it takes it for most of them,
@@ -219,40 +219,51 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         //
         // Only on a window that came back unformatted, so nothing is conditioned that did not
         // need it, and a recording that never degenerates costs nothing.
-        if (TranscriptQuality.LooksUnformatted(_tokenizer.Decode(tokens)))
+        if (TranscriptQuality.LooksUnformatted(_tokenizer.Decode(decoded.Tokens)))
         {
             var retried = _strategy.Decode(mel, frames, PunctuationPrimer(), cancellationToken);
-            var candidate = _tokenizer.Decode(retried);
+            var candidate = _tokenizer.Decode(retried.Tokens);
 
             // Formatted is not enough. Conditioning on example text can leave the example in the
             // output, giving a confidently punctuated sentence made partly of words nobody said,
             // and that reads as a worse failure than the flat one it replaced. The retry is only
             // taken when it is still saying the same thing.
-            if (retried.Count > 0
+            if (retried.Tokens.Count > 0
                 && !TranscriptQuality.LooksUnformatted(candidate)
-                && TranscriptQuality.SaysTheSameThing(_tokenizer.Decode(tokens), candidate))
+                && TranscriptQuality.SaysTheSameThing(_tokenizer.Decode(decoded.Tokens), candidate))
             {
-                tokens = retried;
+                decoded = retried;
             }
         }
 
-        return BuildSegments(tokens, chunk);
+        return BuildSegments(decoded, chunk);
     }
 
     /// <summary>
     /// Splits the decoded tokens into timed segments. Whisper emits timestamp tokens in pairs
     /// that bracket each utterance; text between a pair belongs to that span.
     /// </summary>
-    private List<TranscriptSegment> BuildSegments(List<int> tokens, AudioChunk chunk)
+    private List<TranscriptSegment> BuildSegments(DecodedWindow decoded, AudioChunk chunk)
     {
         var segments = new List<TranscriptSegment>();
         var current = new List<int>();
         double? segmentStart = null;
 
-        foreach (var token in tokens)
+        // Where this segment's tokens begin, so its confidence can be averaged over exactly the
+        // tokens that became its words.
+        var from = 0;
+
+        for (var i = 0; i < decoded.Tokens.Count; i++)
         {
+            var token = decoded.Tokens[i];
+
             if (!_tokenizer.Special.IsTimestamp(token))
             {
+                if (current.Count == 0)
+                {
+                    from = i;
+                }
+
                 current.Add(token);
                 continue;
             }
@@ -265,7 +276,14 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
                 continue;
             }
 
-            AppendSegment(segments, current, segmentStart.Value, time, chunk);
+            AppendSegment(
+                segments,
+                current,
+                segmentStart.Value,
+                time,
+                chunk,
+                decoded.MeanLogProbability(from, current.Count));
+
             current.Clear();
             segmentStart = null;
         }
@@ -278,7 +296,8 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
                 current,
                 segmentStart ?? 0,
                 Math.Min(chunk.ContentSeconds, AudioChunker.WindowSeconds),
-                chunk);
+                chunk,
+                decoded.MeanLogProbability(from, current.Count));
         }
 
         return segments;
@@ -289,7 +308,8 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         List<int> tokens,
         double startInWindow,
         double endInWindow,
-        AudioChunk chunk)
+        AudioChunk chunk,
+        double confidence)
     {
         var text = _tokenizer.Decode(tokens).Trim();
         if (text.Length == 0)
@@ -303,10 +323,20 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
             return;
         }
 
+        // Shown as an ellipsis rather than as words. The model does not stop talking when it
+        // stops hearing — it invents fluent sentences out of noise and crosstalk with no change
+        // in tone to warn anybody — so a reader given the invention has no way to know. A gap is
+        // honest, and it can be gone back to and listened to.
+        if (TranscriptQuality.SoundsLikeGuesswork(confidence))
+        {
+            text = TranscriptQuality.Unintelligible;
+        }
+
         segments.Add(new TranscriptSegment(
             text,
             chunk.StartSeconds + startInWindow,
-            chunk.StartSeconds + Math.Min(endInWindow, chunk.ContentSeconds)));
+            chunk.StartSeconds + Math.Min(endInWindow, chunk.ContentSeconds),
+            confidence));
     }
 
     public void Dispose()

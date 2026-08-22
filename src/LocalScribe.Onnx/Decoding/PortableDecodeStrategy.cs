@@ -27,7 +27,7 @@ internal sealed class PortableDecodeStrategy(
     int maxTokensPerWindow,
     DecodeSession session) : IWhisperDecodeStrategy
 {
-    public List<int> Decode(
+    public DecodedWindow Decode(
         float[] mel,
         int frames,
         IReadOnlyList<int>? prompt,
@@ -61,6 +61,7 @@ internal sealed class PortableDecodeStrategy(
             priorTokens: prompt));
 
         var promptLength = tokens.Count;
+        var confidence = new List<float>();
         var limit = Math.Min(maxTokensPerWindow, signature.MaxDecodeLength);
 
         for (var step = 0; step < limit; step++)
@@ -74,7 +75,8 @@ internal sealed class PortableDecodeStrategy(
             ]);
 
             var logits = OnnxTensors.ReadFloats(outputs.First());
-            var next = LastPositionArgMax(logits, tokens.Count);
+            var row = LastPosition(logits, tokens.Count);
+            var next = OnnxTensors.ArgMax(row.Span);
 
             if (next == tokenizer.Special.EndOfText)
             {
@@ -82,9 +84,10 @@ internal sealed class PortableDecodeStrategy(
             }
 
             tokens.Add(next);
+            confidence.Add(OnnxTensors.LogProbabilityOf(row.Span, next));
         }
 
-        return tokens.Skip(promptLength).ToList();
+        return new DecodedWindow([.. tokens.Skip(promptLength)], confidence);
     }
 
     /// <summary>
@@ -145,17 +148,21 @@ internal sealed class PortableDecodeStrategy(
     }
 
     /// <summary>
-    /// Picks the best token for the final position. Logits arrive as (batch, sequence,
-    /// vocabulary) and only the last position is a prediction about what comes next.
+    /// The final position's row of logits. Logits arrive as (batch, sequence, vocabulary) and
+    /// only the last position is a prediction about what comes next.
+    /// <para>
+    /// Returned rather than reduced to an argmax, because the confidence in the chosen token has
+    /// to be measured against the same row it was chosen from.
+    /// </para>
     /// </summary>
-    private static int LastPositionArgMax(float[] logits, int sequenceLength)
+    private static ReadOnlyMemory<float> LastPosition(float[] logits, int sequenceLength)
     {
         var vocabulary = logits.Length / Math.Max(1, sequenceLength);
 
         // A decoder that returns only the final position gives one row, not one per token.
         var offset = logits.Length - vocabulary;
 
-        return OnnxTensors.ArgMax(logits.AsSpan(offset, vocabulary));
+        return logits.AsMemory(offset, vocabulary);
     }
 
     /// <summary>

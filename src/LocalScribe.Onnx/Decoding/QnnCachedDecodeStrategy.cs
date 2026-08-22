@@ -40,7 +40,7 @@ internal sealed class QnnCachedDecodeStrategy(
     /// </summary>
     private const float MaskedScore = -100.0f;
 
-    public List<int> Decode(
+    public DecodedWindow Decode(
         float[] mel,
         int frames,
         IReadOnlyList<int>? prompt,
@@ -62,7 +62,7 @@ internal sealed class QnnCachedDecodeStrategy(
         return DecodeWithCaches(crossCaches, prompt, cancellationToken);
     }
 
-    private List<int> DecodeWithCaches(
+    private DecodedWindow DecodeWithCaches(
         IDisposableReadOnlyCollection<DisposableNamedOnnxValue> crossCaches,
         IReadOnlyList<int>? prompt,
         CancellationToken cancellationToken)
@@ -83,6 +83,7 @@ internal sealed class QnnCachedDecodeStrategy(
         var detecting = prompt is not { Count: > 0 };
         var tokens = new List<int>(forced);
         var emitted = new List<int>();
+        var confidence = new List<float>();
 
         var mask = new float[window];
         Array.Fill(mask, MaskedScore);
@@ -148,6 +149,10 @@ internal sealed class QnnCachedDecodeStrategy(
                     if (step + 1 >= forced.Count)
                     {
                         emitted.Add(next);
+
+                        // Only for tokens the model chose. A forced prompt token says nothing
+                        // about how well it could hear.
+                        confidence.Add(OnnxTensors.LogProbabilityOf(logits, next));
                     }
 
                     selfCaches = CarryForward(outputs, layers, selfCaches);
@@ -166,7 +171,7 @@ internal sealed class QnnCachedDecodeStrategy(
             }
         }
 
-        return emitted;
+        return new DecodedWindow(emitted, confidence);
     }
 
     /// <summary>

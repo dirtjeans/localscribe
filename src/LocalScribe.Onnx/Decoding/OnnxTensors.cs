@@ -115,4 +115,42 @@ internal static class OnnxTensors
 
         return best;
     }
+
+    /// <summary>
+    /// How confident the model was in the token it chose, as a log probability.
+    /// <para>
+    /// Zero means certain, and it falls away steeply from there: around -0.2 for ordinary
+    /// speech, past -1 when the model is guessing at something it cannot hear. That is the
+    /// number that separates a transcript from an invention, and Whisper will invent fluent
+    /// sentences out of noise without any change in tone to warn you.
+    /// </para>
+    /// <para>
+    /// Computed in log space against the maximum, which is the standard way to stop the
+    /// exponentials overflowing on a vocabulary of fifty thousand.
+    /// </para>
+    /// </summary>
+    public static float LogProbabilityOf(ReadOnlySpan<float> logits, int token)
+    {
+        if (token < 0 || token >= logits.Length)
+        {
+            return 0;
+        }
+
+        var largest = float.NegativeInfinity;
+        foreach (var value in logits)
+        {
+            if (value > largest)
+            {
+                largest = value;
+            }
+        }
+
+        var total = 0.0;
+        foreach (var value in logits)
+        {
+            total += Math.Exp(value - largest);
+        }
+
+        return (float)(logits[token] - largest - Math.Log(total));
+    }
 }

@@ -220,6 +220,43 @@ public static class TranscriptQuality
     /// <summary>How much longer than the original a cleaned window may be.</summary>
     private const double MaximumGrowthWhenCleaning = 1.2;
 
+    /// <summary>
+    /// What to show where the model could not make out the words.
+    /// </summary>
+    public const string Unintelligible = "…";
+
+    /// <summary>
+    /// True when a segment is the model guessing rather than hearing.
+    /// <para>
+    /// Whisper does not fall silent on audio it cannot read. It invents fluent, plausible,
+    /// confidently punctuated sentences out of noise and crosstalk, and nothing in the text
+    /// marks them as different from the parts it heard perfectly well. A reader has no way to
+    /// tell, which makes an invented sentence worse than a gap: a gap is honest and a reader
+    /// can go and listen.
+    /// </para>
+    /// <para>
+    /// The tell is the model's own confidence, which is why it is now carried on every segment.
+    /// The threshold is Whisper's own: OpenAI's implementation treats a window averaging below
+    /// -1 as a failed decode and retries it at a higher temperature. Ordinary speech sits near
+    /// -0.2.
+    /// </para>
+    /// </summary>
+    /// <param name="averageLogProbability">Mean confidence over the segment's tokens.</param>
+    /// <param name="noSpeechProbability">How sure the model was that nobody was talking.</param>
+    public static bool SoundsLikeGuesswork(
+        double averageLogProbability,
+        double noSpeechProbability = 0) =>
+        averageLogProbability < GuessworkBelow || noSpeechProbability > SilenceAbove;
+
+    /// <summary>
+    /// Mean log probability below which a segment is the model guessing. Whisper's own figure
+    /// for a decode it would rather retry than keep.
+    /// </summary>
+    private const double GuessworkBelow = -1.0;
+
+    /// <summary>How sure of silence the model must be before its words are disbelieved.</summary>
+    private const double SilenceAbove = 0.6;
+
     /// <summary>Words stripped to what two readings of the same speech would agree on.</summary>
     private static List<string> Words(string text) =>
         text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
