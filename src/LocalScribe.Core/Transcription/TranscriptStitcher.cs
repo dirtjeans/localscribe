@@ -57,6 +57,13 @@ public sealed class TranscriptStitcher
                     ? segment with { Text = TrimLeadingOverlap(merged[^1].Text, segment.Text) }
                     : segment;
 
+                // And a repeat wholly inside this segment, which is the other way the same words
+                // arrive twice: not two windows transcribing one stretch of audio, but the
+                // decoder looping within a single window. Every check above compares the end of
+                // one segment against the start of the next, so a sentence emitted twice in the
+                // middle of one passed all of them.
+                trimmed = trimmed with { Text = RepeatedPhrase.Trim(trimmed.Text) };
+
                 if (trimmed.Text.Trim().Length == 0)
                 {
                     continue;
