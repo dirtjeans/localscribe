@@ -838,6 +838,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // and what the user read was always the raw transcript.
         var cleaned = refinement?.CleanedSegments ?? spoken;
 
+        // Read across the segments, not just inside each one. The stitcher repairs what it can
+        // see at the seam between two windows, but the two copies of a looped sentence usually
+        // land in two different segments — the transcriber breaks where a sentence ends, which
+        // is exactly between them — and cleanup can rewrite the text after the stitcher has
+        // finished with it. This is the last point before the reader.
+        cleaned = RepeatedPhrase.TrimAcross(cleaned);
+
         _segmentsBeforeSpeakers = cleaned;
 
         // Attribution last, on the cleaned text rather than the raw. Segments spanning a speaker

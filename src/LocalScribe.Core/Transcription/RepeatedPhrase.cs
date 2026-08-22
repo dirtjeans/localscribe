@@ -32,26 +32,95 @@ public static class RepeatedPhrase
     /// </summary>
     public const int ShortestRepeat = 5;
 
+    /// <summary>
+    /// How long a repeated run may be. A bound rather than a judgement: it keeps the search
+    /// proportional to the length of the transcript, and a decoder that loops repeats a clause,
+    /// not a paragraph.
+    /// </summary>
+    public const int LongestRepeat = 40;
+
     /// <summary>The text with any immediately repeated run of words reduced to one copy.</summary>
     public static string Trim(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
 
         var tokens = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ToList();
+        var before = tokens.Count;
 
-        // Repeated until nothing more changes, which handles a decoder that stuck three or four
-        // times rather than twice.
-        while (TrimOnce(tokens))
+        while (TrimOnce(tokens, owners: null))
         {
         }
 
-        return tokens.Count == 0
-            ? text
-            : string.Join(" ", tokens) is var joined && joined == text ? text : joined;
+        return tokens.Count == before ? text : string.Join(" ", tokens);
+    }
+
+    /// <summary>
+    /// The same repair, read across segment boundaries rather than inside one segment.
+    /// <para>
+    /// Necessary because the two copies rarely land in the same segment. The transcriber breaks
+    /// at the end of a sentence, and a sentence emitted twice therefore tends to break exactly
+    /// between the copies — so each segment on its own contains one perfectly ordinary sentence
+    /// and only the join is wrong. Trimming segment by segment cannot see that, and did not.
+    /// </para>
+    /// <para>
+    /// Reading the transcript as one stream of words and putting the words back where they came
+    /// from catches it wherever the boundary falls, and catches a repeat introduced after
+    /// stitching — by cleanup rewriting the text, for instance — which the stitcher is long
+    /// finished by.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<TranscriptSegment> TrimAcross(IReadOnlyList<TranscriptSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+
+        var tokens = new List<string>();
+        var owners = new List<int>();
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            foreach (var word in segments[i].Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            {
+                tokens.Add(word);
+                owners.Add(i);
+            }
+        }
+
+        var before = tokens.Count;
+
+        while (TrimOnce(tokens, owners))
+        {
+        }
+
+        if (tokens.Count == before)
+        {
+            return segments;
+        }
+
+        var rebuilt = new List<string>[segments.Count];
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            (rebuilt[owners[i]] ??= []).Add(tokens[i]);
+        }
+
+        var kept = new List<TranscriptSegment>(segments.Count);
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            // A segment that was nothing but the second copy has nothing left to say. Keeping it
+            // as an empty line would leave a timestamp with no words against it.
+            if (rebuilt[i] is not { Count: > 0 } words)
+            {
+                continue;
+            }
+
+            kept.Add(segments[i] with { Text = string.Join(" ", words) });
+        }
+
+        return kept;
     }
 
     /// <summary>Removes one repeated run, and reports whether it found one.</summary>
-    private static bool TrimOnce(List<string> tokens)
+    private static bool TrimOnce(List<string> tokens, List<int>? owners)
     {
         // Adjacency is counted in words, not in tokens. A decoder that loops often leaves a dash
         // or a comma sitting between the two copies, and treating that as a word between them
@@ -69,7 +138,7 @@ public static class RepeatedPhrase
 
         // Longest first, so a sentence repeated whole is removed as one piece rather than being
         // picked apart from the middle.
-        for (var length = words.Count / 2; length >= ShortestRepeat; length--)
+        for (var length = Math.Min(LongestRepeat, words.Count / 2); length >= ShortestRepeat; length--)
         {
             for (var at = 0; at + (length * 2) <= words.Count; at++)
             {
@@ -85,6 +154,8 @@ public static class RepeatedPhrase
                 var to = words[at + (length * 2) - 1];
 
                 tokens.RemoveRange(from, to - from + 1);
+                owners?.RemoveRange(from, to - from + 1);
+
                 return true;
             }
         }
