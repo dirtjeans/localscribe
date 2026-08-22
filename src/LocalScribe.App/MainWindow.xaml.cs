@@ -389,6 +389,10 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void ShowParagraphs()
     {
+        // The word ranges belong to the paragraphs that are going away. Keeping them would hold
+        // every paragraph of every transcript opened this session alive in a dictionary.
+        _spokenWords.Clear();
+
         var following = _viewModel.IsRecording || _viewModel.IsBusy;
 
         _paragraphs = _viewModel.Paragraphs.Select(p => new ParagraphView(p)).ToList();
@@ -875,6 +879,8 @@ public sealed partial class MainWindow : Window
         if (args.Item is ParagraphView paragraph)
         {
             FillWithWords(body, paragraph);
+            HighlightMatches(body, paragraph);
+            return;
         }
 
         HighlightMatches(body);
@@ -905,6 +911,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        var spans = new List<SpokenWord>(words.Count);
+        var offset = 0;
+
         for (var i = 0; i < words.Count; i++)
         {
             var at = words[i].StartSeconds;
@@ -916,16 +925,37 @@ public sealed partial class MainWindow : Window
             };
 
             link.Inlines.Add(new Run { Text = words[i].Text });
-            link.Click += (_, _) => Seek(at, play: true);
+
+            // A little before the word, not exactly on it. Seeking to the instant a word begins
+            // starts playback inside its first consonant, which sounds like a miss however
+            // accurate the timing was — the ear needs a moment of run-up to hear a word whole.
+            link.Click += (_, _) => Seek(Math.Max(0, at - RunUpSeconds), play: true);
 
             body.Inlines.Add(link);
+
+            spans.Add(new SpokenWord(words[i].StartSeconds, words[i].EndSeconds, offset, words[i].Text.Length));
+            offset += words[i].Text.Length;
 
             if (i + 1 < words.Count)
             {
                 body.Inlines.Add(new Run { Text = " " });
+                offset++;
             }
         }
+
+        _spokenWords[paragraph] = spans;
     }
+
+    /// <summary>Where one word sits, both in the recording and in the laid-out text.</summary>
+    private sealed record SpokenWord(double From, double To, int Offset, int Length);
+
+    private readonly Dictionary<ParagraphView, IReadOnlyList<SpokenWord>> _spokenWords = [];
+
+    /// <summary>
+    /// How far before a word to start playing it. Enough to hear the word begin rather than
+    /// arriving in the middle of it.
+    /// </summary>
+    private const double RunUpSeconds = 0.12;
 
     /// <summary>The paragraph's own text, found by its tag rather than by position in the tree.</summary>
     private static TextBlock? FindBodyText(DependencyObject element)
@@ -948,34 +978,79 @@ public sealed partial class MainWindow : Window
         return null;
     }
 
-    private void HighlightMatches(TextBlock body)
+    private void HighlightMatches(TextBlock body) => HighlightMatches(body, null);
+
+    /// <summary>
+    /// Marks what the reader is looking for and what they are hearing, in one pass.
+    /// <para>
+    /// Both at once because the highlighters are a single collection on the text block: applying
+    /// one by clearing the collection would take the other away with it.
+    /// </para>
+    /// </summary>
+    private void HighlightMatches(TextBlock body, ParagraphView? paragraph)
     {
         body.TextHighlighters.Clear();
 
         var query = SearchBox.Text.Trim();
-        if (query.Length == 0)
+
+        if (query.Length > 0)
+        {
+            var found = new TextHighlighter
+            {
+                Background = HighlightBackground,
+                Foreground = HighlightForeground,
+            };
+
+            var text = body.Text;
+            var at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+
+            while (at >= 0)
+            {
+                found.Ranges.Add(new TextRange { StartIndex = at, Length = query.Length });
+                at = text.IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (found.Ranges.Count > 0)
+            {
+                body.TextHighlighters.Add(found);
+            }
+        }
+
+        // The word being said right now. This is what word timings are actually for: a number
+        // that is right to a twentieth of a second is invisible until something moves with the
+        // audio, and then it is the difference between a transcript and a place in a recording.
+        if (paragraph is not null
+            && _viewModel.Player.IsPlaying
+            && _spokenWords.TryGetValue(paragraph, out var spans)
+            && spans.FirstOrDefault(w => _position >= w.From && _position < w.To) is { } speaking)
+        {
+            body.TextHighlighters.Add(new TextHighlighter
+            {
+                Background = SpokenBackground,
+                Ranges = { new TextRange { StartIndex = speaking.Offset, Length = speaking.Length } },
+            });
+        }
+    }
+
+    /// <summary>
+    /// Repaints the paragraph being played, so the word follows the sound.
+    /// <para>
+    /// Only that paragraph. Every other one on screen is unchanged, and redrawing the whole list
+    /// twenty times a second to move one highlight would be a poor trade.
+    /// </para>
+    /// </summary>
+    private void FollowSpokenWord()
+    {
+        if (_paragraphs.FirstOrDefault(p => p.Contains(_position)) is not { } paragraph)
         {
             return;
         }
 
-        var highlighter = new TextHighlighter
+        if (TranscriptList.ContainerFromItem(paragraph) is ContentControl container
+            && container.ContentTemplateRoot is FrameworkElement root
+            && FindBodyText(root) is { } body)
         {
-            Background = HighlightBackground,
-            Foreground = HighlightForeground,
-        };
-
-        var text = body.Text;
-        var at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
-
-        while (at >= 0)
-        {
-            highlighter.Ranges.Add(new TextRange { StartIndex = at, Length = query.Length });
-            at = text.IndexOf(query, at + query.Length, StringComparison.OrdinalIgnoreCase);
-        }
-
-        if (highlighter.Ranges.Count > 0)
-        {
-            body.TextHighlighters.Add(highlighter);
+            HighlightMatches(body, paragraph);
         }
     }
 
@@ -989,6 +1064,15 @@ public sealed partial class MainWindow : Window
 
     private static readonly SolidColorBrush HighlightForeground =
         new(Windows.UI.Color.FromArgb(255, 0x1A, 0x1A, 0x1A));
+
+    /// <summary>
+    /// Behind the word being said. Deliberately faint — this moves several times a second while
+    /// the recording plays, and a strong colour flickering through a paragraph is harder to read
+    /// than no marker at all. The search colour stays the loud one, because a search result is
+    /// something to find rather than something to follow.
+    /// </summary>
+    private static readonly SolidColorBrush SpokenBackground =
+        new(Windows.UI.Color.FromArgb(255, 0xD6, 0xE4, 0xFF));
 
     /// <summary>
     /// The empty state is only for an empty transcript, not for a search that found nothing —
@@ -1128,6 +1212,7 @@ public sealed partial class MainWindow : Window
             _position = seconds;
             MovePlayhead(seconds);
             HighlightAt(seconds);
+            FollowSpokenWord();
         });
 
     private void OnPlaybackStopped() =>
