@@ -1020,14 +1020,22 @@ public sealed partial class MainWindow : Window
         // The word being said right now. This is what word timings are actually for: a number
         // that is right to a twentieth of a second is invisible until something moves with the
         // audio, and then it is the difference between a transcript and a place in a recording.
-        // The last word to have started, not the word whose span covers this instant. Measured
-        // words do not touch — the quiet between them belongs to neither — so asking which word
-        // contains the playhead leaves it holding nothing several times a second, and the
-        // highlight blinks off in every gap between words.
+        // Nothing is lit in a paragraph the playhead has left. Without this the paragraph being
+        // cleared lights up instead: every word in it has started by then, and "the last word to
+        // have started" happily returns the final one, so the pass meant to put the marker out
+        // was the thing keeping it on.
+        //
+        // Within the paragraph, the word covering this instant when there is one, and otherwise
+        // the last to have started. Measured words do not touch — the quiet between them belongs
+        // to neither — so containment alone leaves the marker holding nothing several times a
+        // second, while starting alone skips ahead wherever two segments of a paragraph overlap
+        // in time, which they do.
         if (paragraph is not null
+            && paragraph.Contains(_position)
             && _viewModel.Player.IsPlaying
             && _spokenWords.TryGetValue(paragraph, out var spans)
-            && spans.LastOrDefault(w => _position >= w.From) is { } speaking)
+            && (spans.FirstOrDefault(w => _position >= w.From && _position < w.To)
+                ?? spans.LastOrDefault(w => _position >= w.From)) is { } speaking)
         {
             body.TextHighlighters.Add(new TextHighlighter
             {

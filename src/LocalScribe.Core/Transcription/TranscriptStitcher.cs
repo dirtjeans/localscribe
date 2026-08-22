@@ -67,7 +67,50 @@ public sealed class TranscriptStitcher
         }
 
         merged.Sort((left, right) => left.StartSeconds.CompareTo(right.StartSeconds));
-        return merged;
+
+        return NoTwoAtOnce(merged);
+    }
+
+    /// <summary>
+    /// Pushes each segment to begin no earlier than the one before it ended.
+    /// <para>
+    /// Trimming the repeated words at a seam leaves the segment's start time where it was, so a
+    /// segment whose opening was cut still claims the seconds those words occupied — and two
+    /// segments end up covering the same moment. On a two-minute recording one paragraph held
+    /// "That's how it's defined in the Old Testament" running to 29.98s and "Elijah and in
+    /// Jonah" starting at 27.98s, which is not a thing that can have happened.
+    /// </para>
+    /// <para>
+    /// It matters downstream rather than here. A reader never sees these numbers, but everything
+    /// that walks the transcript in time does: word timings inside a paragraph stop running
+    /// forwards, so the marker following the audio jumps back and forth between two overlapping
+    /// segments instead of moving along the line.
+    /// </para>
+    /// </summary>
+    private static List<TranscriptSegment> NoTwoAtOnce(List<TranscriptSegment> segments)
+    {
+        for (var i = 1; i < segments.Count; i++)
+        {
+            var previous = segments[i - 1].EndSeconds;
+
+            if (segments[i].StartSeconds >= previous)
+            {
+                continue;
+            }
+
+            // Carried forward, keeping the length it was given. A segment squeezed past its own
+            // end would report a negative duration, and the next one round the loop is pushed
+            // clear of this one in turn, so the whole run comes out ordered.
+            var length = Math.Max(0, segments[i].EndSeconds - segments[i].StartSeconds);
+
+            segments[i] = segments[i] with
+            {
+                StartSeconds = previous,
+                EndSeconds = Math.Max(segments[i].EndSeconds, previous + length),
+            };
+        }
+
+        return segments;
     }
 
     /// <summary>
