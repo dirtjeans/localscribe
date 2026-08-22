@@ -239,6 +239,7 @@ public static class SpeakerTracks
         var turns = new List<SpeakerTurn>();
         var at = 0;
 
+
         while (at < frames)
         {
             if (winner[at] < 0)
@@ -263,7 +264,20 @@ public static class SpeakerTracks
             }
         }
 
-        return turns;
+        // Numbered by who speaks first, which is the order a reader meets them in. Anything else
+        // puts Speaker 2 at the top of the transcript and asks the reader to wonder where
+        // Speaker 1 went — numbering by who talks most did exactly that.
+        var order = new Dictionary<int, int>();
+
+        foreach (var turn in turns)
+        {
+            if (!order.ContainsKey(turn.Speaker))
+            {
+                order[turn.Speaker] = order.Count;
+            }
+        }
+
+        return [.. turns.Select(turn => turn with { Speaker = order[turn.Speaker] })];
     }
 
     /// <summary>
@@ -511,7 +525,8 @@ public static class SpeakerTracks
             members[people[track]].Add(track);
         }
 
-        // Numbered by how much of the recording each holds, so speaker 1 is the main voice.
+        // Compacted so the numbers run 0..n-1 with no gaps. Which number means which person is
+        // settled later, by who speaks first — see ToTurns.
         var ranking = Enumerable.Range(0, wanted)
             .Where(p => members[p].Count > 0)
             .OrderByDescending(p => members[p].Count)

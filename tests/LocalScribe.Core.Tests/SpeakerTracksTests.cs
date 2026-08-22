@@ -201,6 +201,24 @@ public class SpeakerTracksTests
         Assert.Null(SpeakerTracks.SeparateTwo(windows, SpeakerTracks.Link(windows)));
     }
 
+    /// <summary>
+    /// Reading order, not talking time. A transcript that opens with "Speaker 2" asks the reader
+    /// to wonder where Speaker 1 went; numbering by who talks most did precisely that.
+    /// </summary>
+    [Fact]
+    public void WhoeverSpeaksFirstIsSpeakerOne()
+    {
+        // The second local speaker does nearly all the talking, but starts later.
+        var windows = Enumerable.Range(0, 3)
+            .Select(_ => Window(Talks(0, 2), Talks(3, 40)))
+            .ToArray();
+
+        var turns = SpeakerTracks.ToTurns(windows, SpeakerTracks.Link(windows), 40);
+
+        Assert.Equal(0, turns[0].Speaker);
+        Assert.Equal(0, turns.OrderBy(t => t.StartSeconds).First().Speaker);
+    }
+
     [Fact]
     public void NothingAtAllIsNotAFailure()
     {
