@@ -295,22 +295,12 @@ public sealed class ForcedAligner : IDisposable
             return string.Empty;
         }
 
-        var block = scores.Between(first, count);
         var text = new System.Text.StringBuilder();
         var previous = -1;
 
-        for (var frame = 0; frame < count; frame++)
+        for (var frame = first; frame < first + count; frame++)
         {
-            var row = frame * scores.Alphabet;
-            var best = 0;
-
-            for (var token = 1; token < scores.Alphabet; token++)
-            {
-                if (block[row + token] > block[row + best])
-                {
-                    best = token;
-                }
-            }
+            var best = Likeliest(scores, frame);
 
             // How CTC output is read: a repeated token is one letter held across several frames,
             // and a blank is what separates two of the same letter from one long one.
@@ -323,6 +313,61 @@ public sealed class ForcedAligner : IDisposable
         }
 
         return text.ToString();
+    }
+
+    /// <summary>Letters read out of a scan, and the frame each was heard in.</summary>
+    /// <param name="Letters">The whole recording as romanised, unpunctuated letters.</param>
+    /// <param name="Frames">Where each letter sits, one entry per letter.</param>
+    public sealed record AudioReading(string Letters, IReadOnlyList<int> Frames);
+
+    /// <summary>
+    /// Reads the entire scan back as letters, remembering where each one was heard.
+    /// <para>
+    /// Searching this is how a word can be found in a recording without knowing roughly where it
+    /// is already. Decoding a stretch at a time and sliding the window works only within a few
+    /// seconds of the answer — which quietly means the badly-placed words, the ones most worth
+    /// finding, are the ones it cannot find.
+    /// </para>
+    /// </summary>
+    public AudioReading ReadAll(AlignmentScores scores)
+    {
+        ArgumentNullException.ThrowIfNull(scores);
+
+        var letters = new System.Text.StringBuilder(scores.Frames / 4);
+        var frames = new List<int>(scores.Frames / 4);
+        var previous = -1;
+
+        for (var frame = 0; frame < scores.Frames; frame++)
+        {
+            var best = Likeliest(scores, frame);
+
+            if (best != previous && best != _alphabet.Blank)
+            {
+                letters.Append(_alphabet.Letter(best));
+                frames.Add(frame);
+            }
+
+            previous = best;
+        }
+
+        return new AudioReading(letters.ToString(), frames);
+    }
+
+    /// <summary>The token the model thought likeliest in one frame.</summary>
+    private static int Likeliest(AlignmentScores scores, int frame)
+    {
+        var row = scores.Between(frame, 1);
+        var best = 0;
+
+        for (var token = 1; token < scores.Alphabet; token++)
+        {
+            if (row[token] > row[best])
+            {
+                best = token;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>What the network made of one stretch of audio, as log probabilities.</summary>

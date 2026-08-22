@@ -170,6 +170,15 @@ internal static class Program
                 .ConfigureAwait(false);
         }
 
+        var archive = ArgumentValue(args, "--check-words");
+        if (archive is not null)
+        {
+            return CheckWordsCommand.Run(
+                archive,
+                ArgumentValue(args, "--alignment-models") ?? modelDirectory,
+                plan);
+        }
+
         var alignAudio = ArgumentValue(args, "--align");
         if (alignAudio is not null)
         {
@@ -241,6 +250,7 @@ internal static class Program
         Console.WriteLine("  --tracking       With --diarize: follow speakers between windows instead of comparing voices.");
         Console.WriteLine("  --align <f>      Scan a WAV with the alignment model and read the grid back.");
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
+        Console.WriteLine("  --check-words <f>  Check a saved .lscribe transcript against its own audio.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
