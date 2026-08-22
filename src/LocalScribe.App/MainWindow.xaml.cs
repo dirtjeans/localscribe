@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using LocalScribe.Core.Archive;
 using LocalScribe.Core.Transcription;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
@@ -131,6 +132,13 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public void OpenWhenReady(string path)
     {
+        // Saved transcripts need no model, so they never wait for one.
+        if (Path.GetExtension(path).Equals(TranscriptArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        {
+            OpenArchive(path);
+            return;
+        }
+
         if (_viewModel.IsModelReady)
         {
             _ = _viewModel.TranscribeFileAsync(path);
@@ -163,6 +171,12 @@ public sealed partial class MainWindow : Window
 
         if (file is null)
         {
+            return;
+        }
+
+        if (Path.GetExtension(file.Name).Equals(TranscriptArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        {
+            OpenArchive(file.Path);
             return;
         }
 
@@ -755,6 +769,19 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>Opens a saved transcript, reporting a bad file rather than throwing at the user.</summary>
+    private void OpenArchive(string path)
+    {
+        try
+        {
+            _viewModel.OpenArchive(path);
+        }
+        catch (Exception exception)
+        {
+            StatusText.Text = $"Could not open that transcript: {exception.Message}";
+        }
+    }
+
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is ParagraphView paragraph)
@@ -1071,6 +1098,9 @@ public sealed partial class MainWindow : Window
         var picker = new FileSavePicker { SuggestedFileName = _viewModel.SourceName };
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
 
+        // First in the list, so it is what the dialog offers by default. The others keep the
+        // words; only this one keeps the recording with them.
+        picker.FileTypeChoices.Add("Transcript and audio", [TranscriptArchive.Extension]);
         picker.FileTypeChoices.Add("Text", [".txt"]);
         picker.FileTypeChoices.Add("Markdown", [".md"]);
         picker.FileTypeChoices.Add("Subtitles", [".srt"]);
@@ -1081,7 +1111,24 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var format = Path.GetExtension(file.Name).ToLowerInvariant() switch
+        var extension = Path.GetExtension(file.Name).ToLowerInvariant();
+
+        if (extension == TranscriptArchive.Extension)
+        {
+            try
+            {
+                await Task.Run(() => _viewModel.SaveArchive(file.Path));
+                StatusText.Text = $"Saved to {file.Path}, with the recording.";
+            }
+            catch (Exception exception)
+            {
+                StatusText.Text = $"Could not save: {exception.Message}";
+            }
+
+            return;
+        }
+
+        var format = extension switch
         {
             ".md" => TranscriptFormat.Markdown,
             ".srt" => TranscriptFormat.SubRip,
@@ -1122,16 +1169,29 @@ public sealed partial class MainWindow : Window
         // window owns it, or the call fails at runtime rather than at compile time.
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
 
+        picker.FileTypeFilter.Add(TranscriptArchive.Extension);
+
         foreach (var extension in AudioFileLoader.SupportedExtensions)
         {
             picker.FileTypeFilter.Add(extension);
         }
 
         var file = await picker.PickSingleFileAsync();
-        if (file is not null)
+        if (file is null)
         {
-            await _viewModel.TranscribeFileAsync(file.Path);
+            return;
         }
+
+        // A saved transcript is opened, not transcribed again: it already has its words, its
+        // timings and its speakers, and running the model over it would only spend minutes
+        // arriving somewhere worse.
+        if (Path.GetExtension(file.Name).Equals(TranscriptArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        {
+            OpenArchive(file.Path);
+            return;
+        }
+
+        await _viewModel.TranscribeFileAsync(file.Path);
     }
 
     private async void OnToggleRecording(object sender, RoutedEventArgs e)

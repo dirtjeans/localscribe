@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
+using LocalScribe.Core.Archive;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
@@ -135,6 +136,50 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Raise(nameof(Paragraphs));
         Raise(nameof(HasTranscript));
     }
+
+    /// <summary>
+    /// Saves the transcript and the recording it came from as one file.
+    /// <para>
+    /// The only format that keeps what the app is for. Text alone loses the half that makes it
+    /// useful — clicking a line to hear it, dragging the waveform and watching the words follow,
+    /// correcting a speaker by listening again — because all of that needs the audio and the
+    /// timings together. And a recording made in the app existed nowhere but memory until now,
+    /// so closing the window destroyed the one thing the user could not recreate.
+    /// </para>
+    /// </summary>
+    public void SaveArchive(string path)
+    {
+        if (_audio is not { } audio)
+        {
+            throw new InvalidOperationException("There is no recording to save.");
+        }
+
+        TranscriptArchive.Save(path, audio, _segments, SourceName);
+    }
+
+    /// <summary>Opens a saved transcript, audio and all.</summary>
+    public void OpenArchive(string path)
+    {
+        var contents = TranscriptArchive.Load(path);
+
+        Discard();
+
+        _audio = contents.Audio;
+        _segmentsBeforeSpeakers = contents.Segments;
+
+        SourceName = contents.Manifest.SourceName is { Length: > 0 } name
+            ? name
+            : Path.GetFileNameWithoutExtension(path);
+
+        SetTranscript(contents.Segments);
+        Player.Load(contents.Audio);
+
+        Status = $"Opened {SourceName}. {contents.Segments.Count} segment(s), "
+            + $"{TimeSpan.FromSeconds(contents.Audio.DurationSeconds):mm\\:ss} of audio.";
+    }
+
+    /// <summary>True when there is something worth saving as an archive.</summary>
+    public bool CanSaveArchive => _audio is not null && _segments.Count > 0;
 
     /// <summary>The transcript in one of the formats the save dialog offers.</summary>
     public string Export(TranscriptFormat format) => format switch
