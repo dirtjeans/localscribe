@@ -1084,10 +1084,38 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Repaints the paragraph being played, so the word follows the sound.
+    /// Which word of a paragraph is being said, or the last one to have started.
     /// <para>
-    /// Only that paragraph. Every other one on screen is unchanged, and redrawing the whole list
-    /// twenty times a second to move one highlight would be a poor trade.
+    /// The same rule <see cref="HighlightMatches(TextBlock, ParagraphView?)"/> paints by, kept
+    /// here so that the decision to repaint and the decision of what to paint cannot drift apart.
+    /// Answering with an index rather than the word itself is what lets a repaint be skipped when
+    /// nothing has moved.
+    /// </para>
+    /// </summary>
+    private static int WordAt(IReadOnlyList<SpokenWord> spans, double position)
+    {
+        var started = -1;
+
+        for (var i = 0; i < spans.Count; i++)
+        {
+            if (position >= spans[i].From && position < spans[i].To)
+            {
+                return i;
+            }
+
+            if (position >= spans[i].From)
+            {
+                started = i;
+            }
+        }
+
+        return started;
+    }
+
+    /// <summary>
+    /// Repaints so the marker follows the sound.
+    /// <para>
+    /// Only when the answer has changed, which is a few times a second rather than twenty.
     /// </para>
     /// </summary>
     private void FollowSpokenWord()
@@ -1095,13 +1123,9 @@ public sealed partial class MainWindow : Window
         var paragraph = _paragraphs.FirstOrDefault(p => p.Contains(_position));
 
         var marked = paragraph is not null && _spokenWords.TryGetValue(paragraph, out var spans)
-            ? spans.FindIndex(w => _position >= w.From && _position < w.To) is var covering && covering >= 0
-                ? covering
-                : spans.FindLastIndex(w => _position >= w.From)
+            ? WordAt(spans, _position)
             : -1;
 
-        // Nothing to repaint until the answer changes, which is a few times a second rather than
-        // twenty.
         if (ReferenceEquals(paragraph, _lit) && marked == _markedWord)
         {
             return;
