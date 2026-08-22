@@ -217,32 +217,88 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>
     /// The measured times for a segment, or null when there are none to be had.
     /// <para>
-    /// Checked against the text as well as the clock. Cleanup rewrites a segment after alignment
-    /// has already run over it, and although it keeps the timings and nearly all the words, a
-    /// removed filler would leave the measured list one word short of the displayed one — after
-    /// which every word in the paragraph would carry its neighbour's time.
+    /// Found by when the words were said rather than by which segment they came from, because by
+    /// the time a segment reaches the reader it is often not the segment that was aligned.
+    /// Attaching speakers divides any segment that spans a turn, so thirty transcribed segments
+    /// became thirty-eight displayed ones — and the ten that changed were the long early ones,
+    /// exactly where an estimate is at its worst. Keyed by identity they all missed, and the
+    /// transcript quietly followed the estimate instead.
+    /// </para>
+    /// <para>
+    /// The words themselves come from the segment, not from the alignment. Cleanup rewrites
+    /// punctuation after alignment has run, and it is the cleaned text that should be read; only
+    /// the times are borrowed. If the two disagree about how many words there are — a filler
+    /// removed, a contraction split — they cannot be paired at all and the estimate stands.
     /// </para>
     /// </summary>
     private IReadOnlyList<WordTimings.Word>? Aligned(TranscriptSegment segment)
     {
+        var own = Split(segment.Text);
+        if (own.Count == 0)
+        {
+            return null;
+        }
+
+        List<WordTimings.Word> measured;
+
         lock (_alignedGate)
         {
-            if (!_aligned.TryGetValue(Key(segment), out var found))
-            {
-                return null;
-            }
-
-            return string.Equals(found.Text, segment.Text, StringComparison.Ordinal) ? found.Words : null;
+            // A word belongs to the segment its start falls inside. The small tolerance is for
+            // the boundary itself: a segment divided at a turn begins on the same instant the
+            // first word does, and floating point does not always agree with itself about that.
+            measured = _aligned
+                .Where(w => w.StartSeconds >= segment.StartSeconds - Tolerance
+                    && w.StartSeconds < segment.EndSeconds - Tolerance)
+                .OrderBy(w => w.StartSeconds)
+                .ToList();
         }
+
+        if (measured.Count != own.Count)
+        {
+            return null;
+        }
+
+        return [.. own.Select((word, i) => new WordTimings.Word(
+            word.Text, measured[i].StartSeconds, measured[i].EndSeconds) { Offset = word.Offset })];
     }
 
-    private static (long Start, long End) Key(TranscriptSegment segment) =>
-        ((long)Math.Round(segment.StartSeconds * 1000), (long)Math.Round(segment.EndSeconds * 1000));
+    /// <summary>The words of a segment, with where each begins in its text.</summary>
+    private static List<WordTimings.Word> Split(string text)
+    {
+        var words = new List<WordTimings.Word>();
+        var at = 0;
+
+        while (at < text.Length)
+        {
+            while (at < text.Length && char.IsWhiteSpace(text[at]))
+            {
+                at++;
+            }
+
+            if (at >= text.Length)
+            {
+                break;
+            }
+
+            var from = at;
+            while (at < text.Length && !char.IsWhiteSpace(text[at]))
+            {
+                at++;
+            }
+
+            words.Add(new WordTimings.Word(text[from..at], 0, 0) { Offset = from });
+        }
+
+        return words;
+    }
+
+    /// <summary>Slack around a segment boundary, in seconds.</summary>
+    private const double Tolerance = 0.005;
 
     private readonly object _alignedGate = new();
 
-    private readonly Dictionary<(long Start, long End), (string Text, IReadOnlyList<WordTimings.Word> Words)>
-        _aligned = [];
+    /// <summary>Every word the aligner placed, for the whole recording, in the order said.</summary>
+    private readonly List<WordTimings.Word> _aligned = [];
 
     /// <summary>
     /// Measures when every word was said, one segment at a time.
@@ -282,7 +338,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     lock (_alignedGate)
                     {
-                        _aligned[Key(segments[i])] = (segments[i].Text, words);
+                        _aligned.AddRange(words);
                     }
                 }
             }, cancellationToken).ConfigureAwait(true);
@@ -724,8 +780,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Attribution last, on the cleaned text rather than the raw. Segments spanning a speaker
         // change are divided at sentence boundaries, and by this point there are real sentence
         // boundaries to divide at.
-        SetTranscript(turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns));
+        var finished = turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns);
+        SetTranscript(finished);
 
+        // Timed last, over the segments the reader actually ends up with. It cannot run beside
+        // the other two after all: cleanup rewrites the words and attaching speakers divides the
+        // segments, so anything aligned before both have finished is aligned against a
+        // transcript that no longer exists.
+        if (audio is not null)
+        {
+            await AlignWordsAsync(finished, audio, new Progress<double>(stages.Words), cancellationToken);
+
+            // Redrawn, so the measured times replace the estimates shown meanwhile.
+            SetTranscript(finished);
+        }
     }
 
     private async Task<RefinementResult?> CleanAsync(

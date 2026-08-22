@@ -139,13 +139,33 @@ public sealed class ForcedAligner : IDisposable
 
         // A frame is a fixed stride of audio, so a frame index is a time.
         var perFrame = (last - first) / (double)frames / audio.SampleRate;
-        var timed = new List<WordTimings.Word>(words.Count);
 
-        foreach (var spelling in spellings)
+        var spelled = spellings.ToDictionary(spelling => spelling.Index);
+        var timed = new List<WordTimings.Word>(words.Count);
+        var previous = segment.StartSeconds;
+
+        // Every word gets an entry, including the ones with no letters in them. A lone dash or
+        // full stop cannot be aligned — there is no sound to align it to — but leaving it out
+        // makes the returned list shorter than the segment's own words, and a caller pairing the
+        // two positionally would then give every word after it its neighbour's time. On the
+        // debate recording exactly one segment ended in a stray full stop, and that one segment
+        // silently fell back to the estimate.
+        for (var i = 0; i < words.Count; i++)
         {
+            if (!spelled.TryGetValue(i, out var spelling))
+            {
+                timed.Add(new WordTimings.Word(words[i].Text, previous, previous)
+                {
+                    Offset = words[i].Offset,
+                });
+
+                continue;
+            }
+
             var letters = placed.Skip(spelling.First).Take(spelling.Count).ToList();
             if (letters.Count == 0)
             {
+                timed.Add(new WordTimings.Word(words[i].Text, previous, previous) { Offset = words[i].Offset });
                 continue;
             }
 
@@ -154,8 +174,10 @@ public sealed class ForcedAligner : IDisposable
 
             timed.Add(new WordTimings.Word(spelling.Word, from, Math.Max(to, from))
             {
-                Offset = words[spelling.Index].Offset,
+                Offset = words[i].Offset,
             });
+
+            previous = Math.Max(to, from);
         }
 
         return timed.Count == 0 ? null : timed;
