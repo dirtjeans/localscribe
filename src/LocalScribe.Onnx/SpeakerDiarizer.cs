@@ -422,6 +422,14 @@ public sealed class SpeakerDiarizer : IDisposable
         var spans = windows.Select(window => window.Speakers).ToList();
         var tracks = SpeakerTracks.Link(spans);
 
+        // Following speakers between windows can chain through a mistake. Where the segmentation
+        // model briefly puts one person's speech in the other's slot, the link is made on real
+        // shared audio and the two are welded into one track — after which nothing downstream can
+        // separate them, because they have become a single object before anyone asks who they
+        // are. Listening to each track is the check, and it is only worth doing now that the
+        // embeddings work: a track holding two people shows 0.78 between its own halves.
+        tracks = SplitImpureTracks(audio, spans, tracks, threshold, cancellationToken);
+
         var wanted = exactSpeakers ?? maxSpeakers;
 
         if (wanted is { } limit && limit > 0)
@@ -449,6 +457,188 @@ public sealed class SpeakerDiarizer : IDisposable
 
         return Tidy([.. SpeakerTracks.ToTurns(spans, tracks, audio.DurationSeconds)]);
     }
+
+    /// <summary>
+    /// Splits any track that turns out to hold more than one voice.
+    /// <para>
+    /// The one failure that following speakers through the audio cannot catch by itself. Linking
+    /// joins whoever was talking during the seconds two windows share, which is right whenever
+    /// the segmentation model is right — and where it briefly puts one person in the other's
+    /// slot, the link is made on genuinely shared audio and two people become one track. Every
+    /// later stage then treats them as one person by construction: the conflict graph, the
+    /// colouring and the grouping all take tracks as given.
+    /// </para>
+    /// <para>
+    /// So each track is listened to. Its own stretches are embedded and clustered among
+    /// themselves, and a track that divides is divided. This was not worth attempting until the
+    /// embeddings were mean-normalised: before that, one person and two measured 0.06 and 0.21,
+    /// far too close to act on. They now measure 0.25 and 0.78.
+    /// </para>
+    /// </summary>
+    private int[][] SplitImpureTracks(
+        PcmAudio audio,
+        IReadOnlyList<IReadOnlyList<IReadOnlyList<(double Start, double End)>>> spans,
+        int[][] tracks,
+        double threshold,
+        CancellationToken cancellationToken)
+    {
+        var regions = new Dictionary<int, List<(double Start, double End)>>();
+
+        for (var w = 0; w < spans.Count; w++)
+        {
+            for (var s = 0; s < spans[w].Count; s++)
+            {
+                var track = tracks[w][s];
+                if (track == SpeakerTracks.Silent)
+                {
+                    continue;
+                }
+
+                regions.TryAdd(track, []);
+                regions[track].AddRange(spans[w][s]);
+            }
+        }
+
+        var split = new Dictionary<int, List<(double Start, double End, int Group)>>();
+        var next = tracks.SelectMany(window => window).DefaultIfEmpty(0).Max() + 1;
+
+        foreach (var (track, all) in regions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // The same speech arrives from every window covering it, so overlapping stretches are
+            // joined before anything is embedded.
+            var distinct = Distinct(all)
+                .Where(r => r.End - r.Start >= ShortestRegionToJudge)
+                .OrderByDescending(r => r.End - r.Start)
+                .Take(RegionsPerTrack)
+                .OrderBy(r => r.Start)
+                .ToList();
+
+            if (distinct.Count < 2)
+            {
+                continue;
+            }
+
+            var voices = new List<float[]>(distinct.Count);
+            var kept = new List<(double Start, double End)>(distinct.Count);
+
+            foreach (var region in distinct)
+            {
+                if (Embed(audio, region.Start, region.End) is { } embedding)
+                {
+                    voices.Add(embedding);
+                    kept.Add(region);
+                }
+            }
+
+            if (voices.Count < 2)
+            {
+                continue;
+            }
+
+            var labels = SpeakerClustering.Cluster(voices, threshold);
+            if (labels.Distinct().Count() < 2)
+            {
+                continue;
+            }
+
+            // Only where both sides are substantial. One odd stretch is a bad embedding; several
+            // seconds either way is two people.
+            var sides = labels
+                .Select((label, i) => (label, seconds: kept[i].End - kept[i].Start))
+                .GroupBy(x => x.label)
+                .Select(g => g.Sum(x => x.seconds))
+                .OrderByDescending(x => x)
+                .ToList();
+
+            if (sides[1] < LeastConvincingSide)
+            {
+                continue;
+            }
+
+            split[track] = [.. kept.Select((r, i) => (r.Start, r.End, labels[i]))];
+        }
+
+        if (split.Count == 0)
+        {
+            return tracks;
+        }
+
+        var renumbered = new Dictionary<(int Track, int Group), int>();
+        var result = tracks.Select(window => window.ToArray()).ToArray();
+
+        for (var w = 0; w < spans.Count; w++)
+        {
+            for (var s = 0; s < spans[w].Count; s++)
+            {
+                var track = result[w][s];
+
+                if (track == SpeakerTracks.Silent
+                    || spans[w][s].Count == 0
+                    || !split.TryGetValue(track, out var groups))
+                {
+                    continue;
+                }
+
+                var middle = (spans[w][s].Min(x => x.Start) + spans[w][s].Max(x => x.End)) / 2;
+
+                // Whichever of the track's own stretches this piece sits nearest to.
+                var group = groups
+                    .OrderBy(g => Math.Abs(((g.Start + g.End) / 2) - middle))
+                    .First()
+                    .Group;
+
+                if (group == 0)
+                {
+                    continue;
+                }
+
+                if (!renumbered.TryGetValue((track, group), out var id))
+                {
+                    id = next++;
+                    renumbered[(track, group)] = id;
+                }
+
+                result[w][s] = id;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Overlapping stretches joined into distinct ones.</summary>
+    private static List<(double Start, double End)> Distinct(List<(double Start, double End)> spans)
+    {
+        var merged = new List<(double Start, double End)>();
+
+        foreach (var span in spans.OrderBy(s => s.Start))
+        {
+            if (merged.Count > 0 && span.Start <= merged[^1].End)
+            {
+                merged[^1] = (merged[^1].Start, Math.Max(merged[^1].End, span.End));
+                continue;
+            }
+
+            merged.Add(span);
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Shortest stretch worth embedding when judging a track. Below this the embedding says more
+    /// about which words were spoken than about who spoke them.
+    /// </summary>
+    private const double ShortestRegionToJudge = 1.5;
+
+    /// <summary>How many of a track to listen to. The longest stretches, which say most.</summary>
+    private const int RegionsPerTrack = 12;
+
+    /// <summary>
+    /// How much speech the smaller half of a split must hold before the split is believed.
+    /// </summary>
+    private const double LeastConvincingSide = 2.0;
 
     /// <summary>
     /// Reduces the tracks to at most <paramref name="wanted"/> people, by what they sound like.
