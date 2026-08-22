@@ -392,6 +392,7 @@ public sealed partial class MainWindow : Window
         // The word ranges belong to the paragraphs that are going away. Keeping them would hold
         // every paragraph of every transcript opened this session alive in a dictionary.
         _spokenWords.Clear();
+        _lit = null;
 
         var following = _viewModel.IsRecording || _viewModel.IsBusy;
 
@@ -1019,10 +1020,14 @@ public sealed partial class MainWindow : Window
         // The word being said right now. This is what word timings are actually for: a number
         // that is right to a twentieth of a second is invisible until something moves with the
         // audio, and then it is the difference between a transcript and a place in a recording.
+        // The last word to have started, not the word whose span covers this instant. Measured
+        // words do not touch — the quiet between them belongs to neither — so asking which word
+        // contains the playhead leaves it holding nothing several times a second, and the
+        // highlight blinks off in every gap between words.
         if (paragraph is not null
             && _viewModel.Player.IsPlaying
             && _spokenWords.TryGetValue(paragraph, out var spans)
-            && spans.FirstOrDefault(w => _position >= w.From && _position < w.To) is { } speaking)
+            && spans.LastOrDefault(w => _position >= w.From) is { } speaking)
         {
             body.TextHighlighters.Add(new TextHighlighter
             {
@@ -1041,7 +1046,24 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void FollowSpokenWord()
     {
-        if (_paragraphs.FirstOrDefault(p => p.Contains(_position)) is not { } paragraph)
+        var paragraph = _paragraphs.FirstOrDefault(p => p.Contains(_position));
+
+        // The one we have left has to be repainted too, or the word that was lit when playback
+        // moved on stays lit for the rest of the session — every paragraph already played
+        // keeping a stale marker somewhere in the middle of it.
+        if (!ReferenceEquals(paragraph, _lit))
+        {
+            Repaint(_lit);
+            _lit = paragraph;
+        }
+
+        Repaint(paragraph);
+    }
+
+    /// <summary>Redraws one paragraph's highlights, if it is on screen at all.</summary>
+    private void Repaint(ParagraphView? paragraph)
+    {
+        if (paragraph is null)
         {
             return;
         }
@@ -1053,6 +1075,9 @@ public sealed partial class MainWindow : Window
             HighlightMatches(body, paragraph);
         }
     }
+
+    /// <summary>The paragraph currently carrying the spoken-word marker.</summary>
+    private ParagraphView? _lit;
 
     /// <summary>
     /// A literal highlighter pen rather than the accent colour. The accent already means "this
@@ -1219,6 +1244,11 @@ public sealed partial class MainWindow : Window
         _dispatcher.TryEnqueue(() =>
         {
             UpdatePlayIcon();
+
+            // Nothing is being said any more, so nothing should look as though it is.
+            var was = _lit;
+            _lit = null;
+            Repaint(was);
         });
 
 
