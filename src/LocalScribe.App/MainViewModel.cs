@@ -844,6 +844,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // change are divided at sentence boundaries, and by this point there are real sentence
         // boundaries to divide at.
         var finished = turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns);
+
+        // Before the overlaps are marked, because a sentence handed back to one speaker is no
+        // longer a stretch where two of them were talking.
+        finished = SpeakerAttribution.KeepSentencesWhole(finished);
         finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
 

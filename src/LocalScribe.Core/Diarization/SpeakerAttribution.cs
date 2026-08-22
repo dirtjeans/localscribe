@@ -137,6 +137,119 @@ public static class SpeakerAttribution
         @"(?<=[.!?])\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
+    /// Refuses a speaker change that falls in the middle of a sentence.
+    /// <para>
+    /// On the debate recording one sentence came out as three people taking turns: "You accept
+    /// conscience as a guide," to the first, "and conscience is one of the defining
+    /// characteristics" to the second, "of God in the Old Testament." back to the first. Whisper
+    /// returned those as three segments, so nothing split them badly — each was labelled whole,
+    /// and the labels themselves alternated.
+    /// </para>
+    /// <para>
+    /// Grammar settles it. A sentence that has not ended, continued by a fragment that starts in
+    /// lower case, is one person still talking: the second piece is not a reply, it is the rest
+    /// of the clause. People do interrupt mid-sentence, but what they say then is a new thought
+    /// starting with a capital, not a subordinate clause completing somebody else's.
+    /// </para>
+    /// <para>
+    /// This is also what keeps a genuine quick exchange intact, which a minimum turn length would
+    /// not. Two lines down from the sentence above, "I think you're being intellectually
+    /// disingenuous." is answered by "In what way?" — a turn of about a second, and the shortest
+    /// kind of exchange there is. The full stop and the capital say it is real, and it survives
+    /// untouched.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<TranscriptSegment> KeepSentencesWhole(
+        IReadOnlyList<TranscriptSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+
+        if (segments.Count < 2)
+        {
+            return segments;
+        }
+
+        var kept = new List<TranscriptSegment>(segments);
+
+        for (var i = 1; i < kept.Count; i++)
+        {
+            var previous = kept[i - 1];
+            var current = kept[i];
+
+            if (previous.Speaker is null
+                || current.Speaker is null
+                || previous.Speaker == current.Speaker)
+            {
+                continue;
+            }
+
+            // A pause long enough to lose the thread. Read across a silence, "and…" is as likely
+            // to be somebody starting their own sentence with it.
+            if (current.StartSeconds - previous.EndSeconds > LongestPause)
+            {
+                continue;
+            }
+
+            if (EndsSentence(previous.Text) || !ContinuesSentence(current.Text))
+            {
+                continue;
+            }
+
+            // Taken from the piece before rather than voted on, so a run of fragments resolves to
+            // whoever began the sentence: the third piece then reads the second as already
+            // corrected and follows it.
+            kept[i] = current with { Speaker = previous.Speaker };
+        }
+
+        return kept;
+    }
+
+    /// <summary>True when this text finishes what it was saying.</summary>
+    private static bool EndsSentence(string text)
+    {
+        for (var i = text.Length - 1; i >= 0; i--)
+        {
+            var character = text[i];
+
+            // Trailing quotes and brackets close the sentence rather than being it.
+            if (char.IsWhiteSpace(character) || character is '"' or '\'' or ')' or ']' or '”' or '’')
+            {
+                continue;
+            }
+
+            return character is '.' or '!' or '?' or '…' or ':' or ';';
+        }
+
+        // Nothing there to be continued.
+        return true;
+    }
+
+    /// <summary>True when this text reads as the rest of a sentence rather than the start of one.</summary>
+    private static bool ContinuesSentence(string text)
+    {
+        foreach (var character in text)
+        {
+            if (char.IsLetter(character))
+            {
+                return char.IsLower(character);
+            }
+
+            if (char.IsDigit(character))
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// How long a gap may be before the two pieces stop reading as one sentence. Generous enough
+    /// to cover a breath, short enough that it is not reaching across a turn.
+    /// </summary>
+    private const double LongestPause = 2;
+
+    /// <summary>
     /// Marks the segments that fall inside a stretch of crosstalk.
     /// <para>
     /// Half of a segment overlapping is enough. A word or two of someone cutting in does not
