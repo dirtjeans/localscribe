@@ -142,4 +142,78 @@ public class SpeakerAttributionTests
 
         Assert.Equal(text, string.Join(" ", result.Select(r => r.Text)));
     }
+
+    /// <summary>
+    /// The interruption from the debate recording. The diarizer put the change at 16.6s; Whisper
+    /// ended a segment at 16.0s, where "Not in the least." begins. Left alone, the segment
+    /// straddles the boundary, goes to whichever side holds more of it, and the interruption is
+    /// credited to the person being interrupted.
+    /// </summary>
+    [Fact]
+    public void AnInterruptionGoesToWhoeverInterrupted()
+    {
+        IReadOnlyList<TranscriptSegment> segments =
+        [
+            Segment("I am using the term God in belief, and then you--", 14.2, 16.0),
+            Segment("Not in the least.", 16.0, 16.9),
+            Segment("I don't understand how you're using it in the least.", 16.9, 19.3),
+        ];
+
+        IReadOnlyList<SpeakerTurn> turns =
+        [
+            new(1, 8.6, 16.6),
+            new(0, 16.6, 28.9),
+        ];
+
+        var result = SpeakerAttribution.Apply(segments, turns);
+
+        var interruption = result.Single(s => s.Text.StartsWith("Not in the least", StringComparison.Ordinal));
+
+        Assert.Equal("Speaker 1", interruption.Speaker);
+    }
+
+    /// <summary>A boundary in open ground is the diarizer's to place, and stays put.</summary>
+    [Fact]
+    public void ABoundaryWithNoSegmentGapNearbyIsLeftAlone()
+    {
+        IReadOnlyList<TranscriptSegment> segments =
+        [
+            Segment("A long uninterrupted stretch of one person talking", 0, 20),
+            Segment("and then somebody else entirely", 20, 30),
+        ];
+
+        IReadOnlyList<SpeakerTurn> turns = [new(0, 0, 10), new(1, 10, 30)];
+
+        var moved = SpeakerAttribution.SnapToSegmentBoundaries(turns, segments);
+
+        Assert.Equal(10, moved[1].StartSeconds, 3);
+    }
+
+    [Fact]
+    public void SnappingLeavesNoGapOrOverlapBetweenTurns()
+    {
+        IReadOnlyList<TranscriptSegment> segments =
+        [
+            Segment("one", 0, 5.0),
+            Segment("two", 5.0, 10),
+            Segment("three", 10, 15),
+        ];
+
+        IReadOnlyList<SpeakerTurn> turns = [new(0, 0, 5.4), new(1, 5.4, 10.2), new(0, 10.2, 15)];
+
+        var moved = SpeakerAttribution.SnapToSegmentBoundaries(turns, segments);
+
+        for (var i = 1; i < moved.Count; i++)
+        {
+            Assert.Equal(moved[i - 1].EndSeconds, moved[i].StartSeconds, 3);
+        }
+    }
+
+    [Fact]
+    public void NothingToSnapToIsNotAFailure()
+    {
+        IReadOnlyList<SpeakerTurn> turns = [new(0, 0, 5), new(1, 5, 10)];
+
+        Assert.Equal(turns, SpeakerAttribution.SnapToSegmentBoundaries(turns, []));
+    }
 }
