@@ -112,11 +112,123 @@ public class TranscriptQualityTests
     [InlineData(-1.10, true)]    // past the point the model would retry itself
     [InlineData(-2.40, true)]    // noise
     public void GuessworkIsRecognisedByTheModelsOwnConfidence(double confidence, bool guessing) =>
-        Assert.Equal(guessing, TranscriptQuality.SoundsLikeGuesswork(confidence));
+        Assert.Equal(guessing, TranscriptQuality.SoundsLikeGuesswork("a perfectly ordinary sentence of speech", confidence));
 
     [Fact]
     public void ConfidentWordsOverSilenceAreStillDisbelieved() =>
-        Assert.True(TranscriptQuality.SoundsLikeGuesswork(-0.2, noSpeechProbability: 0.9));
+        Assert.True(TranscriptQuality.SoundsLikeGuesswork("words over silence", -0.2, noSpeechProbability: 0.9));
+
+    /// <summary>
+    /// Taken from the debate recording: thirty seconds where the model latched onto a phrase and
+    /// could not let go. Its confidence through this is perfectly ordinary — it is certain of
+    /// every word — so only the shape of the text gives it away.
+    /// </summary>
+    [Fact]
+    public void AModelTalkingInCirclesIsRecognised()
+    {
+        const string looping =
+            "I didn't make that point. You don't. I didn't make that point. You don't. I don't. "
+            + "I don't. I don't. I don't. I don't. I don't. I don't. I don't. I don't. I don't. "
+            + "I don't. I don't. I don't. I don't. I don't. I don't. I don't. I don";
+
+        Assert.True(TranscriptQuality.LoopsOnItself(looping));
+        Assert.True(TranscriptQuality.SoundsLikeGuesswork(looping, -0.1));
+    }
+
+    [Fact]
+    public void OrdinarySpeechDoesNotLookLikeALoop()
+    {
+        const string ordinary =
+            "My definition of God as conscience is a lot more precise and oriented than your "
+            + "definition of the God that you hypothetically disbelieve in. But it's irrelevant "
+            + "to the fault lines of this debate. How is it irrelevant? Because in common "
+            + "parlance when we are talking about atheists we are not talking about that.";
+
+        Assert.False(TranscriptQuality.LoopsOnItself(ordinary));
+    }
+
+    /// <summary>
+    /// A genuine repetition for emphasis is not a loop, and a transcript that ellipsised it
+    /// would be deleting something the speaker meant.
+    /// </summary>
+    [Fact]
+    public void SayingSomethingTwiceForEmphasisIsNotALoop()
+    {
+        const string emphatic =
+            "It's directly relevant. Atheists reject God, but they don't understand what they're "
+            + "rejecting. But they don't understand what they're rejecting. You accept conscience "
+            + "as a guide, and conscience is one of the defining characteristics of God.";
+
+        Assert.False(TranscriptQuality.LoopsOnItself(emphatic));
+    }
+
+    /// <summary>
+    /// The real shape of the failure, from the debate recording: twenty seconds of speech and
+    /// then ten of the model stuck. The good part has to survive — discarding the segment would
+    /// take it too.
+    /// </summary>
+    [Fact]
+    public void OnlyTheLoopingTailIsCut()
+    {
+        const string mixed =
+            "Your point that there are these polisimous ideas of God. I didn't make that point. "
+            + "I don't. I don't. I don't. I don't. I don't. I don't. I don't.";
+
+        var trimmed = TranscriptQuality.TrimLoopedTail(mixed);
+
+        Assert.StartsWith("Your point that there are these polisimous ideas of God.", trimmed, StringComparison.Ordinal);
+        Assert.EndsWith(TranscriptQuality.Unintelligible, trimmed, StringComparison.Ordinal);
+        Assert.DoesNotContain("I don't. I don't.", trimmed, StringComparison.Ordinal);
+    }
+
+    /// <summary>Emphasis is not a loop. Four times running is; twice is someone making a point.</summary>
+    /// <summary>
+    /// The exact text from the recording, ending mid-word. Matching strictly from the last word
+    /// compares "don" against "don't", finds no repeat, and leaves the whole loop in place.
+    /// </summary>
+    [Fact]
+    public void ALoopThatRunsOutMidPhraseIsStillFound()
+    {
+        const string cutOff =
+            "I didn't make that point. You don't. I don't. I don't. I don't. "
+            + "I don't. I don't. I don't. I don't. I don";
+
+        var trimmed = TranscriptQuality.TrimLoopedTail(cutOff);
+
+        Assert.EndsWith(TranscriptQuality.Unintelligible, trimmed, StringComparison.Ordinal);
+        Assert.DoesNotContain("I don't. I don't.", trimmed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RepeatingYourselfTwiceIsLeftAlone()
+    {
+        const string emphatic =
+            "Atheists reject God, but they don't understand what they're rejecting. "
+            + "But they don't understand what they're rejecting.";
+
+        Assert.Equal(emphatic, TranscriptQuality.TrimLoopedTail(emphatic));
+    }
+
+    [Fact]
+    public void OrdinarySpeechKeepsItsEnding()
+    {
+        const string ordinary =
+            "I just, I think your point is irrelevant to the way that people tend to use these words.";
+
+        Assert.Equal(ordinary, TranscriptQuality.TrimLoopedTail(ordinary));
+    }
+
+    [Fact]
+    public void ASegmentThatIsNothingButALoopBecomesAnEllipsis()
+    {
+        var trimmed = TranscriptQuality.TrimLoopedTail("I don't. I don't. I don't. I don't. I don't.");
+
+        Assert.Equal(TranscriptQuality.Unintelligible, trimmed);
+    }
+
+    [Fact]
+    public void AShortLineIsNotJudged() =>
+        Assert.False(TranscriptQuality.LoopsOnItself("No. No. No. No."));
 
     [Fact]
     public void NothingToCompareAgainstIsNotAFailure() =>

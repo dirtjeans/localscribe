@@ -241,12 +241,169 @@ public static class TranscriptQuality
     /// -0.2.
     /// </para>
     /// </summary>
+    /// <param name="text">The words themselves, checked for the model talking in circles.</param>
     /// <param name="averageLogProbability">Mean confidence over the segment's tokens.</param>
     /// <param name="noSpeechProbability">How sure the model was that nobody was talking.</param>
     public static bool SoundsLikeGuesswork(
+        string text,
         double averageLogProbability,
         double noSpeechProbability = 0) =>
-        averageLogProbability < GuessworkBelow || noSpeechProbability > SilenceAbove;
+        LoopsOnItself(text)
+        || averageLogProbability < GuessworkBelow
+        || noSpeechProbability > SilenceAbove;
+
+    /// <summary>
+    /// True when the model has got stuck repeating itself.
+    /// <para>
+    /// The other way Whisper fails, and the more common one on a real recording. Where it cannot
+    /// follow the audio it sometimes latches onto a phrase and emits it over and over — thirty
+    /// seconds of "I don't. I don't. I don't." — with perfectly ordinary confidence, because it
+    /// is entirely sure of each word. Confidence cannot see this at all; the shape of the text
+    /// gives it away instantly.
+    /// </para>
+    /// <para>
+    /// Measured by how well the text compresses, which is Whisper's own test: repetitive text
+    /// compresses far better than speech, and OpenAI's implementation treats a ratio above 2.4
+    /// as a decode to throw away. Ordinary English runs around 1.2 to 1.6.
+    /// </para>
+    /// </summary>
+    public static bool LoopsOnItself(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        // Too short to tell. Any brief phrase compresses badly, and repetition needs room to
+        // show itself.
+        if (text.Length < ShortestWorthChecking)
+        {
+            return false;
+        }
+
+        var raw = System.Text.Encoding.UTF8.GetBytes(text);
+
+        using var compressed = new MemoryStream();
+        using (var gzip = new System.IO.Compression.GZipStream(compressed, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
+        {
+            gzip.Write(raw, 0, raw.Length);
+        }
+
+        return raw.Length / (double)compressed.Length > RepetitionAbove;
+    }
+
+    /// <summary>
+    /// Cuts a repeating tail off a segment, leaving an ellipsis in its place.
+    /// <para>
+    /// Where <see cref="LoopsOnItself"/> judges a whole segment, this finds the loop inside one.
+    /// That is the shape the failure actually takes: the model follows the audio for twenty
+    /// seconds, loses it, and spends the last ten repeating a phrase — "I don't. I don't. I
+    /// don't." — while the segment as a whole still compresses like ordinary speech, because
+    /// most of it is ordinary speech.
+    /// </para>
+    /// <para>
+    /// Throwing the segment away would take the good twenty seconds with it, so only the tail
+    /// goes. An ellipsis is honest about the gap and leaves the reader somewhere to listen.
+    /// </para>
+    /// </summary>
+    public static string TrimLoopedTail(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < MinimumRepeats * 2)
+        {
+            return text;
+        }
+
+        var plain = words.Select(Bare).ToArray();
+        var cutAt = words.Length;
+
+        // A window that ends mid-loop leaves a fragment of one: "I don't. I don't. I don". Read
+        // strictly from the last word, "don" fails to match "don't" and the whole loop goes
+        // unseen — which is exactly what happened on the recording this was built from. So a
+        // few trailing words are allowed to be ignored, and the fragment goes with the loop.
+        for (var ignore = 0; ignore <= PartialTailWords && ignore < plain.Length; ignore++)
+        {
+            var end = plain.Length - ignore;
+
+            // The longest loop wins. A phrase of one word and a phrase of four can both be
+            // repeating at the end, and cutting at the earlier point removes the whole of it.
+            for (var phrase = 1; phrase <= LongestLoopedPhrase; phrase++)
+            {
+                var repeats = 1;
+
+                while ((repeats + 1) * phrase <= end && RepeatsAgain(plain, end, phrase, repeats))
+                {
+                    repeats++;
+                }
+
+                if (repeats >= MinimumRepeats)
+                {
+                    cutAt = Math.Min(cutAt, end - (repeats * phrase));
+                }
+            }
+        }
+
+        if (cutAt >= words.Length)
+        {
+            return text;
+        }
+
+        // Nothing left but the loop: the segment was never anything else.
+        var kept = string.Join(' ', words.Take(cutAt)).TrimEnd();
+
+        return kept.Length == 0 ? Unintelligible : $"{kept} {Unintelligible}";
+    }
+
+    /// <summary>True when the block of <paramref name="phrase"/> words before the last
+    /// <paramref name="repeats"/> blocks matches the one ending at <paramref name="end"/>.</summary>
+    private static bool RepeatsAgain(string[] words, int end, int phrase, int repeats)
+    {
+        var last = end - phrase;
+        var earlier = end - ((repeats + 1) * phrase);
+
+        for (var i = 0; i < phrase; i++)
+        {
+            if (!string.Equals(words[last + i], words[earlier + i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string Bare(string word) =>
+        new(word.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+
+    /// <summary>
+    /// How many times a phrase must repeat before it is a loop rather than emphasis. Somebody
+    /// saying a thing twice means it; saying it four times running is the model stuck.
+    /// </summary>
+    private const int MinimumRepeats = 4;
+
+    /// <summary>
+    /// How much of a trailing fragment to disregard when hunting for the loop. A window that
+    /// runs out mid-repetition ends on half a phrase, and matching from the true last word would
+    /// miss the loop entirely.
+    /// </summary>
+    private const int PartialTailWords = 4;
+
+    /// <summary>
+    /// The longest phrase worth checking for a loop. Beyond this, a repeat is more likely to be
+    /// a speaker returning to their point than a decode that has come off the rails.
+    /// </summary>
+    private const int LongestLoopedPhrase = 6;
+
+    /// <summary>
+    /// Compression ratio past which text is repetition rather than speech. Whisper's own figure
+    /// for a decode it discards.
+    /// </summary>
+    private const double RepetitionAbove = 2.4;
+
+    /// <summary>
+    /// Below this many characters the compression ratio says more about gzip's header than about
+    /// the words, so the check abstains.
+    /// </summary>
+    private const int ShortestWorthChecking = 200;
 
     /// <summary>
     /// Mean log probability below which a segment is the model guessing. Whisper's own figure

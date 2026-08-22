@@ -133,7 +133,13 @@ public sealed class TranscriptionPipeline
                 string.Join(" ", segments.Select(s => s.Text.Trim()))));
         }
 
-        return new Transcript(_stitcher.Stitch(perChunkSegments));
+        // Split where Whisper marked a change of speaker. It writes dialogue the way a script
+        // does — a dash opening a line, another when somebody cuts in — from the same audio the
+        // diarizer will see, and until now the marks survived into the transcript as stray
+        // punctuation with nothing acting on them. Two people sharing one segment could not be
+        // told apart afterwards however good the voices were, because there was only ever one
+        // segment to attach a speaker to.
+        return new Transcript(DialogueMarks.Split(_stitcher.Stitch(perChunkSegments)));
     }
 
     /// <summary>

@@ -327,10 +327,9 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
         // stops hearing — it invents fluent sentences out of noise and crosstalk with no change
         // in tone to warn anybody — so a reader given the invention has no way to know. A gap is
         // honest, and it can be gone back to and listened to.
-        if (TranscriptQuality.SoundsLikeGuesswork(confidence))
-        {
-            text = TranscriptQuality.Unintelligible;
-        }
+        text = TranscriptQuality.SoundsLikeGuesswork(text, confidence)
+            ? TranscriptQuality.Unintelligible
+            : TranscriptQuality.TrimLoopedTail(text);
 
         segments.Add(new TranscriptSegment(
             text,
