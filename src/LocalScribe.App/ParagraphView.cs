@@ -16,11 +16,19 @@ public sealed class ParagraphView
 {
     private readonly TranscriptParagraph _paragraph;
 
+    /// <summary>
+    /// The timed pieces this paragraph was assembled from. Needed to place its words in the
+    /// recording: a paragraph carries one start time, and clicking the ninth word of it should
+    /// not seek to the first.
+    /// </summary>
+    public IReadOnlyList<TranscriptSegment> Segments { get; }
+
     public ParagraphView(TranscriptParagraph paragraph)
     {
         ArgumentNullException.ThrowIfNull(paragraph);
 
         _paragraph = paragraph;
+        Segments = paragraph.Segments;
         Text = paragraph.Text;
         Speaker = paragraph.Speaker ?? string.Empty;
         StartSeconds = paragraph.StartSeconds;

@@ -181,6 +181,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>True when there is something worth saving as an archive.</summary>
     public bool CanSaveArchive => _audio is not null && _segments.Count > 0;
 
+    /// <summary>
+    /// When each word of a paragraph was said, so one can be clicked and heard.
+    /// <para>
+    /// Estimated rather than measured. Whisper times whole segments, and the proper way to get
+    /// words — aligning them against the decoder's cross-attention — needs weights these
+    /// exported graphs do not emit. What is available is the loudness of the recording, which
+    /// shows where the pauses are, so the words are shared out across the speech rather than
+    /// across the clock.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<WordTimings.Word> WordsIn(IReadOnlyList<TranscriptSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+
+        if (_audio is not { } audio)
+        {
+            return [];
+        }
+
+        var words = new List<WordTimings.Word>();
+
+        foreach (var segment in segments)
+        {
+            words.AddRange(WordTimings.For(audio, segment));
+        }
+
+        return words;
+    }
+
     /// <summary>The transcript in one of the formats the save dialog offers.</summary>
     public string Export(TranscriptFormat format) => format switch
     {

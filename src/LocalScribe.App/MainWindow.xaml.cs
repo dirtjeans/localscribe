@@ -867,9 +867,63 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (FindBodyText(root) is { } body)
+        if (FindBodyText(root) is not { } body)
         {
-            HighlightMatches(body);
+            return;
+        }
+
+        if (args.Item is ParagraphView paragraph)
+        {
+            FillWithWords(body, paragraph);
+        }
+
+        HighlightMatches(body);
+    }
+
+    /// <summary>
+    /// Lays the paragraph out one word at a time, each one clickable.
+    /// <para>
+    /// The reason a paragraph is not simply bound to its text. Clicking a line already seeks to
+    /// where the line began, which on a paragraph of forty words means seeking as much as twenty
+    /// seconds before the part being pointed at. Every word carries its own time instead.
+    /// </para>
+    /// <para>
+    /// Built here rather than in the template because it is per-item work on a virtualised list:
+    /// only the paragraphs actually on screen are ever laid out this way.
+    /// </para>
+    /// </summary>
+    private void FillWithWords(TextBlock body, ParagraphView paragraph)
+    {
+        body.Inlines.Clear();
+
+        var words = _viewModel.WordsIn(paragraph.Segments);
+
+        if (words.Count == 0)
+        {
+            // No recording to seek in — a transcript can still be read.
+            body.Text = paragraph.Text;
+            return;
+        }
+
+        for (var i = 0; i < words.Count; i++)
+        {
+            var at = words[i].StartSeconds;
+
+            var link = new Hyperlink
+            {
+                UnderlineStyle = UnderlineStyle.None,
+                Foreground = body.Foreground,
+            };
+
+            link.Inlines.Add(new Run { Text = words[i].Text });
+            link.Click += (_, _) => Seek(at, play: true);
+
+            body.Inlines.Add(link);
+
+            if (i + 1 < words.Count)
+            {
+                body.Inlines.Add(new Run { Text = " " });
+            }
         }
     }
 
