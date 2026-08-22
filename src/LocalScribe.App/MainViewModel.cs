@@ -433,12 +433,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // samples — 52/48 against 51/49, and ten rapid turns alternating cleanly in
                 // both — and the difference between a usable transcript and an unusable one on
                 // the real recording.
-                return diarizer.DiarizeByTracking(
+                var found = diarizer.DiarizeByTracking(
                     audio,
                     maxSpeakers: speakers,
                     exactSpeakers: speakers,
                     progress: progress,
                     cancellationToken: _cancellation?.Token ?? default);
+
+                _overlaps = diarizer.LastOverlaps;
+
+                return found;
             }).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
@@ -474,6 +478,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             .Where(speaker => !string.IsNullOrWhiteSpace(speaker))
             .Distinct(StringComparer.Ordinal)
             .Count();
+
+    /// <summary>Where people talked over each other, from the last run.</summary>
+    private IReadOnlyList<(double Start, double End)> _overlaps = [];
 
     /// <summary>True when there is audio to work out speakers from.</summary>
     public bool CanFindSpeakers => _audio is not null && _segmentsBeforeSpeakers.Count > 0;
@@ -781,6 +788,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // change are divided at sentence boundaries, and by this point there are real sentence
         // boundaries to divide at.
         var finished = turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns);
+        finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
 
         // Timed last, over the segments the reader actually ends up with. It cannot run beside

@@ -7,6 +7,9 @@ namespace LocalScribe.Core.Transcription;
 /// <param name="Speaker">Who was talking, when that is known.</param>
 public sealed record TranscriptParagraph(IReadOnlyList<TranscriptSegment> Segments, string? Speaker = null)
 {
+    /// <summary>True when most of this paragraph was spoken over somebody else.</summary>
+    public bool Overlapped => Segments.Count > 0 && Segments.All(segment => segment.Overlapped);
+
     /// <summary>The paragraph as flowing text.</summary>
     public string Text => string.Join(" ", Segments.Select(s => s.Text.Trim()).Where(t => t.Length > 0));
 

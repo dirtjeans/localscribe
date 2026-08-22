@@ -257,13 +257,33 @@
                                     Diarization splits one person in two often enough that
                                     correcting a label has to be as easy as reading it.
                                 -->
-                                <HyperlinkButton
-                                    Content="{x:Bind Speaker}"
-                                    Visibility="{x:Bind HasSpeaker}"
-                                    Click="OnRenameSpeaker"
-                                    Padding="0"
-                                    FontWeight="SemiBold"
-                                    FontSize="12" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <HyperlinkButton
+                                        Content="{x:Bind Speaker}"
+                                        Visibility="{x:Bind HasSpeaker}"
+                                        Click="OnRenameSpeaker"
+                                        Padding="0"
+                                        FontWeight="SemiBold"
+                                        FontSize="12" />
+
+                                    <!--
+                                        Said over somebody else. The words here came out of two
+                                        voices at once, so both the wording and the name on it
+                                        are less certain than the rest of the transcript, and a
+                                        reader about to quote the line should know.
+                                    -->
+                                    <Border
+                                        Visibility="{x:Bind OverlapVisibility}"
+                                        Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+                                        CornerRadius="4"
+                                        Padding="6,1"
+                                        VerticalAlignment="Center">
+                                        <TextBlock
+                                            Text="people talking over each other"
+                                            FontSize="11"
+                                            Foreground="{ThemeResource SystemFillColorCautionBrush}" />
+                                    </Border>
+                                </StackPanel>
 
                                 <!--
                                     Held to a readable measure rather than the width of the

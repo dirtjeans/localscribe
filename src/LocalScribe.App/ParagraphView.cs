@@ -23,6 +23,13 @@ public sealed class ParagraphView
     /// </summary>
     public IReadOnlyList<TranscriptSegment> Segments { get; }
 
+    /// <summary>True when this was spoken over somebody else.</summary>
+    public bool Overlapped { get; }
+
+    /// <summary>Shown only on the paragraphs that were.</summary>
+    public Microsoft.UI.Xaml.Visibility OverlapVisibility =>
+        Overlapped ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+
     public ParagraphView(TranscriptParagraph paragraph)
     {
         ArgumentNullException.ThrowIfNull(paragraph);
@@ -34,6 +41,7 @@ public sealed class ParagraphView
         StartSeconds = paragraph.StartSeconds;
         EndSeconds = paragraph.EndSeconds;
         Clock = TranscriptFormatter.Clock(paragraph.StartSeconds);
+        Overlapped = paragraph.Overlapped;
     }
 
     public string Text { get; }

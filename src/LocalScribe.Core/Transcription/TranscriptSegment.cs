@@ -23,7 +23,8 @@ public sealed record TranscriptSegment(
     double EndSeconds,
     double AverageLogProbability = 0.0,
     double NoSpeechProbability = 0.0,
-    string? Speaker = null)
+    string? Speaker = null,
+    bool Overlapped = false)
 {
     /// <summary>Duration of the segment in seconds.</summary>
     public double DurationSeconds => EndSeconds - StartSeconds;

@@ -185,33 +185,7 @@ public static class SpeakerTracks
             return [];
         }
 
-        var votes = new int[frames, speakers];
-
-        for (var w = 0; w < windows.Count; w++)
-        {
-            for (var s = 0; s < windows[w].Count; s++)
-            {
-                var track = tracks[w][s];
-                if (track == Silent)
-                {
-                    continue;
-                }
-
-                foreach (var (start, end) in windows[w][s])
-                {
-                    // The end of a span is exclusive. Treating it as inclusive gave every turn
-                    // one frame of its neighbour, so two adjacent turns each claimed the moment
-                    // they met and the boundary landed a frame late.
-                    var from = Math.Max(0, (int)(start / FrameSeconds));
-                    var to = Math.Min(frames - 1, (int)Math.Ceiling(end / FrameSeconds) - 1);
-
-                    for (var f = from; f <= to; f++)
-                    {
-                        votes[f, track]++;
-                    }
-                }
-            }
-        }
+        var votes = Votes(windows, tracks, frames, speakers);
 
         var winner = new int[frames];
 
@@ -577,6 +551,154 @@ public static class SpeakerTracks
         }
 
         return colour.Max() + 1;
+    }
+
+    /// <summary>
+    /// The stretches where more than one person was talking at once.
+    /// <para>
+    /// Already known and previously discarded. Every instant is covered by about ten windows,
+    /// each with an opinion about who was speaking; <see cref="ToTurns"/> takes the winner and
+    /// throws away the fact that the vote was contested. Where two tracks both hold a real share
+    /// of the frames, two people were talking — the segmentation model separated them at the
+    /// time, and only the insistence on one name per moment loses it.
+    /// </para>
+    /// <para>
+    /// Worth reporting rather than resolving. Attributing crosstalk to whichever voice happened
+    /// to win is wrong by construction, and the words there are unreliable anyway: a transcriber
+    /// hearing two people produces one stream with both of them interleaved. Marking the stretch
+    /// says something true where a name would say something false.
+    /// </para>
+    /// </summary>
+    /// <returns>Spans of time, in order, where two or more people overlap.</returns>
+    public static IReadOnlyList<(double Start, double End)> Overlaps(
+        IReadOnlyList<IReadOnlyList<IReadOnlyList<(double Start, double End)>>> windows,
+        int[][] tracks,
+        double durationSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(tracks);
+
+        var frames = (int)Math.Ceiling(durationSeconds / FrameSeconds);
+        var speakers = tracks.SelectMany(window => window).DefaultIfEmpty(Silent).Max() + 1;
+
+        if (frames <= 0 || speakers <= 1)
+        {
+            return [];
+        }
+
+        var votes = Votes(windows, tracks, frames, speakers);
+        var contested = new bool[frames];
+
+        for (var f = 0; f < frames; f++)
+        {
+            var most = 0;
+            for (var s = 0; s < speakers; s++)
+            {
+                most = Math.Max(most, votes[f, s]);
+            }
+
+            if (most == 0)
+            {
+                continue;
+            }
+
+            // A second voice counts when a real share of the windows heard it, not when one
+            // window in ten disagreed with the other nine. That is the difference between two
+            // people talking and one boundary being drawn a moment early.
+            var voices = 0;
+            for (var s = 0; s < speakers; s++)
+            {
+                if (votes[f, s] >= most * ContestedShare)
+                {
+                    voices++;
+                }
+            }
+
+            contested[f] = voices > 1;
+        }
+
+        var spans = new List<(double Start, double End)>();
+        var at = 0;
+
+        while (at < frames)
+        {
+            if (!contested[at])
+            {
+                at++;
+                continue;
+            }
+
+            var from = at;
+            while (at < frames && contested[at])
+            {
+                at++;
+            }
+
+            // A flicker of disagreement at a turn boundary is not people talking over each
+            // other; it is the boundary itself being uncertain by a frame or two.
+            if ((at - from) * FrameSeconds >= ShortestOverlap)
+            {
+                spans.Add((from * FrameSeconds, at * FrameSeconds));
+            }
+        }
+
+        return spans;
+    }
+
+    /// <summary>
+    /// How much of the leading voice's support a second one needs before both are believed.
+    /// </summary>
+    private const double ContestedShare = 0.6;
+
+    /// <summary>
+    /// Shorter than this and it is a turn boundary drawn uncertainly rather than two people
+    /// speaking at once.
+    /// </summary>
+    private const double ShortestOverlap = 0.4;
+
+    /// <summary>
+    /// How many windows say each track was talking, frame by frame.
+    /// <para>
+    /// Every instant is covered by about ten overlapping windows. Counting them is what makes a
+    /// single window's mistake harmless, and it is the same table whether the question is who
+    /// won or whether anyone disagreed.
+    /// </para>
+    /// </summary>
+    private static int[,] Votes(
+        IReadOnlyList<IReadOnlyList<IReadOnlyList<(double Start, double End)>>> windows,
+        int[][] tracks,
+        int frames,
+        int speakers)
+    {
+        var votes = new int[frames, speakers];
+
+        for (var w = 0; w < windows.Count; w++)
+        {
+            for (var s = 0; s < windows[w].Count; s++)
+            {
+                var track = tracks[w][s];
+                if (track == Silent || track >= speakers)
+                {
+                    continue;
+                }
+
+                foreach (var (start, end) in windows[w][s])
+                {
+                    // The end of a span is exclusive. Treating it as inclusive gave every turn
+                    // one frame of its neighbour, so two adjacent turns each claimed the moment
+                    // they met and the boundary landed a frame late.
+                    var from = Math.Max(0, (int)(start / FrameSeconds));
+                    var to = Math.Min(frames - 1, (int)Math.Ceiling(end / FrameSeconds) - 1);
+
+                    for (var f = from; f <= to; f++)
+                    {
+                        votes[f, track]++;
+                    }
+                }
+            }
+        }
+
+        return votes;
     }
 
     /// <summary>Seconds two sets of spans have in common.</summary>

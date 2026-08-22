@@ -136,6 +136,45 @@ public static class SpeakerAttribution
     private static readonly Regex SentenceEnd = new(
         @"(?<=[.!?])\s+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
+    /// <summary>
+    /// Marks the segments that fall inside a stretch of crosstalk.
+    /// <para>
+    /// Half of a segment overlapping is enough. A word or two of someone cutting in does not
+    /// make the sentence unreliable, but a line spoken mostly over somebody else is one the
+    /// transcriber heard through another voice, and a reader deserves to know that before
+    /// quoting it.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<TranscriptSegment> MarkOverlaps(
+        IReadOnlyList<TranscriptSegment> segments,
+        IReadOnlyList<(double Start, double End)> overlaps)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+        ArgumentNullException.ThrowIfNull(overlaps);
+
+        if (overlaps.Count == 0)
+        {
+            return segments;
+        }
+
+        return [.. segments.Select(segment =>
+        {
+            var length = segment.EndSeconds - segment.StartSeconds;
+            if (length <= 0)
+            {
+                return segment;
+            }
+
+            var shared = overlaps.Sum(o =>
+                Math.Max(0, Math.Min(o.End, segment.EndSeconds) - Math.Max(o.Start, segment.StartSeconds)));
+
+            return shared >= length * MostlyOverlapped ? segment with { Overlapped = true } : segment;
+        })];
+    }
+
+    /// <summary>How much of a segment must be crosstalk before the segment is called crosstalk.</summary>
+    private const double MostlyOverlapped = 0.5;
+
     /// <summary>Labels segments by speaker, splitting any that span more than one turn.</summary>
     public static IReadOnlyList<TranscriptSegment> Apply(
         IReadOnlyList<TranscriptSegment> segments,

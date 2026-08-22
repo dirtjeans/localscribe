@@ -170,6 +170,18 @@ public sealed class SpeakerDiarizer : IDisposable
             exactSpeakers);
     }
 
+    /// <summary>
+    /// Where two people talked over each other in the last run of
+    /// <see cref="DiarizeByTracking"/>.
+    /// <para>
+    /// Reported rather than resolved. Handing crosstalk to whichever voice won the vote is wrong
+    /// by construction, and the words there are unreliable anyway — a transcriber hearing two
+    /// people at once returns one stream with both of them interleaved. Saying so is true where
+    /// a name would not be.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<(double Start, double End)> LastOverlaps { get; private set; } = [];
+
     /// <summary>A stretch of speech and what the embedding model made of it.</summary>
     public sealed record Voice(double StartSeconds, double EndSeconds, float[] Embedding)
     {
@@ -454,6 +466,8 @@ public sealed class SpeakerDiarizer : IDisposable
                 tracks = Merge(audio, spans, tracks, floor, threshold, cancellationToken);
             }
         }
+
+        LastOverlaps = SpeakerTracks.Overlaps(spans, tracks, audio.DurationSeconds);
 
         return Tidy([.. SpeakerTracks.ToTurns(spans, tracks, audio.DurationSeconds)]);
     }
