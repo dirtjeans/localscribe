@@ -239,27 +239,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return null;
         }
 
-        List<WordTimings.Word> measured;
-
         lock (_alignedGate)
         {
-            // A word belongs to the segment its start falls inside. The small tolerance is for
-            // the boundary itself: a segment divided at a turn begins on the same instant the
-            // first word does, and floating point does not always agree with itself about that.
-            measured = _aligned
-                .Where(w => w.StartSeconds >= segment.StartSeconds - Tolerance
-                    && w.StartSeconds < segment.EndSeconds - Tolerance)
-                .OrderBy(w => w.StartSeconds)
-                .ToList();
+            return MeasuredWords.Pair(segment, _aligned, own);
         }
-
-        if (measured.Count != own.Count)
-        {
-            return null;
-        }
-
-        return [.. own.Select((word, i) => new WordTimings.Word(
-            word.Text, measured[i].StartSeconds, measured[i].EndSeconds) { Offset = word.Offset })];
     }
 
     /// <summary>The words of a segment, with where each begins in its text.</summary>
@@ -292,9 +275,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return words;
     }
 
-    /// <summary>Slack around a segment boundary, in seconds.</summary>
-    private const double Tolerance = 0.005;
-
     private readonly object _alignedGate = new();
 
     /// <summary>Every word the aligner placed, for the whole recording, in the order said.</summary>
@@ -303,10 +283,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>
     /// Measures when every word was said, one segment at a time.
     /// <para>
-    /// Runs alongside cleanup and speaker detection rather than after them: it needs the audio
-    /// and the words, neither of which the other two change in a way that matters here — cleanup
-    /// keeps the timings, and speakers are a label. Anything it cannot align keeps the estimate,
-    /// so a failure costs precision on one segment and nothing else.
+    /// Runs after cleanup and speaker detection, over the segments they leave behind. The claim
+    /// this used to make — that neither changes anything alignment cares about — is false in both
+    /// halves: cleanup rewrites the words, and attaching a speaker divides a segment that spans a
+    /// turn. Anything it cannot align keeps the estimate, so a failure costs precision on one
+    /// segment and nothing else.
     /// </para>
     /// </summary>
     private async Task AlignWordsAsync(
@@ -318,6 +299,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (ForcedAligner.Find(_modelRoot) is not { } directory)
         {
             return;
+        }
+
+        // Rebuilt, not added to. Words are looked up by when they were said rather than by which
+        // segment produced them, so anything left over from a previous run sits in the same time
+        // range as the new words and is indistinguishable from them. Two alignments of one
+        // recording do not average out — they interleave, and every segment then finds about
+        // twice the words it has text for.
+        lock (_alignedGate)
+        {
+            _aligned.Clear();
         }
 
         try
@@ -766,13 +757,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
             : FindTurnsAsync(audio, speakers: null, new Progress<double>(stages.Speakers));
 
-        // A third stage beside the other two. It reads the audio and the words and writes
-        // neither, so it collides with nothing.
-        var timing = audio is null
-            ? Task.CompletedTask
-            : AlignWordsAsync(spoken, audio, new Progress<double>(stages.Words), cancellationToken);
-
-        await Task.WhenAll(cleaning, listening, timing);
+        await Task.WhenAll(cleaning, listening);
 
         var refinement = await cleaning;
         var turns = await listening;
@@ -791,10 +776,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
 
-        // Timed last, over the segments the reader actually ends up with. It cannot run beside
-        // the other two after all: cleanup rewrites the words and attaching speakers divides the
-        // segments, so anything aligned before both have finished is aligned against a
-        // transcript that no longer exists.
+        // Timed last, over the segments the reader actually ends up with, and only here.
+        //
+        // This cannot run beside cleanup and speaker detection, which is what it used to do as
+        // well as this. Cleanup rewrites the words and attaching speakers divides the segments,
+        // so an alignment made before both have finished describes a transcript that no longer
+        // exists. Keeping that pass cost more than the time it saved: its words stayed in the
+        // pool next to the real ones, covering the same seconds, and the lookup by time could
+        // not tell them apart.
         if (audio is not null)
         {
             await AlignWordsAsync(finished, audio, new Progress<double>(stages.Words), cancellationToken);
