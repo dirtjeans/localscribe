@@ -77,18 +77,124 @@ public sealed class ForcedAligner : IDisposable
     }
 
     /// <summary>
-    /// Times every word of a segment, or returns null when the segment cannot be aligned.
+    /// Runs the recogniser over the whole recording once and keeps what it made of every frame.
+    /// <para>
+    /// This is nearly all the cost of alignment and it depends on nothing but the audio, so it
+    /// can run while the text is still being cleaned up and the speakers worked out. Placing
+    /// words onto the frames afterwards is a Viterbi pass over a few hundred of them.
+    /// </para>
+    /// <para>
+    /// Scored on a fixed grid rather than segment by segment. Where the segments will fall is
+    /// not known this early, and cleanup and attribution would move them afterwards regardless.
+    /// </para>
+    /// </summary>
+    /// <returns>The whole recording's scores, or null when it cannot be scored at all.</returns>
+    public AlignmentScores? Scan(
+        PcmAudio audio,
+        IProgress<double>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(audio);
+
+        if (audio.Samples.Length < ShortestAlignableSamples)
+        {
+            return null;
+        }
+
+        // How much audio a frame covers, asked rather than assumed, and asked twice.
+        //
+        // Dividing one window's samples by the frames it returned gives the wrong answer, and it
+        // is wrong in a way that looks plausible: this model returns one frame per 320 samples
+        // but needs 400 samples to return the first one, so a second of audio yields 49 frames
+        // rather than 50 and the stride reads as 326. On a short recording that passes for right.
+        // Over half an hour it is a two per cent drift, and inside each scored window it walks
+        // the words along by half a second before starting over at the next one.
+        //
+        // The offset is constant, so the difference between two lengths cancels it exactly.
+        var shortProbe = Math.Max(ShortestAlignableSamples, Math.Min(audio.Samples.Length, audio.SampleRate));
+        var longProbe = Math.Min(audio.Samples.Length, shortProbe * 2);
+
+        if (Score(audio.Samples.AsSpan(0, shortProbe)) is not { } near
+            || Score(audio.Samples.AsSpan(0, longProbe)) is not { } far
+            || far.Frames <= near.Frames)
+        {
+            return null;
+        }
+
+        var samplesPerFrame = (longProbe - shortProbe) / (far.Frames - near.Frames);
+        var frames = samplesPerFrame > 0 ? audio.Samples.Length / samplesPerFrame : 0;
+
+        if (frames <= 0)
+        {
+            return null;
+        }
+
+        var probe = far;
+
+        var scores = new AlignmentScores(frames, probe.Alphabet, samplesPerFrame / (double)audio.SampleRate);
+
+        // Windows are counted in frames so every boundary lands on one. Each is scored with a
+        // margin of extra audio on both sides which is then thrown away: a window edge falling
+        // mid-word would otherwise give the model half a word to recognise, and the frames either
+        // side of the join are exactly the ones a listener would notice being wrong.
+        var core = Math.Max(1, (int)(WindowSeconds * audio.SampleRate) / samplesPerFrame);
+        var margin = (int)(MarginSeconds * audio.SampleRate) / samplesPerFrame;
+        var shortest = (ShortestAlignableSamples + samplesPerFrame - 1) / samplesPerFrame;
+
+        for (var at = 0; at < frames; at += core)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var until = Math.Min(frames, at + core);
+            var readTo = Math.Min(frames, until + margin);
+            var readFrom = Math.Max(0, at - margin);
+
+            // The last window can be a sliver on its own. Reaching further back rather than
+            // giving up keeps the tail of the recording timed.
+            if (readTo - readFrom < shortest)
+            {
+                readFrom = Math.Max(0, readTo - shortest);
+            }
+
+            if (readTo - readFrom < shortest)
+            {
+                break;
+            }
+
+            if (Score(audio.Samples.AsSpan(readFrom * samplesPerFrame, (readTo - readFrom) * samplesPerFrame))
+                is not { } window)
+            {
+                break;
+            }
+
+            // Only the middle is kept. The margins did their job by being there.
+            var offset = at - readFrom;
+            var rows = Math.Min(until - at, window.Frames - offset);
+
+            if (rows > 0)
+            {
+                scores.Fill(at, window.Scores.AsSpan(offset * window.Alphabet, rows * window.Alphabet));
+            }
+
+            progress?.Report(until / (double)frames);
+        }
+
+        return scores;
+    }
+
+    /// <summary>
+    /// Times every word of a segment against an existing scan, or returns null when it cannot.
     /// <para>
     /// Null rather than a guess: the caller has a perfectly good estimate to fall back on, and a
     /// bad alignment presented as a measurement is worse than an honest approximation.
     /// </para>
     /// </summary>
     public IReadOnlyList<WordTimings.Word>? Align(
-        PcmAudio audio,
+        AlignmentScores scores,
         TranscriptSegment segment,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(audio);
+        ArgumentNullException.ThrowIfNull(scores);
         ArgumentNullException.ThrowIfNull(segment);
 
         var words = Words(segment.Text);
@@ -103,46 +209,27 @@ public sealed class ForcedAligner : IDisposable
             return null;
         }
 
-        var first = Math.Clamp((int)(segment.StartSeconds * audio.SampleRate), 0, audio.Samples.Length);
-        var last = Math.Clamp((int)(segment.EndSeconds * audio.SampleRate), first, audio.Samples.Length);
+        var first = scores.FrameAt(segment.StartSeconds);
+        var count = scores.FrameAt(segment.EndSeconds) - first;
 
-        if (last - first < ShortestAlignableSamples)
+        if (count < ShortestAlignableSeconds / scores.FrameSeconds)
         {
             return null;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        var samples = Normalise(audio.Samples.AsSpan(first, last - first));
-
-        using var outputs = _session.Run(
-        [
-            NamedOnnxValue.CreateFromTensor(_input, new DenseTensor<float>(samples, [1, samples.Length])),
-        ]);
-
-        var logits = outputs.First().AsTensor<float>();
-        var frames = logits.Dimensions[1];
-        var alphabet = logits.Dimensions[2];
-
-        if (frames <= 0 || alphabet != _alphabet.Size)
-        {
-            return null;
-        }
-
-        var scores = LogSoftmax(logits.ToArray(), frames, alphabet);
-        var placed = CtcForcedAlignment.Align(scores, frames, alphabet, tokens, _alphabet.Blank);
+        var placed = CtcForcedAlignment.Align(
+            scores.Between(first, count), count, scores.Alphabet, tokens, _alphabet.Blank);
 
         if (placed is null)
         {
             return null;
         }
 
-        // A frame is a fixed stride of audio, so a frame index is a time.
-        var perFrame = (last - first) / (double)frames / audio.SampleRate;
-
         var spelled = spellings.ToDictionary(spelling => spelling.Index);
         var timed = new List<WordTimings.Word>(words.Count);
-        var previous = segment.StartSeconds;
+        var previous = scores.SecondsAt(first);
 
         // Every word gets an entry, including the ones with no letters in them. A lone dash or
         // full stop cannot be aligned — there is no sound to align it to — but leaving it out
@@ -169,8 +256,8 @@ public sealed class ForcedAligner : IDisposable
                 continue;
             }
 
-            var from = segment.StartSeconds + (letters[0].FirstFrame * perFrame);
-            var to = segment.StartSeconds + ((letters[^1].LastFrame + 1) * perFrame);
+            var from = scores.SecondsAt(first + letters[0].FirstFrame);
+            var to = scores.SecondsAt(first + letters[^1].LastFrame + 1);
 
             timed.Add(new WordTimings.Word(spelling.Word, from, Math.Max(to, from))
             {
@@ -182,6 +269,90 @@ public sealed class ForcedAligner : IDisposable
 
         return timed.Count == 0 ? null : timed;
     }
+
+    /// <summary>
+    /// Reads a stretch of a scan back as letters, by taking the likeliest token in each frame.
+    /// <para>
+    /// Nothing in the app needs this: aligning already knows what the words are. It exists so a
+    /// scan can be checked. If the letters coming out of the grid between two timestamps read
+    /// like what was actually said then, the grid holds the right frames and maps onto the clock
+    /// correctly — which is the part of this that no test without the model can reach.
+    /// </para>
+    /// <para>
+    /// The letters are romanised and unpunctuated, because that is the alphabet the model works
+    /// in. "sowhatdoyoumean" is a pass.
+    /// </para>
+    /// </summary>
+    public string Read(AlignmentScores scores, double fromSeconds, double toSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(scores);
+
+        var first = scores.FrameAt(fromSeconds);
+        var count = scores.FrameAt(toSeconds) - first;
+
+        if (count <= 0)
+        {
+            return string.Empty;
+        }
+
+        var block = scores.Between(first, count);
+        var text = new System.Text.StringBuilder();
+        var previous = -1;
+
+        for (var frame = 0; frame < count; frame++)
+        {
+            var row = frame * scores.Alphabet;
+            var best = 0;
+
+            for (var token = 1; token < scores.Alphabet; token++)
+            {
+                if (block[row + token] > block[row + best])
+                {
+                    best = token;
+                }
+            }
+
+            // How CTC output is read: a repeated token is one letter held across several frames,
+            // and a blank is what separates two of the same letter from one long one.
+            if (best != previous && best != _alphabet.Blank)
+            {
+                text.Append(_alphabet.Letter(best));
+            }
+
+            previous = best;
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>What the network made of one stretch of audio, as log probabilities.</summary>
+    private (float[] Scores, int Frames, int Alphabet)? Score(ReadOnlySpan<float> samples)
+    {
+        var normalised = Normalise(samples);
+
+        using var outputs = _session.Run(
+        [
+            NamedOnnxValue.CreateFromTensor(_input, new DenseTensor<float>(normalised, [1, normalised.Length])),
+        ]);
+
+        var logits = outputs.First().AsTensor<float>();
+        var frames = logits.Dimensions[1];
+        var alphabet = logits.Dimensions[2];
+
+        return frames <= 0 || alphabet != _alphabet.Size
+            ? null
+            : (LogSoftmax(logits.ToArray(), frames, alphabet), frames, alphabet);
+    }
+
+    /// <summary>How much audio to score at a time.</summary>
+    private const double WindowSeconds = 30;
+
+    /// <summary>Extra audio scored on each side of a window and then discarded.</summary>
+    private const double MarginSeconds = 2;
+
+    /// <summary>Shorter than this and there is nothing to align a word to.</summary>
+    private const double ShortestAlignableSeconds = 0.2;
+
 
     /// <summary>
     /// Zero mean and unit variance, which is what the model's own feature extractor does. It is

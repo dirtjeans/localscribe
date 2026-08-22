@@ -170,6 +170,16 @@ internal static class Program
                 .ConfigureAwait(false);
         }
 
+        var alignAudio = ArgumentValue(args, "--align");
+        if (alignAudio is not null)
+        {
+            return AlignCommand.Run(
+                alignAudio,
+                ArgumentValue(args, "--alignment-models") ?? modelDirectory,
+                plan,
+                ArgumentValue(args, "--window"));
+        }
+
         var audio = ArgumentValue(args, "--transcribe");
         if (audio is not null)
         {
@@ -227,6 +237,8 @@ internal static class Program
         Console.WriteLine("  --threshold <d>  Cosine distance at which two voices are different people.");
         Console.WriteLine("  --sweep          With --diarize: try every threshold and show where the answer changes.");
         Console.WriteLine("  --tracking       With --diarize: follow speakers between windows instead of comparing voices.");
+        Console.WriteLine("  --align <f>      Scan a WAV with the alignment model and read the grid back.");
+        Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");

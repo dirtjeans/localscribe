@@ -33,6 +33,26 @@ public sealed class AlignmentAlphabet
     /// <summary>The token meaning "nothing in particular".</summary>
     public int Blank { get; }
 
+    /// <summary>
+    /// The letter a token stands for, or a space when it stands for nothing sayable.
+    /// <para>
+    /// Only reading a grid back needs this — aligning goes the other way. It is what lets a scan
+    /// be checked by decoding it and seeing whether the result reads like the speech.
+    /// </para>
+    /// </summary>
+    public char Letter(int token)
+    {
+        foreach (var (letter, index) in _tokens)
+        {
+            if (index == token)
+            {
+                return letter;
+            }
+        }
+
+        return ' ';
+    }
+
     /// <summary>How many tokens the model knows.</summary>
     public int Size { get; }
 

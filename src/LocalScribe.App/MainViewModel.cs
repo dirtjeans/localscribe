@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
 using LocalScribe.Core.Archive;
+using LocalScribe.Core.Alignment;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
@@ -281,22 +282,72 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly List<WordTimings.Word> _aligned = [];
 
     /// <summary>
-    /// Measures when every word was said, one segment at a time.
+    /// Reads the whole recording through the alignment model, keeping what it made of it.
     /// <para>
-    /// Runs after cleanup and speaker detection, over the segments they leave behind. The claim
-    /// this used to make — that neither changes anything alignment cares about — is false in both
-    /// halves: cleanup rewrites the words, and attaching a speaker divides a segment that spans a
-    /// turn. Anything it cannot align keeps the estimate, so a failure costs precision on one
-    /// segment and nothing else.
+    /// This is nearly all the cost of timing words and it needs only the audio, so it runs beside
+    /// cleanup and speaker detection. What it cannot do this early is decide which words go where:
+    /// cleanup rewrites the text and attaching a speaker divides segments, so the transcript it
+    /// would be aligning against does not exist yet. Only the scores are taken now.
+    /// </para>
+    /// <para>
+    /// The model stays loaded until the words are placed, and is let go immediately afterwards —
+    /// it is six hundred megabytes and there is nothing to keep it resident for.
     /// </para>
     /// </summary>
-    private async Task AlignWordsAsync(
-        IReadOnlyList<TranscriptSegment> segments,
+    private async Task ScanForWordsAsync(
         PcmAudio audio,
         IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
         if (ForcedAligner.Find(_modelRoot) is not { } directory)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                var aligner = ForcedAligner.Load(directory, _plan);
+
+                try
+                {
+                    _scores = aligner.Scan(audio, progress, cancellationToken);
+                    _aligner = aligner;
+                }
+                catch
+                {
+                    aligner.Dispose();
+                    throw;
+                }
+            }, cancellationToken).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // The estimate is still there, so this is a loss of precision rather than of the
+            // transcript.
+            Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Places the words of the finished transcript onto the frames the scan produced.
+    /// <para>
+    /// Cheap, because the model has already run: this is a Viterbi pass over a few hundred frames
+    /// per segment. Anything it cannot place keeps the estimate, so a failure costs precision on
+    /// one segment and nothing else.
+    /// </para>
+    /// </summary>
+    private async Task AlignWordsAsync(
+        IReadOnlyList<TranscriptSegment> segments,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (_aligner is not { } aligner || _scores is not { } scores)
         {
             return;
         }
@@ -315,14 +366,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await Task.Run(() =>
             {
-                using var aligner = ForcedAligner.Load(directory, _plan);
-
                 for (var i = 0; i < segments.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    if (aligner.Align(audio, segments[i], cancellationToken) is not { } words)
+                    if (aligner.Align(scores, segments[i], cancellationToken) is not { } words)
                     {
                         continue;
                     }
@@ -340,11 +389,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         catch (Exception exception)
         {
-            // The estimate is still there, so this is a loss of precision rather than of the
-            // transcript.
             Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
         }
+        finally
+        {
+            ReleaseAligner();
+        }
     }
+
+    /// <summary>Lets go of the alignment model and its scores.</summary>
+    private void ReleaseAligner()
+    {
+        _aligner?.Dispose();
+        _aligner = null;
+        _scores = null;
+    }
+
+    /// <summary>The alignment model, held only between the scan and the placing.</summary>
+    private ForcedAligner? _aligner;
+
+    /// <summary>What the model made of the recording, frame by frame.</summary>
+    private AlignmentScores? _scores;
 
     /// <summary>The transcript in one of the formats the save dialog offers.</summary>
     public string Export(TranscriptFormat format) => format switch
@@ -757,7 +822,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
             : FindTurnsAsync(audio, speakers: null, new Progress<double>(stages.Speakers));
 
-        await Task.WhenAll(cleaning, listening);
+        // A third stage beside the other two, and this time one that can genuinely run there. It
+        // reads the audio and writes nothing the others touch.
+        var scanning = audio is null
+            ? Task.CompletedTask
+            : ScanForWordsAsync(audio, new Progress<double>(stages.Words), cancellationToken);
+
+        await Task.WhenAll(cleaning, listening, scanning);
 
         var refinement = await cleaning;
         var turns = await listening;
@@ -776,17 +847,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
 
-        // Timed last, over the segments the reader actually ends up with, and only here.
-        //
-        // This cannot run beside cleanup and speaker detection, which is what it used to do as
-        // well as this. Cleanup rewrites the words and attaching speakers divides the segments,
-        // so an alignment made before both have finished describes a transcript that no longer
-        // exists. Keeping that pass cost more than the time it saved: its words stayed in the
-        // pool next to the real ones, covering the same seconds, and the lookup by time could
-        // not tell them apart.
+        // Placed last, over the segments the reader actually ends up with. Only this half has to
+        // wait: it is the half that needs to know what the words are.
         if (audio is not null)
         {
-            await AlignWordsAsync(finished, audio, new Progress<double>(stages.Words), cancellationToken);
+            await AlignWordsAsync(finished, new Progress<double>(stages.Words), cancellationToken);
 
             // Redrawn, so the measured times replace the estimates shown meanwhile.
             SetTranscript(finished);
@@ -917,6 +982,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             _aligned.Clear();
         }
+
+        // A run abandoned between the scan and the placing would otherwise leave six hundred
+        // megabytes of model loaded with nothing left to do with it.
+        ReleaseAligner();
 
         SetTranscript([]);
         ProvisionalText = string.Empty;
@@ -1167,6 +1236,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             _aligned.Clear();
         }
+
+        // A run abandoned between the scan and the placing would otherwise leave six hundred
+        // megabytes of model loaded with nothing left to do with it.
+        ReleaseAligner();
 
         Player.Clear();
         SourceName = $"Recording {DateTime.Now:yyyy-MM-dd HH.mm}";
