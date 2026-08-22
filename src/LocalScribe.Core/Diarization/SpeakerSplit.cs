@@ -90,19 +90,18 @@ public static class SpeakerSplit
     /// <summary>
     /// How far apart the two groups must be, as a mean cosine distance, to be two people.
     /// <para>
-    /// Measured over paragraph-length embeddings, which is what this works on and is a different
-    /// scale from the single spans the clustering threshold was fitted to. Two speakers sit at
-    /// 0.33 when paragraphs are five seconds and 0.29 when they are forty-five — remarkably
-    /// steady. One speaker's paragraphs forced into two groups sit at 0.036 and 0.005. This is
-    /// the middle of a gap of nearly an order of magnitude.
+    /// Measured over paragraph-length embeddings on a real recording, which is what this works
+    /// on. Two people sit 0.78 apart at their closest 0.70; one person's own paragraphs sit at
+    /// 0.25, at worst 0.36. This is the middle of that gap.
     /// </para>
     /// <para>
-    /// An earlier version required 0.7 of the clustering threshold, which is 0.294, and so sat
-    /// just above where real pairs of speakers actually land. It refused every split on any
-    /// recording whose paragraphs ran longer than a few seconds.
+    /// It was 0.15, and before that 0.7 of the clustering threshold. Both were fitted to
+    /// embeddings computed without mean normalisation, where the recording channel dominated the
+    /// voice and every distance was squeezed towards zero. Normalising quadrupled the scale, so
+    /// every number fitted to the old one had to be measured again.
     /// </para>
     /// </summary>
-    private const double MinimumSeparation = 0.15;
+    private const double MinimumSeparation = 0.5;
 
     /// <summary>Mean distance between the groups, or zero when everything landed in one.</summary>
     private static double BetweenGroups(List<float[]> points, int[] labels)

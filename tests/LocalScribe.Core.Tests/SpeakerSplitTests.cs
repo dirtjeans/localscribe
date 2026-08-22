@@ -97,14 +97,14 @@ public class SpeakerSplitTests
         Assert.True(clear.Separation > RealTwoSpeakerDistance);
     }
 
-    // The two cases below are calibrated to distances measured on real audio rather than chosen,
-    // because choosing them is how the refusal test came to reject every genuine split. Two
-    // speakers' paragraphs sit 0.29 apart in cosine distance and barely move with paragraph
-    // length: 0.33 at five seconds, 0.29 at fifteen, 0.29 at forty-five. One speaker's
-    // paragraphs forced into two groups sit at 0.036 and 0.005.
-    private const double RealTwoSpeakerDistance = 0.29;
+    // Calibrated to distances measured on a real recording rather than chosen. Two people's
+    // paragraphs sit 0.78 apart, 0.70 at their closest; one person's own sit at 0.25, 0.36 at
+    // worst. The earlier figures here — 0.29 and 0.036 — were measured before the embeddings
+    // were mean-normalised, when the recording channel dominated the voice and squeezed every
+    // distance towards zero.
+    private const double RealTwoSpeakerDistance = 0.78;
 
-    private const double RealOneSpeakerDistance = 0.036;
+    private const double RealOneSpeakerDistance = 0.25;
 
     /// <summary>An angle whose cosine distance from zero is <paramref name="distance"/>.</summary>
     private static double Apart(double distance) => Math.Acos(1 - distance);

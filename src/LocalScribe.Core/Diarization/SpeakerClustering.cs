@@ -26,17 +26,26 @@ public static class SpeakerClustering
     /// user can correct in one click.
     /// </para>
     /// <para>
-    /// Measured rather than guessed. On a two-speaker recording, 0.30 split them into four,
-    /// 0.50 merged them into one, and everything between 0.40 and 0.45 attributed every turn
-    /// correctly. This sits in the middle of that band, a little towards splitting.
+    /// Measured on real recordings, which is a correction. It was previously 0.42, fitted to a
+    /// sample of synthesised speech and to embeddings that were not mean-normalised — and both
+    /// of those were wrong. Without normalisation the embedding is dominated by the recording
+    /// channel rather than the voice, which compresses every distance towards zero: on a
+    /// two-person debate, different speakers measured 0.21 apart, so no threshold above that
+    /// could tell anybody apart and one below it would have split every speaker into many.
     /// </para>
     /// <para>
-    /// It was calibrated against synthesised voices, which are cleaner and more consistent than
-    /// people, so real recordings may want it moved. The doctor takes --threshold for exactly
-    /// that.
+    /// Normalised, the same recording gives 0.25 between stretches of one person and 0.78
+    /// between the two of them. Clustering works on shorter spans than that, where the same
+    /// speaker varies more, and sweeping the whole range puts the answer at 0.65.
+    /// </para>
+    /// <para>
+    /// The synthesised samples now behave worse rather than better, which is informative about
+    /// them rather than about this: their two voices differ largely in the channel-like
+    /// characteristics that normalisation removes. Real speech does not. The doctor takes
+    /// --threshold and --sweep for measuring a recording of your own.
     /// </para>
     /// </summary>
-    public const double DefaultThreshold = 0.42;
+    public const double DefaultThreshold = 0.65;
 
     /// <summary>
     /// Assigns each embedding a speaker index.
