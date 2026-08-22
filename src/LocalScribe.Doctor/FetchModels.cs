@@ -21,7 +21,8 @@ internal static class FetchModels
         DeviceCapabilities capabilities,
         ExecutionPlan plan,
         string? requestedSize,
-        bool force)
+        bool force,
+        bool alignment = true)
     {
         var size = requestedSize ?? plan.WhisperModel;
 
@@ -43,7 +44,7 @@ internal static class FetchModels
         Console.WriteLine("These are portable ONNX exports for the CPU and DirectML paths.");
         Console.WriteLine();
 
-        var fetcher = new WhisperModelFetcher();
+        var fetcher = new ModelFetcher();
         var progress = new ConsoleProgress();
 
         try
@@ -85,7 +86,69 @@ internal static class FetchModels
         Console.WriteLine();
         Console.WriteLine("Done. The CPU and GPU paths can now run.");
 
+        if (alignment && await FetchAlignmentAsync(modelRoot, fetcher, force).ConfigureAwait(false) != 0)
+        {
+            return 1;
+        }
+
         ReportNpuGap(capabilities);
+        return 0;
+    }
+
+    /// <summary>
+    /// Fetches the forced-alignment model, which times individual words.
+    /// <para>
+    /// Six hundred megabytes for a convenience, so it says so before spending them and
+    /// <c>--no-alignment</c> declines. A failure here is reported and tolerated: without it words
+    /// are timed by loudness instead, which is good to about half a second and is what the app
+    /// did before this model existed. Losing the transcript over an optional download would be
+    /// the wrong trade.
+    /// </para>
+    /// </summary>
+    private static async Task<int> FetchAlignmentAsync(string modelRoot, ModelFetcher fetcher, bool force)
+    {
+        var directory = Path.Combine(modelRoot, AlignmentModelSource.DirectoryName);
+
+        Console.WriteLine();
+        Console.WriteLine($"Fetching the word aligner into {directory}");
+        Console.WriteLine(
+            $"About {Mib(AlignmentModelSource.ApproximateBytes)}. Without it, word times are "
+            + "estimated from loudness rather than measured.");
+        Console.WriteLine();
+
+        var progress = new ConsoleProgress();
+
+        try
+        {
+            var results = await fetcher
+                .FetchAsync(directory, AlignmentModelSource.Files, progress, force)
+                .ConfigureAwait(false);
+
+            progress.Finish();
+
+            Console.WriteLine();
+            foreach (var result in results)
+            {
+                var note = result.Outcome switch
+                {
+                    FetchOutcome.Downloaded => $"downloaded, {Mib(result.Bytes)}",
+                    FetchOutcome.AlreadyPresent => $"already present, {Mib(result.Bytes)}",
+                    _ => "not published for this export, skipped",
+                };
+                Console.WriteLine($"  {result.FileName,-28} {note}");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("Words will be timed to the frame.");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException)
+        {
+            progress.Finish();
+            Console.Error.WriteLine();
+            Console.Error.WriteLine($"The word aligner could not be fetched: {exception.Message}");
+            Console.Error.WriteLine("Word times will be estimated from loudness. Everything else works.");
+        }
+
         return 0;
     }
 

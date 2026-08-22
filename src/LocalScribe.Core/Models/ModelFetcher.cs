@@ -17,7 +17,7 @@ public enum FetchOutcome
 public sealed record FetchResult(string FileName, FetchOutcome Outcome, long Bytes);
 
 /// <summary>
-/// Downloads a portable Whisper export into a directory.
+/// Downloads a set of model files into a directory.
 /// <para>
 /// Every write goes to a <c>.part</c> file that is moved into place only once the body is
 /// complete. A half-written encoder.onnx is worse than no encoder at all: the probe would see
@@ -25,7 +25,7 @@ public sealed record FetchResult(string FileName, FetchOutcome Outcome, long Byt
 /// ONNX Runtime error rather than as a failed download.
 /// </para>
 /// </summary>
-public sealed class WhisperModelFetcher(HttpClient? httpClient = null)
+public sealed class ModelFetcher(HttpClient? httpClient = null)
 {
     private readonly HttpClient _httpClient = httpClient ?? new HttpClient
     {
@@ -41,20 +41,34 @@ public sealed class WhisperModelFetcher(HttpClient? httpClient = null)
     /// <param name="modelSize">A size from <see cref="WhisperModelSource.SupportedSizes"/>.</param>
     /// <param name="progress">Called as each file starts, progresses, and finishes.</param>
     /// <param name="force">Re-download files that are already present.</param>
-    public async Task<IReadOnlyList<FetchResult>> FetchAsync(
+    public Task<IReadOnlyList<FetchResult>> FetchAsync(
         string targetDirectory,
         string modelSize,
+        IProgress<FetchProgress>? progress = null,
+        bool force = false,
+        CancellationToken cancellationToken = default) =>
+        FetchAsync(targetDirectory, WhisperModelSource.For(modelSize), progress, force, cancellationToken);
+
+    /// <summary>Fetches an arbitrary set of files into <paramref name="targetDirectory"/>.</summary>
+    /// <param name="targetDirectory">Created if it does not exist.</param>
+    /// <param name="downloads">What to fetch, and what to call each file locally.</param>
+    /// <param name="progress">Called as each file starts, progresses, and finishes.</param>
+    /// <param name="force">Re-download files that are already present.</param>
+    public async Task<IReadOnlyList<FetchResult>> FetchAsync(
+        string targetDirectory,
+        IReadOnlyList<ModelDownload> downloads,
         IProgress<FetchProgress>? progress = null,
         bool force = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(targetDirectory);
+        ArgumentNullException.ThrowIfNull(downloads);
 
         Directory.CreateDirectory(targetDirectory);
 
         var results = new List<FetchResult>();
 
-        foreach (var download in WhisperModelSource.For(modelSize))
+        foreach (var download in downloads)
         {
             var destination = Path.Combine(targetDirectory, download.FileName);
 

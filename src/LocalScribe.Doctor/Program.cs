@@ -199,7 +199,8 @@ internal static class Program
                     capabilities,
                     plan,
                     ArgumentValue(args, "--model"),
-                    args.Contains("--force"))
+                    args.Contains("--force"),
+                    alignment: !args.Contains("--no-alignment"))
                 .ConfigureAwait(false);
         }
 
@@ -230,6 +231,7 @@ internal static class Program
         Console.WriteLine("  --fetch-models   Download the portable Whisper export this machine will use.");
         Console.WriteLine("  --model <size>   Size to fetch. Defaults to the one the plan chose.");
         Console.WriteLine("  --force          Re-download files that are already present.");
+        Console.WriteLine("  --no-alignment   With --fetch-models: skip the 602 MB word aligner.");
         Console.WriteLine("  --transcribe <f> Transcribe a PCM WAV file and report what happened.");
         Console.WriteLine("  --transcribe-live <f>  Feed a WAV through the live path, as the microphone does.");
         Console.WriteLine("  --diarize <f>    Work out who spoke when in a WAV, and print the turns.");

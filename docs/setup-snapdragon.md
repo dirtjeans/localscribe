@@ -47,6 +47,12 @@ It picks the size the plan chose; pass `--model base.en` to override. These land
 `models/cpu/<size>/` and are enough to make the app work end to end. They cannot run on the
 NPU.
 
+The same command also fetches the **word aligner**, a 602 MB model that measures when each word
+was said so a word can be clicked and heard. It is not needed to transcribe: without it word
+times are estimated from loudness, which is good to about half a second. Pass `--no-alignment`
+to skip it. Half precision rather than one of the smaller quantised builds on purpose — those
+use `ConvInteger`, which ONNX Runtime cannot run on ARM64 at all.
+
 **Precompiled QNN context binaries** are the NPU path, and they are chipset-specific: a build
 for Snapdragon X Elite will not load on X Plus or X2. Nothing downloads these for you.
 
@@ -73,6 +79,9 @@ models/
       encoder.onnx
       decoder.onnx
       vocab.json
+  alignment/               <- word aligner, from --fetch-models
+    model_fp16.onnx
+    vocab.json
   snapdragon-x-elite/      <- precompiled QNN
     large-v3-turbo/
       encoder/
