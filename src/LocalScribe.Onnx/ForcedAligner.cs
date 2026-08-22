@@ -28,7 +28,7 @@ namespace LocalScribe.Onnx;
 /// </summary>
 public sealed class ForcedAligner : IDisposable
 {
-    private readonly InferenceSession _session;
+    private InferenceSession? _session;
     private readonly AlignmentAlphabet _alphabet;
     private readonly string _input;
 
@@ -386,7 +386,12 @@ public sealed class ForcedAligner : IDisposable
     {
         var normalised = Normalise(samples);
 
-        using var outputs = _session.Run(
+        if (_session is not { } session)
+        {
+            return null;
+        }
+
+        using var outputs = session.Run(
         [
             NamedOnnxValue.CreateFromTensor(_input, new DenseTensor<float>(normalised, [1, normalised.Length])),
         ]);
@@ -571,5 +576,23 @@ public sealed class ForcedAligner : IDisposable
     /// <summary>Below about a fifth of a second there are too few frames to place anything.</summary>
     private const int ShortestAlignableSamples = 16000 / 5;
 
-    public void Dispose() => _session.Dispose();
+    /// <summary>
+    /// Lets go of the network while keeping what is needed to place words.
+    /// <para>
+    /// Scanning needs the model; placing words on the frames it produced does not — that is a
+    /// Viterbi pass over a table and a spelling. Six hundred megabytes is far too much to hold
+    /// resident on the chance of a second attempt, and a scan is far too slow to repeat for one.
+    /// Releasing the one and keeping the other makes a retry cost almost nothing.
+    /// </para>
+    /// </summary>
+    public void ReleaseModel()
+    {
+        _session?.Dispose();
+        _session = null;
+    }
+
+    /// <summary>True while the recording can still be scanned.</summary>
+    public bool CanScan => _session is not null;
+
+    public void Dispose() => ReleaseModel();
 }

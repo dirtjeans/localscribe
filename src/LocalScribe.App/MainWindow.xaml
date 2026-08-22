@@ -29,6 +29,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -188,7 +189,45 @@
             </StackPanel>
         </Border>
 
-        <Grid Grid.Row="2" RowSpacing="12">
+<!--
+            What cleanup could not do, said where the transcript is rather than in the status
+            line, which scrolls away and is read by nobody. Only appears when there is something
+            to say: an unpunctuated passage otherwise looks like the recording was unclear rather
+            than like a stage that failed and can be run again.
+        -->
+        <Border
+            x:Name="CleanupNotice"
+            Grid.Row="2"
+            CornerRadius="8"
+            Padding="16,12"
+            Margin="0,0,0,12"
+            Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
+            BorderBrush="{ThemeResource SystemFillColorCautionBrush}"
+            BorderThickness="1"
+            Visibility="Collapsed">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock
+                    x:Name="CleanupNoticeText"
+                    Grid.Column="0"
+                    VerticalAlignment="Center"
+                    TextWrapping="Wrap"
+                    Style="{ThemeResource BodyTextBlockStyle}" />
+
+                <Button
+                    x:Name="RetryCleanupButton"
+                    Grid.Column="1"
+                    Content="Try again"
+                    VerticalAlignment="Center"
+                    Click="OnRetryCleanup" />
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="3" RowSpacing="12">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -346,7 +385,7 @@
 
         <Border
             x:Name="TransportBar"
-            Grid.Row="3"
+            Grid.Row="4"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="1"
@@ -427,7 +466,7 @@
             NPU?" is the question everyone asks — so it stays visible, in the corner, at the size
             of a footnote.
         -->
-        <Grid Grid.Row="4" ColumnSpacing="16" RowSpacing="8">
+        <Grid Grid.Row="5" ColumnSpacing="16" RowSpacing="8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />

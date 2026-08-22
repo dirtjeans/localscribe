@@ -193,12 +193,39 @@ public sealed partial class MainWindow : Window
     /// Marshals view-model changes onto the UI thread. Live transcription raises these from an
     /// audio capture thread, so this hop is required rather than defensive.
     /// </summary>
+    /// <summary>
+    /// Shows what cleanup left undone, and offers to run it again.
+    /// <para>
+    /// The button is disabled rather than hidden while a run is going, so it does not appear and
+    /// disappear under the pointer of somebody reaching for it.
+    /// </para>
+    /// </summary>
+    private void ShowCleanupNotice()
+    {
+        if (_viewModel.CleanupNotice is { Length: > 0 } notice)
+        {
+            CleanupNoticeText.Text = notice;
+            CleanupNotice.Visibility = Visibility.Visible;
+            RetryCleanupButton.IsEnabled = _viewModel.CanRetryCleanup;
+            return;
+        }
+
+        CleanupNotice.Visibility = Visibility.Collapsed;
+    }
+
+    private async void OnRetryCleanup(object sender, RoutedEventArgs e) =>
+        await _viewModel.RetryCleanupAsync();
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         _dispatcher.TryEnqueue(() =>
         {
             switch (e.PropertyName)
             {
+                case nameof(MainViewModel.CleanupNotice):
+                case nameof(MainViewModel.CanRetryCleanup):
+                    ShowCleanupNotice();
+                    break;
                 case nameof(MainViewModel.Status):
                     StatusText.Text = _viewModel.Status;
                     break;

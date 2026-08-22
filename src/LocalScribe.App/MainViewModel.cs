@@ -306,6 +306,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
+        ForgetAlignment();
+
         try
         {
             await Task.Run(() =>
@@ -417,7 +419,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
-            ReleaseAligner();
+            ReleaseAlignmentModel();
         }
 
         if (placed.Count != segments.Count)
@@ -434,8 +436,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         return placed;
     }
 
-    /// <summary>Lets go of the alignment model and its scores.</summary>
-    private void ReleaseAligner()
+    /// <summary>
+    /// Lets go of the network but keeps what a second attempt would need.
+    /// <para>
+    /// Scanning the recording is most of the cost of timing words and depends only on the audio,
+    /// so its result stays: about eight megabytes an hour, against a scan that takes roughly half
+    /// the length of the recording to repeat. Cleaning up again then costs only the cleanup.
+    /// </para>
+    /// </summary>
+    private void ReleaseAlignmentModel() => _aligner?.ReleaseModel();
+
+    /// <summary>Lets go of the scores as well, when there is no transcript they belong to.</summary>
+    private void ForgetAlignment()
     {
         _aligner?.Dispose();
         _aligner = null;
@@ -574,6 +586,104 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Where people talked over each other, from the last run.</summary>
     private IReadOnlyList<(double Start, double End)> _overlaps = [];
+
+    /// <summary>The transcript as it came from the recogniser, before anything was done to it.</summary>
+    private IReadOnlyList<TranscriptSegment> _rawSegments = [];
+
+    /// <summary>Who spoke when, from the last run. Depends on the audio alone, so a retry keeps it.</summary>
+    private IReadOnlyList<SpeakerTurn>? _lastTurns;
+
+    /// <summary>
+    /// What cleanup could not do, or null when it did everything asked of it.
+    /// <para>
+    /// Worth saying out loud. A cleanup model that gives up leaves the transcript readable but
+    /// unpunctuated in places, which looks like the recording was unclear rather than like
+    /// something went wrong and could be tried again.
+    /// </para>
+    /// </summary>
+    public string? CleanupNotice
+    {
+        get => _cleanupNotice;
+        private set
+        {
+            if (_cleanupNotice == value)
+            {
+                return;
+            }
+
+            _cleanupNotice = value;
+            Raise(nameof(CleanupNotice));
+            Raise(nameof(CanRetryCleanup));
+        }
+    }
+
+    private string? _cleanupNotice;
+
+    /// <summary>True when there is something to try again and something to try it on.</summary>
+    public bool CanRetryCleanup => _cleanupNotice is not null && _rawSegments.Count > 0 && !IsBusy;
+
+    /// <summary>Says what cleanup left undone, or takes the notice away when it did not.</summary>
+    private void ReportCleanup(TranscriptRefiner? refiner) =>
+        CleanupNotice = refiner is null
+            ? null
+            : CleanupReport.Describe(refiner.Failed, refiner.Rejected, refiner.LastError);
+
+
+    /// <summary>
+    /// Runs cleanup again over the original transcript, keeping everything that does not depend
+    /// on it.
+    /// <para>
+    /// Speaker turns come from the audio and the alignment scan comes from the audio, so neither
+    /// is redone: only the stage that failed is repeated, and the stages downstream of it that
+    /// read its text.
+    /// </para>
+    /// </summary>
+    public async Task RetryCleanupAsync()
+    {
+        if (_rawSegments.Count == 0 || IsBusy || BuildRefiner() is not { } refiner)
+        {
+            return;
+        }
+
+        _cancellation?.Dispose();
+        _cancellation = new CancellationTokenSource();
+        var cancellationToken = _cancellation.Token;
+
+        IsBusy = true;
+        CleanupNotice = null;
+        Progress = 0;
+        Status = "Cleaning up again…";
+
+        try
+        {
+            var stages = new SharedBar(this);
+
+            var refinement = await CleanAsync(
+                refiner, new Transcript(_rawSegments), stages, cancellationToken).ConfigureAwait(true);
+
+            await AssembleAsync(
+                refinement?.CleanedSegments ?? _rawSegments, refiner, stages, cancellationToken)
+                .ConfigureAwait(true);
+
+            Status = CleanupNotice is null
+                ? "Cleaned up."
+                : "Tried again, and some passages were still left as transcribed.";
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Stopped.";
+        }
+        catch (Exception exception)
+        {
+            Status = $"Could not clean up again: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+            Progress = 0;
+            Raise(nameof(CanRetryCleanup));
+        }
+    }
 
     /// <summary>True when there is audio to work out speakers from.</summary>
     public bool CanFindSpeakers => _audio is not null && _segmentsBeforeSpeakers.Count > 0;
@@ -841,6 +951,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         var refiner = BuildRefiner();
 
+        _rawSegments = spoken;
+
         if (refiner is null && audio is null)
         {
             _segmentsBeforeSpeakers = spoken;
@@ -870,11 +982,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var refinement = await cleaning;
         var turns = await listening;
 
+        _lastTurns = turns;
+
         // The cleaned segments when cleanup ran, the raw ones when it did not. This is the line
         // that was missing for a long time: the cleaned text used to be computed and dropped,
         // and what the user read was always the raw transcript.
-        var cleaned = refinement?.CleanedSegments ?? spoken;
+        await AssembleAsync(refinement?.CleanedSegments ?? spoken, refiner, stages, cancellationToken);
+    }
 
+    /// <summary>
+    /// Everything that follows from the cleaned text: repeats trimmed, speakers attached, words
+    /// timed.
+    /// <para>
+    /// Separate from the stages above it because cleanup can be run again on its own. What comes
+    /// out of the audio — who spoke when, and the scan the word times are placed against — does
+    /// not change when the text does, so a second attempt repeats only the stage that failed and
+    /// the ones that read its output.
+    /// </para>
+    /// </summary>
+    private async Task AssembleAsync(
+        IReadOnlyList<TranscriptSegment> cleaned,
+        TranscriptRefiner? refiner,
+        SharedBar stages,
+        CancellationToken cancellationToken)
+    {
         // Read across the segments, not just inside each one. The stitcher repairs what it can
         // see at the seam between two windows, but the two copies of a looped sentence usually
         // land in two different segments — the transcriber breaks where a sentence ends, which
@@ -884,10 +1015,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _segmentsBeforeSpeakers = cleaned;
 
-        // Attribution last, on the cleaned text rather than the raw. Segments spanning a speaker
-        // change are divided at sentence boundaries, and by this point there are real sentence
+        // Attribution on the cleaned text rather than the raw. Segments spanning a speaker change
+        // are divided at sentence boundaries, and by this point there are real sentence
         // boundaries to divide at.
-        var finished = turns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, turns);
+        var finished = _lastTurns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, _lastTurns);
 
         // Before the overlaps are marked, because a sentence handed back to one speaker is no
         // longer a stretch where two of them were talking.
@@ -897,13 +1028,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // Placed last, over the segments the reader actually ends up with. Only this half has to
         // wait: it is the half that needs to know what the words are.
-        if (audio is not null)
+        if (_scores is not null)
         {
             finished = await AlignWordsAsync(finished, new Progress<double>(stages.Words), cancellationToken);
 
             // Redrawn, so the measured times replace the estimates shown meanwhile.
             SetTranscript(finished);
         }
+
+        ReportCleanup(refiner);
     }
 
     private async Task<RefinementResult?> CleanAsync(
@@ -1033,7 +1166,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // A run abandoned between the scan and the placing would otherwise leave six hundred
         // megabytes of model loaded with nothing left to do with it.
-        ReleaseAligner();
+        ForgetAlignment();
+
+        _rawSegments = [];
+        _lastTurns = null;
+        CleanupNotice = null;
 
         SetTranscript([]);
         ProvisionalText = string.Empty;
@@ -1082,7 +1219,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsBusy
     {
         get => _busy;
-        private set => Set(ref _busy, value);
+        private set
+        {
+            Set(ref _busy, value);
+
+            // Whether a second attempt can be made turns on this, and a button that stays greyed
+            // out after the work finishes is a button nobody can use.
+            Raise(nameof(CanRetryCleanup));
+        }
     }
 
     public bool IsRecording
@@ -1287,7 +1431,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // A run abandoned between the scan and the placing would otherwise leave six hundred
         // megabytes of model loaded with nothing left to do with it.
-        ReleaseAligner();
+        ForgetAlignment();
+
+        _rawSegments = [];
+        _lastTurns = null;
+        CleanupNotice = null;
 
         Player.Clear();
         SourceName = $"Recording {DateTime.Now:yyyy-MM-dd HH.mm}";
