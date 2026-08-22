@@ -204,10 +204,99 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         foreach (var segment in segments)
         {
-            words.AddRange(WordTimings.For(audio, segment));
+            // Measured where the aligner has been over this segment, estimated where it has not.
+            // Read from a table rather than run here: this is called for every paragraph that
+            // scrolls into view, and a third of a second of model time per paragraph would make
+            // the transcript unusable to scroll.
+            words.AddRange(Aligned(segment) ?? WordTimings.For(audio, segment));
         }
 
         return words;
+    }
+
+    /// <summary>
+    /// The measured times for a segment, or null when there are none to be had.
+    /// <para>
+    /// Checked against the text as well as the clock. Cleanup rewrites a segment after alignment
+    /// has already run over it, and although it keeps the timings and nearly all the words, a
+    /// removed filler would leave the measured list one word short of the displayed one — after
+    /// which every word in the paragraph would carry its neighbour's time.
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<WordTimings.Word>? Aligned(TranscriptSegment segment)
+    {
+        lock (_alignedGate)
+        {
+            if (!_aligned.TryGetValue(Key(segment), out var found))
+            {
+                return null;
+            }
+
+            return string.Equals(found.Text, segment.Text, StringComparison.Ordinal) ? found.Words : null;
+        }
+    }
+
+    private static (long Start, long End) Key(TranscriptSegment segment) =>
+        ((long)Math.Round(segment.StartSeconds * 1000), (long)Math.Round(segment.EndSeconds * 1000));
+
+    private readonly object _alignedGate = new();
+
+    private readonly Dictionary<(long Start, long End), (string Text, IReadOnlyList<WordTimings.Word> Words)>
+        _aligned = [];
+
+    /// <summary>
+    /// Measures when every word was said, one segment at a time.
+    /// <para>
+    /// Runs alongside cleanup and speaker detection rather than after them: it needs the audio
+    /// and the words, neither of which the other two change in a way that matters here — cleanup
+    /// keeps the timings, and speakers are a label. Anything it cannot align keeps the estimate,
+    /// so a failure costs precision on one segment and nothing else.
+    /// </para>
+    /// </summary>
+    private async Task AlignWordsAsync(
+        IReadOnlyList<TranscriptSegment> segments,
+        PcmAudio audio,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (ForcedAligner.Find(_modelRoot) is not { } directory)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                using var aligner = ForcedAligner.Load(directory, _plan);
+
+                for (var i = 0; i < segments.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    progress?.Report((i + 1) / (double)segments.Count);
+
+                    if (aligner.Align(audio, segments[i], cancellationToken) is not { } words)
+                    {
+                        continue;
+                    }
+
+                    lock (_alignedGate)
+                    {
+                        _aligned[Key(segments[i])] = (segments[i].Text, words);
+                    }
+                }
+            }, cancellationToken).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // The estimate is still there, so this is a loss of precision rather than of the
+            // transcript.
+            Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
+        }
     }
 
     /// <summary>The transcript in one of the formats the save dialog offers.</summary>
@@ -614,7 +703,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
             : FindTurnsAsync(audio, speakers: null, new Progress<double>(stages.Speakers));
 
-        await Task.WhenAll(cleaning, listening);
+        // A third stage beside the other two. It reads the audio and the words and writes
+        // neither, so it collides with nothing.
+        var timing = audio is null
+            ? Task.CompletedTask
+            : AlignWordsAsync(spoken, audio, new Progress<double>(stages.Words), cancellationToken);
+
+        await Task.WhenAll(cleaning, listening, timing);
 
         var refinement = await cleaning;
         var turns = await listening;
@@ -670,8 +765,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         private double _cleanup;
         private double _speakers;
+        private double _words;
         private bool _cleaningUp;
         private bool _findingSpeakers;
+        private bool _timingWords;
 
         public void Cleanup(double fraction)
         {
@@ -695,6 +792,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Publish();
         }
 
+        public void Words(double fraction)
+        {
+            lock (_gate)
+            {
+                _timingWords = true;
+                _words = fraction;
+            }
+
+            Publish();
+        }
+
         private void Publish()
         {
             double fraction;
@@ -702,19 +810,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             lock (_gate)
             {
-                var running = (_cleaningUp ? 1 : 0) + (_findingSpeakers ? 1 : 0);
+                var running = (_cleaningUp ? 1 : 0) + (_findingSpeakers ? 1 : 0) + (_timingWords ? 1 : 0);
                 if (running == 0)
                 {
                     return;
                 }
 
-                fraction = ((_cleaningUp ? _cleanup : 0) + (_findingSpeakers ? _speakers : 0)) / running;
+                fraction = ((_cleaningUp ? _cleanup : 0)
+                    + (_findingSpeakers ? _speakers : 0)
+                    + (_timingWords ? _words : 0)) / running;
 
-                what = (_cleaningUp, _findingSpeakers) switch
+                what = (_cleaningUp, _findingSpeakers, _timingWords) switch
                 {
-                    (true, true) => "Cleaning up and working out who spoke",
-                    (true, false) => "Cleaning up the transcript",
-                    _ => "Working out who spoke",
+                    (true, true, true) => "Cleaning up, working out who spoke, and timing the words",
+                    (true, true, false) => "Cleaning up and working out who spoke",
+                    (true, false, true) => "Cleaning up and timing the words",
+                    (false, true, true) => "Working out who spoke and timing the words",
+                    (true, false, false) => "Cleaning up the transcript",
+                    (false, true, false) => "Working out who spoke",
+                    _ => "Timing the words",
                 };
             }
 
@@ -733,6 +847,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _audio = null;
         _segmentsBeforeSpeakers = [];
+
+        lock (_alignedGate)
+        {
+            _aligned.Clear();
+        }
 
         SetTranscript([]);
         ProvisionalText = string.Empty;
@@ -978,6 +1097,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // recording that captures nothing would have its speakers taken from that instead.
         _audio = null;
         _segmentsBeforeSpeakers = [];
+
+        lock (_alignedGate)
+        {
+            _aligned.Clear();
+        }
 
         Player.Clear();
         SourceName = $"Recording {DateTime.Now:yyyy-MM-dd HH.mm}";
