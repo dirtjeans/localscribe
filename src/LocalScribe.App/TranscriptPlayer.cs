@@ -96,9 +96,10 @@ public sealed class TranscriptPlayer : IDisposable
             {
                 Teardown();
 
+                _startedAtSeconds = seconds;
                 _source = new PositionedSampleProvider(_samples, _sampleRate);
                 _source.Seek(seconds);
-                _source.PositionChanged += OnPositionChanged;
+                _source.Ticked += OnTicked;
 
                 _output = new WaveOutEvent();
                 _output.PlaybackStopped += OnDeviceStopped;
@@ -131,7 +132,44 @@ public sealed class TranscriptPlayer : IDisposable
         Stopped?.Invoke();
     }
 
-    private void OnPositionChanged(double seconds) => PositionChanged?.Invoke(seconds);
+    /// <summary>
+    /// Where the recording has actually got to, as the sound card reports it.
+    /// <para>
+    /// Not where the samples have been read to, which is what this used to report and is a
+    /// different thing. Audio is handed to the device ahead of when it is heard — a few hundred
+    /// milliseconds of it sit in the output buffer — so counting samples as they are read runs
+    /// ahead of the sound by about the length of a word, and by a varying amount depending on
+    /// how full the buffer happens to be. Following the transcript against that clock puts the
+    /// marker a word early, sometimes.
+    /// </para>
+    /// </summary>
+    private void OnTicked()
+    {
+        if (_output is not { } output)
+        {
+            return;
+        }
+
+        try
+        {
+            var format = output.OutputWaveFormat;
+            if (format.AverageBytesPerSecond <= 0)
+            {
+                return;
+            }
+
+            var played = output.GetPosition() / (double)format.AverageBytesPerSecond;
+
+            PositionChanged?.Invoke(_startedAtSeconds + played);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+        {
+            // The device went away between the tick and the question. Nothing to report.
+        }
+    }
+
+    /// <summary>Where in the recording this playback began, since the device counts from zero.</summary>
+    private double _startedAtSeconds;
 
     private void OnDeviceStopped(object? sender, StoppedEventArgs e) => Stopped?.Invoke();
 
@@ -149,7 +187,7 @@ public sealed class TranscriptPlayer : IDisposable
     {
         if (_source is not null)
         {
-            _source.PositionChanged -= OnPositionChanged;
+            _source.Ticked -= OnTicked;
             _source = null;
         }
 
@@ -180,7 +218,11 @@ public sealed class TranscriptPlayer : IDisposable
         private int _position;
         private int _sinceLastReport;
 
-        public event Action<double>? PositionChanged;
+        /// <summary>
+        /// Raised as samples are handed over, to say that it is worth asking the device where it
+        /// has got to. Deliberately carries no time of its own.
+        /// </summary>
+        public event Action? Ticked;
 
         public WaveFormat WaveFormat { get; } =
             WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels: 1);
@@ -201,11 +243,12 @@ public sealed class TranscriptPlayer : IDisposable
             _sinceLastReport += available;
 
             // Reporting every buffer would raise this hundreds of times a second for a UI that
-            // cannot use it. A tenth of a second is finer than anyone can see a highlight move.
-            if (_sinceLastReport >= sampleRate / 10)
+            // cannot use it. Twenty times a second is finer than anyone can see a highlight move
+            // and fine enough to land on the right word.
+            if (_sinceLastReport >= sampleRate / 20)
             {
                 _sinceLastReport = 0;
-                PositionChanged?.Invoke(_position / (double)sampleRate);
+                Ticked?.Invoke();
             }
 
             return available;

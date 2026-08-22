@@ -392,7 +392,9 @@ public sealed partial class MainWindow : Window
         // The word ranges belong to the paragraphs that are going away. Keeping them would hold
         // every paragraph of every transcript opened this session alive in a dictionary.
         _spokenWords.Clear();
+        _realised.Clear();
         _lit = null;
+        _markedWord = -1;
 
         var following = _viewModel.IsRecording || _viewModel.IsBusy;
 
@@ -867,7 +869,17 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void OnContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
     {
-        if (args.InRecycleQueue || args.ItemContainer?.ContentTemplateRoot is not FrameworkElement root)
+        if (args.InRecycleQueue)
+        {
+            if (args.Item is ParagraphView recycled)
+            {
+                _realised.Remove(recycled);
+            }
+
+            return;
+        }
+
+        if (args.ItemContainer?.ContentTemplateRoot is not FrameworkElement root)
         {
             return;
         }
@@ -879,6 +891,7 @@ public sealed partial class MainWindow : Window
 
         if (args.Item is ParagraphView paragraph)
         {
+            _realised.Add(paragraph);
             FillWithWords(body, paragraph);
             HighlightMatches(body, paragraph);
             return;
@@ -934,7 +947,8 @@ public sealed partial class MainWindow : Window
 
             body.Inlines.Add(link);
 
-            spans.Add(new SpokenWord(words[i].StartSeconds, words[i].EndSeconds, offset, words[i].Text.Length));
+            spans.Add(new SpokenWord(
+                words[i].StartSeconds, words[i].EndSeconds, offset, words[i].Text.Length, words[i].Text));
             offset += words[i].Text.Length;
 
             if (i + 1 < words.Count)
@@ -944,11 +958,35 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // Checked against the text the block actually ended up with. The offsets above are
+        // counted while building, which assumes the laid-out text is exactly the words joined by
+        // single spaces; if that assumption is ever wrong, every marker lands on the wrong
+        // characters and nothing says so. Where the text can be read back, the words are found
+        // in it instead.
+        var laid = body.Text;
+
+        if (!string.IsNullOrEmpty(laid))
+        {
+            var cursor = 0;
+
+            for (var i = 0; i < spans.Count; i++)
+            {
+                var found = laid.IndexOf(spans[i].Text, cursor, StringComparison.Ordinal);
+                if (found < 0)
+                {
+                    break;
+                }
+
+                spans[i] = spans[i] with { Offset = found };
+                cursor = found + spans[i].Text.Length;
+            }
+        }
+
         _spokenWords[paragraph] = spans;
     }
 
     /// <summary>Where one word sits, both in the recording and in the laid-out text.</summary>
-    private sealed record SpokenWord(double From, double To, int Offset, int Length);
+    private sealed record SpokenWord(double From, double To, int Offset, int Length, string Text);
 
     private readonly Dictionary<ParagraphView, IReadOnlyList<SpokenWord>> _spokenWords = [];
 
@@ -1056,36 +1094,49 @@ public sealed partial class MainWindow : Window
     {
         var paragraph = _paragraphs.FirstOrDefault(p => p.Contains(_position));
 
-        // The one we have left has to be repainted too, or the word that was lit when playback
-        // moved on stays lit for the rest of the session — every paragraph already played
-        // keeping a stale marker somewhere in the middle of it.
-        if (!ReferenceEquals(paragraph, _lit))
-        {
-            Repaint(_lit);
-            _lit = paragraph;
-        }
+        var marked = paragraph is not null && _spokenWords.TryGetValue(paragraph, out var spans)
+            ? spans.FindIndex(w => _position >= w.From && _position < w.To) is var covering && covering >= 0
+                ? covering
+                : spans.FindLastIndex(w => _position >= w.From)
+            : -1;
 
-        Repaint(paragraph);
-    }
-
-    /// <summary>Redraws one paragraph's highlights, if it is on screen at all.</summary>
-    private void Repaint(ParagraphView? paragraph)
-    {
-        if (paragraph is null)
+        // Nothing to repaint until the answer changes, which is a few times a second rather than
+        // twenty.
+        if (ReferenceEquals(paragraph, _lit) && marked == _markedWord)
         {
             return;
         }
 
-        if (TranscriptList.ContainerFromItem(paragraph) is ContentControl container
-            && container.ContentTemplateRoot is FrameworkElement root
-            && FindBodyText(root) is { } body)
+        _lit = paragraph;
+        _markedWord = marked;
+
+        // Every paragraph on screen, not just the one being played and the one just left.
+        // Tracking which paragraph needs clearing has now been wrong twice — first by never
+        // repainting the one left behind, then by repainting it with a rule that lit it again —
+        // and there are only ever a dozen or so realised at once. Repainting all of them cannot
+        // leave a marker behind anywhere.
+        foreach (var visible in _realised.ToList())
         {
-            HighlightMatches(body, paragraph);
+            if (TranscriptList.ContainerFromItem(visible) is ContentControl container
+                && container.ContentTemplateRoot is FrameworkElement root
+                && FindBodyText(root) is { } body)
+            {
+                HighlightMatches(body, visible);
+            }
+            else
+            {
+                _realised.Remove(visible);
+            }
         }
     }
 
-    /// <summary>The paragraph currently carrying the spoken-word marker.</summary>
+    /// <summary>The paragraph currently carrying the spoken-word marker, and which word.</summary>
     private ParagraphView? _lit;
+
+    private int _markedWord = -1;
+
+    /// <summary>The paragraphs the list has actually built containers for.</summary>
+    private readonly HashSet<ParagraphView> _realised = [];
 
     /// <summary>
     /// A literal highlighter pen rather than the accent colour. The accent already means "this
@@ -1254,9 +1305,18 @@ public sealed partial class MainWindow : Window
             UpdatePlayIcon();
 
             // Nothing is being said any more, so nothing should look as though it is.
-            var was = _lit;
             _lit = null;
-            Repaint(was);
+            _markedWord = -1;
+
+            foreach (var visible in _realised.ToList())
+            {
+                if (TranscriptList.ContainerFromItem(visible) is ContentControl container
+                    && container.ContentTemplateRoot is FrameworkElement root
+                    && FindBodyText(root) is { } body)
+                {
+                    HighlightMatches(body, visible);
+                }
+            }
         });
 
 
