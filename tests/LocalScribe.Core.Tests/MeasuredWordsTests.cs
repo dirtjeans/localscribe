@@ -5,9 +5,6 @@ namespace LocalScribe.Core.Tests;
 
 public class MeasuredWordsTests
 {
-    private static TranscriptSegment Segment(string text, double from, double to) =>
-        new(text, from, to);
-
     /// <summary>The segment's own words, as the caller splits them.</summary>
     private static IReadOnlyList<WordTimings.Word> Own(params string[] words) =>
         [.. words.Select(w => new WordTimings.Word(w, 0, 0))];
@@ -18,9 +15,7 @@ public class MeasuredWordsTests
     [Fact]
     public void MeasuredTimesReplaceTheEstimate()
     {
-        var pool = Placed(0, 1, "one", "two", "three");
-
-        var paired = MeasuredWords.Pair(Segment("one two three", 0, 3), pool, Own("one", "two", "three"));
+        var paired = MeasuredWords.Pair(Placed(0, 1, "one", "two", "three"), Own("one", "two", "three"));
 
         Assert.NotNull(paired);
         Assert.Equal(3, paired.Count);
@@ -31,9 +26,7 @@ public class MeasuredWordsTests
     [Fact]
     public void TheSegmentsOwnWordsAreKept()
     {
-        var pool = Placed(0, 1, "dont", "stop");
-
-        var paired = MeasuredWords.Pair(Segment("Don't stop.", 0, 2), pool, Own("Don't", "stop."));
+        var paired = MeasuredWords.Pair(Placed(0, 1, "dont", "stop"), Own("Don't", "stop."));
 
         Assert.NotNull(paired);
         Assert.Equal("Don't", paired[0].Text);
@@ -41,64 +34,55 @@ public class MeasuredWordsTests
     }
 
     /// <summary>
-    /// The bug this rule exists to make impossible. Two alignments of one recording cover the
-    /// same seconds, so a lookup by time finds both and the segment is timed against an
-    /// interleaving of the two — early in places, late in others, with no pattern to it. It must
-    /// refuse instead, and let the estimate stand.
+    /// Where the words come from a different reading of the same speech, they cannot be paired at
+    /// all. Refusing is the point: a segment timed against the wrong words is worse than one timed
+    /// roughly, and the estimate is still there to fall back on.
     /// </summary>
     [Fact]
-    public void TwoAlignmentsOfTheSameSecondsAreRefused()
+    public void TwiceTheWordsIsRefused()
     {
         var once = Placed(0, 1, "one", "two", "three");
-        var again = Placed(0.1, 1, "one", "two", "three");
+        var twice = once.Concat(Placed(0.1, 1, "one", "two", "three")).ToList();
 
-        var pool = once.Concat(again).ToList();
-
-        Assert.Null(MeasuredWords.Pair(Segment("one two three", 0, 3), pool, Own("one", "two", "three")));
+        Assert.Null(MeasuredWords.Pair(twice, Own("one", "two", "three")));
     }
 
     [Fact]
-    public void AWordShortIsRefused()
-    {
-        var pool = Placed(0, 1, "one", "two");
+    public void AWordShortIsRefused() =>
+        Assert.Null(MeasuredWords.Pair(Placed(0, 1, "one", "two"), Own("one", "two", "three")));
 
-        Assert.Null(MeasuredWords.Pair(Segment("one two three", 0, 3), pool, Own("one", "two", "three")));
-    }
-
-    /// <summary>
-    /// A word starting on a boundary belongs to the segment beginning there, and to that one
-    /// only. Claimed by both, the earlier segment has a word too many; claimed by neither, the
-    /// later one is a word short — and either way both fall back to the estimate.
-    /// </summary>
+    /// <summary>Measurements are used exactly as given, including ones outside the old bounds.</summary>
     [Fact]
-    public void ABoundaryWordBelongsToExactlyOneSegment()
+    public void TimesAreTakenAsMeasured()
     {
-        var pool = Placed(0, 1, "one", "two", "three", "four");
-
-        var first = MeasuredWords.Pair(Segment("one two", 0, 2), pool, Own("one", "two"));
-        var second = MeasuredWords.Pair(Segment("three four", 2, 4), pool, Own("three", "four"));
-
-        Assert.NotNull(first);
-        Assert.NotNull(second);
-        Assert.Equal(2, second[0].StartSeconds, 3);
-    }
-
-    /// <summary>Floating point does not always agree with itself about a shared boundary.</summary>
-    [Fact]
-    public void AWordAMomentEarlyStillCounts()
-    {
-        var pool = Placed(1.998, 1, "three", "four");
-
-        var paired = MeasuredWords.Pair(Segment("three four", 2, 4), pool, Own("three", "four"));
+        var paired = MeasuredWords.Pair(Placed(51.4, 0.5, "you", "accept"), Own("You", "accept"));
 
         Assert.NotNull(paired);
+        Assert.Equal(51.4, paired[0].StartSeconds, 3);
+        Assert.Equal(51.9, paired[1].StartSeconds, 3);
+    }
+
+    /// <summary>Where each word sits in its segment's text is the caller's, not the aligner's.</summary>
+    [Fact]
+    public void TheOffsetsSurvivePairing()
+    {
+        IReadOnlyList<WordTimings.Word> own =
+        [
+            new WordTimings.Word("You", 0, 0) { Offset = 0 },
+            new WordTimings.Word("accept", 0, 0) { Offset = 4 },
+        ];
+
+        var paired = MeasuredWords.Pair(Placed(10, 1, "you", "accept"), own);
+
+        Assert.NotNull(paired);
+        Assert.Equal([0, 4], paired.Select(w => w.Offset));
     }
 
     [Fact]
     public void NothingMeasuredMeansNoAnswer() =>
-        Assert.Null(MeasuredWords.Pair(Segment("one", 0, 1), [], Own("one")));
+        Assert.Null(MeasuredWords.Pair([], Own("one")));
 
     [Fact]
     public void ASegmentWithNoWordsHasNoAnswer() =>
-        Assert.Null(MeasuredWords.Pair(Segment("", 0, 1), Placed(0, 1, "one"), Own()));
+        Assert.Null(MeasuredWords.Pair(Placed(0, 1, "one"), Own()));
 }

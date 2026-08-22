@@ -1,69 +1,44 @@
 namespace LocalScribe.Core.Transcription;
 
 /// <summary>
-/// Pairs a segment's words with times measured by the aligner.
+/// Pairs a segment's words with the times measured for it.
 /// <para>
-/// The aligner works one segment at a time and returns a flat run of words for the whole
-/// recording, so getting them back out means asking which of them were said during a given
-/// segment. That works only while the pool holds exactly one alignment. It once held two — the
-/// pipeline aligned the raw transcript in parallel with cleanup and then aligned the finished
-/// transcript again afterwards, appending both — and two alignments of one recording cover the
-/// same seconds, so a segment found about twice the words it had text for. Where the counts
-/// happened to agree anyway the words were paired against an interleaving of the two, which put
-/// the marker sometimes ahead of the sound and sometimes behind it, with no pattern to it.
+/// The text is the segment's and only the times are borrowed. Cleanup rewrites punctuation after
+/// alignment has run and it is the cleaned text that should be read.
 /// </para>
 /// <para>
-/// Kept here rather than beside the caller so that the rule can be shown to hold.
+/// Words used to be fetched out of one pool covering the whole recording, by asking which of them
+/// were said during a segment. That worked only while every word sat inside the segment it came
+/// from, and it stopped being true: the aligner now searches outside a segment's stated bounds,
+/// because those bounds are the least trustworthy thing about it. Words are kept with the segment
+/// they were measured for instead, which is both simpler and immune to a question the pool could
+/// answer wrongly.
 /// </para>
 /// </summary>
 public static class MeasuredWords
 {
-    /// <summary>Slack around a segment boundary, in seconds.</summary>
-    public const double Tolerance = 0.005;
-
     /// <summary>
-    /// The words of <paramref name="segment"/> carrying measured times, or null when the pool
-    /// cannot supply them.
+    /// The segment's own words carrying measured times, or null when the two do not correspond.
     /// </summary>
-    /// <param name="segment">The segment as the reader sees it, which is the text that wins.</param>
-    /// <param name="pool">Every word the aligner placed, for the whole recording.</param>
+    /// <param name="measured">What the aligner placed for this segment, in order.</param>
     /// <param name="own">The segment's own words, already split out.</param>
     /// <returns>
-    /// The segment's own words with the pool's times, or null when the two disagree about how
-    /// many words there are. Returning null is how the caller knows to keep the estimate: a
-    /// segment timed against the wrong words is worse than one timed roughly.
+    /// The words with their measured times, or null when the two disagree about how many words
+    /// there are. Returning null is how the caller knows to keep the estimate: a segment timed
+    /// against the wrong words is worse than one timed roughly.
     /// </returns>
     public static IReadOnlyList<WordTimings.Word>? Pair(
-        TranscriptSegment segment,
-        IReadOnlyList<WordTimings.Word> pool,
+        IReadOnlyList<WordTimings.Word> measured,
         IReadOnlyList<WordTimings.Word> own)
     {
-        ArgumentNullException.ThrowIfNull(segment);
-        ArgumentNullException.ThrowIfNull(pool);
+        ArgumentNullException.ThrowIfNull(measured);
         ArgumentNullException.ThrowIfNull(own);
 
-        if (own.Count == 0)
+        if (own.Count == 0 || measured.Count != own.Count)
         {
             return null;
         }
 
-        // A word belongs to the segment its start falls inside. Both bounds carry the same
-        // tolerance so the windows stay a clean partition: a word starting on a boundary belongs
-        // to the segment beginning there, never to both and never to neither.
-        var measured = pool
-            .Where(w => w.StartSeconds >= segment.StartSeconds - Tolerance
-                && w.StartSeconds < segment.EndSeconds - Tolerance)
-            .OrderBy(w => w.StartSeconds)
-            .ToList();
-
-        if (measured.Count != own.Count)
-        {
-            return null;
-        }
-
-        // The text is the segment's, the times are the pool's. Cleanup rewrites punctuation after
-        // alignment has run and it is the cleaned text that should be read; only the times are
-        // borrowed.
         return [.. own.Select((word, i) => new WordTimings.Word(
             word.Text, measured[i].StartSeconds, measured[i].EndSeconds) { Offset = word.Offset })];
     }

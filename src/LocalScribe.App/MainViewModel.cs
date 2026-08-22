@@ -242,7 +242,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         lock (_alignedGate)
         {
-            return MeasuredWords.Pair(segment, _aligned, own);
+            return _alignedFor.TryGetValue(segment, out var measured)
+                ? MeasuredWords.Pair(measured, own)
+                : null;
         }
     }
 
@@ -278,8 +280,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private readonly object _alignedGate = new();
 
-    /// <summary>Every word the aligner placed, for the whole recording, in the order said.</summary>
-    private readonly List<WordTimings.Word> _aligned = [];
+    /// <summary>What the aligner measured, kept with the segment it was measured for.</summary>
+    private readonly Dictionary<TranscriptSegment, IReadOnlyList<WordTimings.Word>> _alignedFor = [];
 
     /// <summary>
     /// Reads the whole recording through the alignment model, keeping what it made of it.
@@ -342,14 +344,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// one segment and nothing else.
     /// </para>
     /// </summary>
-    private async Task AlignWordsAsync(
+    private async Task<IReadOnlyList<TranscriptSegment>> AlignWordsAsync(
         IReadOnlyList<TranscriptSegment> segments,
         IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
         if (_aligner is not { } aligner || _scores is not { } scores)
         {
-            return;
+            return segments;
         }
 
         // Rebuilt, not added to. Words are looked up by when they were said rather than by which
@@ -359,8 +361,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // twice the words it has text for.
         lock (_alignedGate)
         {
-            _aligned.Clear();
+            _alignedFor.Clear();
         }
+
+        var placed = new List<TranscriptSegment>(segments.Count);
 
         try
         {
@@ -371,14 +375,33 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    if (aligner.Align(scores, segments[i], cancellationToken) is not { } words)
+                    var words = aligner.Align(scores, segments[i], cancellationToken);
+
+                    if (words is null)
                     {
+                        placed.Add(segments[i]);
                         continue;
                     }
 
+                    // The segment moves to where its words turned out to be. Leaving it where the
+                    // transcriber put it would keep the clock beside the paragraph wrong, and
+                    // would leave the reader's position looked up in one place while the words
+                    // for it were measured in another.
+                    var sounded = words.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+
+                    var moved = sounded.Count > 0
+                        ? segments[i] with
+                        {
+                            StartSeconds = sounded[0].StartSeconds,
+                            EndSeconds = Math.Max(sounded[^1].EndSeconds, sounded[0].StartSeconds),
+                        }
+                        : segments[i];
+
+                    placed.Add(moved);
+
                     lock (_alignedGate)
                     {
-                        _aligned.AddRange(words);
+                        _alignedFor[moved] = words;
                     }
                 }
             }, cancellationToken).ConfigureAwait(true);
@@ -390,11 +413,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception)
         {
             Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
+            return segments;
         }
         finally
         {
             ReleaseAligner();
         }
+
+        if (placed.Count != segments.Count)
+        {
+            return segments;
+        }
+
+        // Back into time order. Segments move to wherever their words turned out to be, and two
+        // that were adjacent before need not come back in the order they left — the list is
+        // walked in time by everything downstream, and a paragraph is found by which one contains
+        // the moment being played.
+        placed.Sort((left, right) => left.StartSeconds.CompareTo(right.StartSeconds));
+
+        return placed;
     }
 
     /// <summary>Lets go of the alignment model and its scores.</summary>
@@ -862,7 +899,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // wait: it is the half that needs to know what the words are.
         if (audio is not null)
         {
-            await AlignWordsAsync(finished, new Progress<double>(stages.Words), cancellationToken);
+            finished = await AlignWordsAsync(finished, new Progress<double>(stages.Words), cancellationToken);
 
             // Redrawn, so the measured times replace the estimates shown meanwhile.
             SetTranscript(finished);
@@ -991,7 +1028,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         lock (_alignedGate)
         {
-            _aligned.Clear();
+            _alignedFor.Clear();
         }
 
         // A run abandoned between the scan and the placing would otherwise leave six hundred
@@ -1245,7 +1282,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         lock (_alignedGate)
         {
-            _aligned.Clear();
+            _alignedFor.Clear();
         }
 
         // A run abandoned between the scan and the placing would otherwise leave six hundred

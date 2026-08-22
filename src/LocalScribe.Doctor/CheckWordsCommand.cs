@@ -63,11 +63,6 @@ public static class CheckWordsCommand
             return 1;
         }
 
-        // Read once, whole. Every word is then found by searching this rather than by decoding a
-        // window around where it claims to be — which could only ever confirm words that were
-        // roughly right already.
-        var reading = aligner.ReadAll(scores);
-
         var measured = 0;
         var estimated = 0;
         var checkedWords = 0;
@@ -101,7 +96,7 @@ public static class CheckWordsCommand
 
                 checkedWords++;
 
-                if (Locate(reading, scores, word) is not { } shift)
+                if (Locate(aligner, scores, word) is not { } shift)
                 {
                     // The greedy read-back misspells words the way any recogniser does, so this
                     // is usually the decode being approximate rather than the word being absent.
@@ -176,44 +171,104 @@ public static class CheckWordsCommand
     private const double NoticeableDrift = 0.25;
 
     /// <summary>
-    /// Shorter than this and a word occurs everywhere. Nothing useful can be said about where
-    /// "a" or "of" is.
+    /// Shorter than this and a word carries too little to recognise. Nothing useful can be said
+    /// about where "a" or "of" is.
     /// </summary>
-    private const int ShortestFindable = 4;
+    private const int ShortestFindable = 7;
+
+    /// <summary>How far either side of its stated time a word is looked for.</summary>
+    private const double SearchSeconds = 5;
+
+    /// <summary>How finely, in seconds.</summary>
+    private const double Step = 0.25;
 
     /// <summary>
-    /// How far the word's letters actually sit from where it claims to be, or null when they are
-    /// nowhere in the recording.
+    /// How much of a word's spelling must survive the decode before the audio is agreed to hold
+    /// that word.
     /// <para>
-    /// Positive means the word is really said after its timestamp, so the marker reaches it
-    /// early. The nearest occurrence wins, so a word said several times is credited with the
-    /// closest one rather than being reported as wildly adrift.
+    /// Not all of it. The read-back is a greedy pass over the frames and misspells words the way
+    /// any recogniser does — "Elijah" comes back as "elija", "artificial" as "artofficial". An
+    /// exact match would call those absent, and the first version of this did exactly that: it
+    /// searched the whole recording for a perfect spelling, failed to find one at the right
+    /// moment, matched some other occurrence seconds away, and reported a word that was correctly
+    /// placed as adrift. Every number it produced had to be checked by hand against the decode
+    /// beside it, which is not a measurement.
     /// </para>
     /// </summary>
-    private static double? Locate(
-        ForcedAligner.AudioReading reading,
-        AlignmentScores scores,
-        WordTimings.Word word)
+    private const double CloseEnough = 0.6;
+
+    /// <summary>
+    /// How far the word's sound actually sits from where it claims to be, or null when nothing
+    /// nearby resembles it.
+    /// <para>
+    /// Positive means the word is really said after its timestamp, so the marker reaches it early.
+    /// Measured by reading the audio at a range of offsets and keeping the one that reads most
+    /// like the word — a local question, which is the only kind that can be answered without
+    /// mistaking one occurrence of a word for another.
+    /// </para>
+    /// </summary>
+    private static double? Locate(ForcedAligner aligner, AlignmentScores scores, WordTimings.Word word)
     {
         var spelled = Letters(word.Text);
+        var length = word.EndSeconds - word.StartSeconds;
+
         var best = double.NaN;
+        var closest = CloseEnough;
 
-        var at = reading.Letters.IndexOf(spelled, StringComparison.Ordinal);
-
-        while (at >= 0)
+        for (var shift = -SearchSeconds; shift <= SearchSeconds; shift += Step)
         {
-            var heard = scores.SecondsAt(reading.Frames[at]);
-            var shift = heard - word.StartSeconds;
-
-            if (double.IsNaN(best) || Math.Abs(shift) < Math.Abs(best))
+            var from = word.StartSeconds + shift;
+            if (from < 0)
             {
-                best = shift;
+                continue;
             }
 
-            at = reading.Letters.IndexOf(spelled, at + 1, StringComparison.Ordinal);
+            var heard = aligner.Read(scores, from, from + length + Step);
+            var likeness = Likeness(spelled, heard);
+
+            // Ties go to the smaller shift: a word that reads equally well at its own time and a
+            // second away is not evidence of drift.
+            if (likeness > closest || (likeness >= closest && !double.IsNaN(best) && Math.Abs(shift) < Math.Abs(best)))
+            {
+                closest = likeness;
+                best = shift;
+            }
         }
 
         return double.IsNaN(best) ? null : best;
+    }
+
+    /// <summary>
+    /// How much of <paramref name="word"/> appears in <paramref name="heard"/>, in order, as a
+    /// share of the word's length.
+    /// </summary>
+    private static double Likeness(string word, string heard)
+    {
+        if (word.Length == 0 || heard.Length == 0)
+        {
+            return 0;
+        }
+
+        // Longest common subsequence. Letters in the right order but with the decode's own
+        // insertions and omissions between them, which is exactly how a greedy read-back differs
+        // from the word it heard.
+        var previous = new int[heard.Length + 1];
+        var current = new int[heard.Length + 1];
+
+        for (var i = 1; i <= word.Length; i++)
+        {
+            for (var j = 1; j <= heard.Length; j++)
+            {
+                current[j] = word[i - 1] == heard[j - 1]
+                    ? previous[j - 1] + 1
+                    : Math.Max(previous[j], current[j - 1]);
+            }
+
+            (previous, current) = (current, previous);
+            Array.Clear(current);
+        }
+
+        return previous[heard.Length] / (double)word.Length;
     }
 
     /// <summary>The word as the aligner's romanised alphabet would spell it.</summary>

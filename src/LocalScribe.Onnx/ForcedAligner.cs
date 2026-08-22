@@ -209,8 +209,19 @@ public sealed class ForcedAligner : IDisposable
             return null;
         }
 
-        var first = scores.FrameAt(segment.StartSeconds);
-        var count = scores.FrameAt(segment.EndSeconds) - first;
+        // Searched wider than the segment claims to be, because the segment's own times are the
+        // thing least worth trusting here.
+        //
+        // They come from the transcriber, which times whole segments and gets them wrong in ways
+        // that persist: a repetition loop occupies a stretch of the timeline that no speech was
+        // ever in, and everything after it is pushed later by that much for the rest of the
+        // window. On the debate recording that left a two-second hole and a marker three seconds
+        // behind the voice from that point on, which no amount of care about placing words could
+        // fix — the words were being placed correctly inside a window that was in the wrong place.
+        //
+        // The scan knows where the sounds are. Given room to look, the aligner finds them.
+        var first = scores.FrameAt(segment.StartSeconds - SearchBackSeconds);
+        var count = scores.FrameAt(segment.EndSeconds + SearchForwardSeconds) - first;
 
         if (count < ShortestAlignableSeconds / scores.FrameSeconds)
         {
@@ -397,6 +408,40 @@ public sealed class ForcedAligner : IDisposable
 
     /// <summary>Shorter than this and there is nothing to align a word to.</summary>
     private const double ShortestAlignableSeconds = 0.2;
+
+    /// <summary>
+    /// How far before a segment's stated start the words may actually turn out to be.
+    /// <para>
+    /// Generous, because this is the direction the error goes. Segment times come from the
+    /// transcriber, which times whole segments and gets them late: time given to speech that was
+    /// never said pushes everything after it back, and on the debate recording that left the
+    /// second half of the transcript two to three seconds behind the voice.
+    /// </para>
+    /// <para>
+    /// Deliberately not floored at where the previous segment ended, which was tried and was
+    /// worse. A floor sounds like the obvious guard against two segments claiming the same
+    /// speech, and it is a ratchet: one segment placed late forbids every later segment from
+    /// reaching back past it, so a drift can be inherited but never corrected. With it in place,
+    /// widening this made no difference at all — 37 of 66 words adrift at every width, because
+    /// the room was never usable. Without it, 13.
+    /// </para>
+    /// <para>
+    /// Segments are kept apart by the words themselves instead. Each is matched against the sound
+    /// of its own text, and text that only occurs once has only one place it can go.
+    /// </para>
+    /// </summary>
+    private const double SearchBackSeconds = 6;
+
+    /// <summary>
+    /// How far past a segment's stated end the words may run.
+    /// <para>
+    /// Small, and not for symmetry's sake. Room to search forward is what lets a segment slide
+    /// onto the next speaker's audio: given four seconds of it, "Atheists reject God, but they
+    /// don't understand what they're rejecting" was matched against a stretch that actually says
+    /// "accept conscience as a guide". Errors here run one way, so the room does too.
+    /// </para>
+    /// </summary>
+    private const double SearchForwardSeconds = 1;
 
 
     /// <summary>
