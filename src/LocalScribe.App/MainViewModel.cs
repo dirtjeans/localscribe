@@ -610,8 +610,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private bool _translateToEnglish;
 
-    /// <summary>What to ask the transcriber for.</summary>
-    private SpeechTask Task =>
+    /// <summary>
+    /// What to ask the transcriber for.
+    /// <para>
+    /// Not named Task. A member called that shadows <see cref="System.Threading.Tasks.Task"/>
+    /// throughout the class, and every <c>Task.Run</c> in the file stops compiling.
+    /// </para>
+    /// </summary>
+    private SpeechTask RequestedTask =>
         TranslateToEnglish ? SpeechTask.TranslateToEnglish : SpeechTask.Transcribe;
 
     /// <summary>Where people talked over each other, from the last run.</summary>
@@ -1380,7 +1386,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             });
 
-            var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, Task);
+            var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
 
             await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 
@@ -1442,7 +1448,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        _liveSession = new LiveTranscriptionSession(transcriber, task: Task);
+        _liveSession = new LiveTranscriptionSession(transcriber, task: RequestedTask);
         _cancellation = new CancellationTokenSource();
         _diagnostics = SessionDiagnostics.StartIfEnabled(livePlan.Summary, transcriber.Description);
         _liveCapture = [];
