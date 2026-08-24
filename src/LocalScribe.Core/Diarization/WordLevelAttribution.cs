@@ -75,7 +75,16 @@ public static class WordLevelAttribution
             return [item with { Segment = item.Segment with { Speaker = labels[0] } }];
         }
 
-        return Pieces(item, labels);
+        var pieces = Pieces(item, labels);
+
+        // Every word of the parent has to end up in exactly one piece. Cutting is done by slicing
+        // text between offsets, so a piece that comes out empty or a boundary that does not reach
+        // the end takes words out of the transcript entirely — and a reader has no way to tell
+        // that from the recogniser never having heard them. Where the arithmetic does not add up,
+        // the segment is left whole and merely labelled: worse attribution, but nothing lost.
+        return pieces.Sum(piece => piece.Words.Count) == words.Count
+            ? pieces
+            : [item with { Segment = item.Segment with { Speaker = labels[0] } }];
     }
 
     /// <summary>Which speaker each word belongs to, with gaps filled from its neighbours.</summary>
@@ -133,7 +142,7 @@ public static class WordLevelAttribution
     }
 
     /// <summary>Cuts the segment where the label changes, keeping the original text exactly.</summary>
-    private static IEnumerable<TimedSegment> Pieces(TimedSegment item, string?[] labels)
+    private static List<TimedSegment> Pieces(TimedSegment item, string?[] labels)
     {
         var pieces = new List<TimedSegment>();
         var start = 0;
@@ -153,14 +162,21 @@ public static class WordLevelAttribution
             start = i;
         }
 
-        return pieces.Count > 0 ? pieces : [item];
+        return pieces;
     }
 
     private static TimedSegment? Piece(TimedSegment item, string? speaker, int first, int last)
     {
         var words = item.Words;
         var from = words[first].Offset;
-        var to = words[last].Offset + words[last].Text.Length;
+
+        // Up to where the next piece begins, so the pieces tile the text and nothing between two
+        // words can fall down the gap. Measuring the last word instead — offset plus the length
+        // of its text — trusts that the word's text is exactly what sits at that offset, and one
+        // character of disagreement silently truncates the piece.
+        var to = last + 1 < words.Count
+            ? words[last + 1].Offset
+            : item.Segment.Text.Length;
 
         // Sliced out of the original rather than rebuilt from the words, so the punctuation and
         // spacing the reader sees are the ones cleanup produced.
