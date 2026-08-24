@@ -39,8 +39,20 @@ public sealed class FoundryLocalClient : ILanguageModel, IDisposable
         _inner = new OpenAiCompatibleClient(
             "Foundry Local",
             model,
-            endpoint ?? new Uri($"http://localhost:{DefaultPort}"),
+            NormaliseEndpoint(endpoint) ?? new Uri($"http://localhost:{DefaultPort}"),
             httpClient);
+
+    /// <summary>
+    /// Cuts a discovered endpoint back to its origin.
+    /// <para>
+    /// The service reports where it is listening including the API path, and every request here
+    /// is made relative to the base address. Left in place, a base of <c>/v1</c> produces
+    /// requests to <c>/v1/v1/chat/completions</c> — a 404 that reads exactly like the service not
+    /// being there, which is the failure this whole discovery path exists to stop misreporting.
+    /// </para>
+    /// </summary>
+    public static Uri? NormaliseEndpoint(Uri? endpoint) =>
+        endpoint is null ? null : new Uri(endpoint.GetLeftPart(UriPartial.Authority) + "/");
 
     /// <summary>
     /// Finds a running service and a model it already has, or null when there is none.

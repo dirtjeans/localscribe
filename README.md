@@ -29,8 +29,11 @@ three while the machine stutters.
 # Build native arm64. This is not optional: under x64 emulation the NPU is unreachable.
 dotnet build -c Release -r win-arm64
 
-# Find out what your machine can do
+# See what your machine has, and what is missing
 dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
+
+# Download the missing models and install the local inference engine
+dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64 -- --install
 ```
 
 The doctor tells you exactly which pieces are missing and how to get them. It also fetches the
@@ -52,6 +55,8 @@ dotnet publish src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm6
 
 Then search the Start Menu for LocalScribe. Add `-Desktop` for a desktop shortcut too, or
 `-Remove` to take them away again. The shortcut is per-user and needs no administrator.
+
+Setup reaches the network, to Hugging Face. Audio never does.
 
 ## Layout
 

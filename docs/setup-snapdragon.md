@@ -124,6 +124,7 @@ version mismatch is the first thing to check.
 ## 4. Optional: a local language model for the cleanup pass
 
 Transcription works without this. Punctuation repair, glossary correction, and summaries do not.
+`--install` sets it up; by hand it is:
 
 Either backend below works; the app probes both and uses whichever answers, so you only need
 one. The doctor names the one it found.
@@ -151,8 +152,20 @@ foundry model run qwen2.5-1.5b-instruct
 Pass a model **alias** rather than a fully qualified id. Foundry then picks the QNN NPU build on
 Snapdragon and falls back to CPU elsewhere, which is exactly the behaviour we want.
 
-If generation crashes on the NPU, drop back to a CPU variant — the cleanup model is small enough
-that the Oryon cores handle it comfortably.
+### The port is dynamic
+
+Foundry Local binds to a **dynamic** loopback port, so do not hard-code one. Ask the CLI:
+
+```powershell
+foundry service status
+```
+
+The app does this automatically. It matters because a hard-coded port makes a perfectly healthy
+service look absent, and the app then silently skips the cleanup pass.
+
+Note that Foundry Local has had open bugs affecting NPU generation on Snapdragon X Elite. If
+generation crashes, drop back to a CPU variant — the cleanup model is small enough that the
+Oryon cores handle it comfortably.
 
 ## Verifying the NPU is genuinely in use
 

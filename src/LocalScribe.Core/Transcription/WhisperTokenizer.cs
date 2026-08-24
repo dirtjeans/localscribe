@@ -229,9 +229,18 @@ public sealed class WhisperTokenizer
     /// Special tokens are taken from <c>added_tokens.json</c> when present and from the main
     /// vocabulary otherwise, since exports disagree about where they live.
     /// </summary>
-    public static WhisperTokenizer LoadFromDirectory(string modelDirectory)
+    public static WhisperTokenizer LoadFromDirectory(string modelDirectory) =>
+        LoadFromFile(Path.Combine(modelDirectory, "vocab.json"));
+
+    /// <summary>
+    /// Loads a tokenizer from a specific vocabulary file. Special tokens are taken from an
+    /// <c>added_tokens.json</c> sitting beside it when present, since exports disagree about
+    /// where those live.
+    /// </summary>
+    public static WhisperTokenizer LoadFromFile(string vocabularyPath)
     {
-        var vocabularyPath = Path.Combine(modelDirectory, "vocab.json");
+        var modelDirectory = Path.GetDirectoryName(vocabularyPath) ?? ".";
+
         if (!File.Exists(vocabularyPath))
         {
             throw new FileNotFoundException(

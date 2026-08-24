@@ -36,7 +36,10 @@ public sealed record TranscriptSegment(
     public bool LooksHallucinated =>
         NoSpeechProbability > 0.6 && AverageLogProbability < -1.0 && !string.IsNullOrWhiteSpace(Text);
 
-    public override string ToString() => $"[{StartSeconds:F1}s-{EndSeconds:F1}s] {Text}";
+    public override string ToString() =>
+        Speaker is null
+            ? $"[{StartSeconds:F1}s-{EndSeconds:F1}s] {Text}"
+            : $"[{StartSeconds:F1}s-{EndSeconds:F1}s] {Speaker}: {Text}";
 }
 
 /// <summary>The result of transcribing one recording.</summary>
@@ -46,6 +49,13 @@ public sealed record Transcript(IReadOnlyList<TranscriptSegment> Segments, strin
 {
     /// <summary>The whole transcript as flowing text.</summary>
     public string FullText => string.Join(" ", Segments.Select(s => s.Text.Trim()).Where(t => t.Length > 0));
+
+    /// <summary>True when at least one segment carries a speaker label.</summary>
+    public bool HasSpeakers => Segments.Any(s => s.Speaker is not null);
+
+    /// <summary>Distinct speakers, in the order they first appear.</summary>
+    public IReadOnlyList<string> Speakers =>
+        [.. Segments.Select(s => s.Speaker).OfType<string>().Distinct()];
 
     public static Transcript Empty { get; } = new([], "en");
 }

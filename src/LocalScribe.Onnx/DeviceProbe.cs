@@ -91,8 +91,18 @@ public static class DeviceProbe
         ModelLayout.HasChipsetModels(modelDirectory, family);
 
     /// <summary>
-    /// Looks for the Hexagon NPU runtime. The library shipping beside the app is the strongest
-    /// signal available without loading it, which would be slow and can crash on a bad install.
+    /// Looks for a working Hexagon NPU by asking Windows for the device itself.
+    /// <para>
+    /// An earlier version of this checked for <c>QnnHtp.dll</c> beside the binary. That was
+    /// wrong in the worst possible direction: the ONNX Runtime QNN package <em>ships</em> that
+    /// library into the output directory, so the check passed on every machine, including ones
+    /// with no Qualcomm driver at all. A prerequisite check that always passes is worse than no
+    /// check, because it sends you looking somewhere else.
+    /// </para>
+    /// <para>
+    /// The device query is still only a strong hint. The definitive test is loading a model with
+    /// <c>StrictProviderCheck</c> enabled and seeing whether it throws.
+    /// </para>
     /// </summary>
     private static bool HasHexagonRuntime()
     {
@@ -101,13 +111,15 @@ public static class DeviceProbe
             return false;
         }
 
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "QnnHtp.dll"),
-            Path.Combine(Environment.SystemDirectory, "QnnHtp.dll"),
-        };
+        // Status is part of the test, not decoration: a driver present but in an error state is
+        // exactly the situation that produces silent CPU fallback later.
+        var query = RunAndCapture(
+            "powershell",
+            "-NoProfile -NonInteractive -Command \"Get-PnpDevice -PresentOnly "
+            + "| Where-Object { $_.FriendlyName -match 'Hexagon|NPU|Neural' -and $_.Status -eq 'OK' } "
+            + "| Select-Object -First 1 -ExpandProperty FriendlyName\"");
 
-        return candidates.Any(File.Exists);
+        return !string.IsNullOrWhiteSpace(query);
     }
 
     /// <summary>
