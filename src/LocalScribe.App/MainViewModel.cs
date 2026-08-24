@@ -346,14 +346,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// one segment and nothing else.
     /// </para>
     /// </summary>
-    private async Task<IReadOnlyList<TranscriptSegment>> AlignWordsAsync(
+    private async Task<IReadOnlyList<TimedSegment>> AlignWordsAsync(
         IReadOnlyList<TranscriptSegment> segments,
         IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
+        var untimed = () => (IReadOnlyList<TimedSegment>)
+            [.. segments.Select(segment => new TimedSegment(segment, []))];
+
         if (_aligner is not { } aligner || _scores is not { } scores)
         {
-            return segments;
+            return untimed();
         }
 
         // Rebuilt, not added to. Words are looked up by when they were said rather than by which
@@ -366,7 +369,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _alignedFor.Clear();
         }
 
-        var placed = new List<TranscriptSegment>(segments.Count);
+        var placed = new List<TimedSegment>(segments.Count);
 
         try
         {
@@ -381,7 +384,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     if (words is null)
                     {
-                        placed.Add(segments[i]);
+                        placed.Add(new TimedSegment(segments[i], []));
                         continue;
                     }
 
@@ -399,12 +402,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         }
                         : segments[i];
 
-                    placed.Add(moved);
-
-                    lock (_alignedGate)
-                    {
-                        _alignedFor[moved] = words;
-                    }
+                    placed.Add(new TimedSegment(moved, words));
                 }
             }, cancellationToken).ConfigureAwait(true);
         }
@@ -415,7 +413,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception)
         {
             Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
-            return segments;
+            return untimed();
         }
         finally
         {
@@ -424,14 +422,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (placed.Count != segments.Count)
         {
-            return segments;
+            return untimed();
         }
 
         // Back into time order. Segments move to wherever their words turned out to be, and two
         // that were adjacent before need not come back in the order they left — the list is
         // walked in time by everything downstream, and a paragraph is found by which one contains
         // the moment being played.
-        placed.Sort((left, right) => left.StartSeconds.CompareTo(right.StartSeconds));
+        placed.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
 
         return placed;
     }
@@ -492,7 +490,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var turns = await FindTurnsAsync(audio, speakers, found).ConfigureAwait(true);
 
-        return turns is null ? segments : SpeakerDiarizer.Attribute(segments, turns);
+        if (turns is null)
+        {
+            return segments;
+        }
+
+        _lastTurns = turns;
+
+        // Timed again first, because this runs over the segments as they were before speakers
+        // were attached and the words held now belong to the pieces they were divided into. The
+        // scan is kept, so this is the cheap half of alignment rather than a second pass over
+        // the audio.
+        var timed = await AlignWordsAsync(segments, found, _cancellation?.Token ?? default)
+            .ConfigureAwait(true);
+
+        return Attribute(timed, turns);
     }
 
     /// <summary>
@@ -690,6 +702,42 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>True when there is something to try again and something to try it on.</summary>
     public bool CanRetryCleanup => _cleanupNotice is not null && _rawSegments.Count > 0 && !IsBusy;
+
+    /// <summary>
+    /// Attaches speakers, cutting segments at the word the voice changed on where the words were
+    /// measured and at a sentence end where they were not.
+    /// <para>
+    /// The sentence rule stays for the machine with no aligner installed, and keeps its repair
+    /// for a speaker change that lands mid-sentence — which, without word times, is far more
+    /// often a wrong turn than a real interruption. With word times the cut is evidence rather
+    /// than a guess, so it is left alone.
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<TranscriptSegment> Attribute(
+        IReadOnlyList<TimedSegment> timed,
+        IReadOnlyList<SpeakerTurn> turns)
+    {
+        if (timed.Any(t => t.Words.Count > 0))
+        {
+            var pieces = WordLevelAttribution.Apply(timed, turns);
+
+            lock (_alignedGate)
+            {
+                _alignedFor.Clear();
+
+                foreach (var piece in pieces.Where(p => p.Words.Count > 0))
+                {
+                    _alignedFor[piece.Segment] = piece.Words;
+                }
+            }
+
+            return [.. pieces.Select(p => p.Segment)];
+        }
+
+        var attributed = SpeakerDiarizer.Attribute([.. timed.Select(t => t.Segment)], turns);
+
+        return SpeakerAttribution.KeepSentencesWhole(attributed);
+    }
 
     /// <summary>Says what cleanup left undone, or takes the notice away when it did not.</summary>
     private void ReportCleanup(TranscriptRefiner? refiner) =>
@@ -1084,26 +1132,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _segmentsBeforeSpeakers = cleaned;
 
-        // Attribution on the cleaned text rather than the raw. Segments spanning a speaker change
-        // are divided at sentence boundaries, and by this point there are real sentence
-        // boundaries to divide at.
-        var finished = _lastTurns is null ? cleaned : SpeakerDiarizer.Attribute(cleaned, _lastTurns);
+        // Words first, then speakers. The other way round for a long time, and that was what
+        // lost most of the diarization: a segment could only be cut where a sentence ended, so a
+        // speaker change with no sentence end near it had nowhere to go and the whole segment
+        // went to whoever held most of it. On the debate recording 26 of 31 changes fell inside
+        // a segment. Measured word times give a boundary to cut on.
+        var timed = _scores is not null
+            ? await AlignWordsAsync(cleaned, new Progress<double>(stages.Words), cancellationToken)
+            : [.. cleaned.Select(segment => new TimedSegment(segment, []))];
 
-        // Before the overlaps are marked, because a sentence handed back to one speaker is no
-        // longer a stretch where two of them were talking.
-        finished = SpeakerAttribution.KeepSentencesWhole(finished);
+        var finished = _lastTurns is null
+            ? [.. timed.Select(t => t.Segment)]
+            : Attribute(timed, _lastTurns);
+
         finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
-
-        // Placed last, over the segments the reader actually ends up with. Only this half has to
-        // wait: it is the half that needs to know what the words are.
-        if (_scores is not null)
-        {
-            finished = await AlignWordsAsync(finished, new Progress<double>(stages.Words), cancellationToken);
-
-            // Redrawn, so the measured times replace the estimates shown meanwhile.
-            SetTranscript(finished);
-        }
 
         ReportCleanup(refiner);
     }
