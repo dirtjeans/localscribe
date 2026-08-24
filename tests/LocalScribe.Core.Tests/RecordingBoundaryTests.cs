@@ -20,11 +20,17 @@ public class RecordingBoundaryTests
     {
         public int Beginnings { get; private set; }
 
+        public SpeechTask LastTask { get; private set; } = SpeechTask.Transcribe;
+
         public int Windows { get; private set; }
 
         public string Description => "Counting";
 
-        public void BeginRecording() => Beginnings++;
+        public void BeginRecording(SpeechTask task = SpeechTask.Transcribe)
+        {
+            Beginnings++;
+            LastTask = task;
+        }
 
         public Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
             AudioChunk chunk,
@@ -81,14 +87,41 @@ public class RecordingBoundaryTests
         Assert.Equal(1, transcriber.Beginnings);
     }
 
-    /// <summary>A backend that remembers nothing has nothing to forget, and need not say so.</summary>
+    /// <summary>Writing it down as spoken is what happens unless asked otherwise.</summary>
     [Fact]
-    public void TheDefaultIsToDoNothing()
+    public async Task TranscribingIsTheDefault()
     {
-        ITranscriber forgetful = new CountingTranscriber();
+        var transcriber = new CountingTranscriber();
 
-        forgetful.BeginRecording();
+        await new TranscriptionPipeline(transcriber).RunAsync(Silence(3));
 
-        Assert.Equal(1, ((CountingTranscriber)forgetful).Beginnings);
+        Assert.Equal(SpeechTask.Transcribe, transcriber.LastTask);
+    }
+
+    /// <summary>And the other way round only when it is.</summary>
+    [Fact]
+    public async Task TranslationIsCarriedToTheBackend()
+    {
+        var transcriber = new CountingTranscriber();
+
+        await new TranscriptionPipeline(transcriber)
+            .RunAsync(Silence(3), task: SpeechTask.TranslateToEnglish);
+
+        Assert.Equal(SpeechTask.TranslateToEnglish, transcriber.LastTask);
+    }
+
+    /// <summary>
+    /// The app transcribes through this method rather than through RunAsync, so the boundary has
+    /// to be on it. Put on RunAsync alone, the fix for a recording inheriting the last one's
+    /// language would never have run in the app at all.
+    /// </summary>
+    [Fact]
+    public async Task TranscribingDirectlyIsStillARecording()
+    {
+        var transcriber = new CountingTranscriber();
+
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(Silence(3));
+
+        Assert.Equal(1, transcriber.Beginnings);
     }
 }

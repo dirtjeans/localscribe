@@ -185,7 +185,11 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
     /// remembers outlives what it was true of.
     /// </para>
     /// </summary>
-    public void BeginRecording() => _session.Language = null;
+    public void BeginRecording(SpeechTask task = SpeechTask.Transcribe)
+    {
+        _session.Language = null;
+        _session.Task = task;
+    }
 
     public string? DetectedLanguage =>
         _session.Language is { } id ? _tokenizer.LanguageCode(id) : null;

@@ -56,6 +56,7 @@ internal sealed class PortableDecodeStrategy(
         session.Language ??= DetectLanguage(hiddenStates, tokenInput, stateInput, tokenType);
 
         var tokens = new List<int>(tokenizer.BuildPrompt(
+            task: session.Task,
             withTimestamps: true,
             languageToken: session.Language ?? -1,
             priorTokens: prompt));

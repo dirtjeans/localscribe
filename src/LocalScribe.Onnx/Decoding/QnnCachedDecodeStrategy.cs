@@ -77,7 +77,8 @@ internal sealed class QnnCachedDecodeStrategy(
             ? new List<int>(tokenizer.BuildPrompt(
                 withTimestamps: true,
                 languageToken: session.Language ?? -1,
-                priorTokens: prompt))
+                priorTokens: prompt,
+                task: session.Task))
             : [tokenizer.Special.StartOfTranscript];
 
         var detecting = prompt is not { Count: > 0 };
@@ -194,7 +195,7 @@ internal sealed class QnnCachedDecodeStrategy(
             prompt.Add(session.Language.Value);
         }
 
-        prompt.Add(tokenizer.Special.Transcribe);
+        prompt.Add(tokenizer.TaskToken(session.Task));
 
         return prompt;
     }

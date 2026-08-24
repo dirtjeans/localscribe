@@ -584,6 +584,36 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             .Distinct(StringComparer.Ordinal)
             .Count();
 
+    /// <summary>
+    /// Whether to render speech as English rather than write it down as spoken.
+    /// <para>
+    /// Off, and it stays off unless asked. A transcript that quietly changes language is not a
+    /// transcript of the recording — which is how this was found: a Portuguese recording came
+    /// back in English because the language had been inherited from an earlier file, and that
+    /// read as a feature nobody had chosen.
+    /// </para>
+    /// </summary>
+    public bool TranslateToEnglish
+    {
+        get => _translateToEnglish;
+        set
+        {
+            if (_translateToEnglish == value)
+            {
+                return;
+            }
+
+            _translateToEnglish = value;
+            Raise(nameof(TranslateToEnglish));
+        }
+    }
+
+    private bool _translateToEnglish;
+
+    /// <summary>What to ask the transcriber for.</summary>
+    private SpeechTask Task =>
+        TranslateToEnglish ? SpeechTask.TranslateToEnglish : SpeechTask.Transcribe;
+
     /// <summary>Where people talked over each other, from the last run.</summary>
     private IReadOnlyList<(double Start, double End)> _overlaps = [];
 
@@ -1350,7 +1380,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             });
 
-            var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token);
+            var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, Task);
 
             await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 
@@ -1412,7 +1442,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        _liveSession = new LiveTranscriptionSession(transcriber);
+        _liveSession = new LiveTranscriptionSession(transcriber, task: Task);
         _cancellation = new CancellationTokenSource();
         _diagnostics = SessionDiagnostics.StartIfEnabled(livePlan.Summary, transcriber.Description);
         _liveCapture = [];

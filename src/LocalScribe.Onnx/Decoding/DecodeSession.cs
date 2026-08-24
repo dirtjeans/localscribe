@@ -1,3 +1,5 @@
+using LocalScribe.Core.Transcription;
+
 namespace LocalScribe.Onnx.Decoding;
 
 /// <summary>
@@ -18,4 +20,13 @@ internal sealed class DecodeSession
     /// detection has not run yet.
     /// </summary>
     public int? Language { get; set; }
+
+    /// <summary>
+    /// Whether this recording is being written down or rendered in English.
+    /// <para>
+    /// Settled per recording, like the language, and for the same reason: changing it between
+    /// windows would give one transcript two conventions.
+    /// </para>
+    /// </summary>
+    public SpeechTask Task { get; set; } = SpeechTask.Transcribe;
 }

@@ -80,12 +80,10 @@ public sealed class TranscriptionPipeline
         IReadOnlyList<string>? glossary = null,
         RefinementOutputs outputs = RefinementOutputs.Default,
         IProgress<TranscriptionProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        SpeechTask task = SpeechTask.Transcribe)
     {
-        // A different recording, so anything carried over from the last one is wrong now.
-        _transcriber.BeginRecording();
-
-        var transcript = await TranscribeAsync(audio, progress, cancellationToken)
+        var transcript = await TranscribeAsync(audio, progress, cancellationToken, task)
             .ConfigureAwait(false);
 
         var refinement = await RefineAsync(transcript, glossary, outputs, progress, cancellationToken)
@@ -98,8 +96,14 @@ public sealed class TranscriptionPipeline
     public async Task<Transcript> TranscribeAsync(
         PcmAudio audio,
         IProgress<TranscriptionProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        SpeechTask task = SpeechTask.Transcribe)
     {
+        // A different recording, so anything carried over from the last one is wrong now. Here
+        // rather than in RunAsync: this is the method every caller passes through, and the app
+        // calls it directly.
+        _transcriber.BeginRecording(task);
+
         ArgumentNullException.ThrowIfNull(audio);
         audio.EnsureWhisperFormat();
 

@@ -209,7 +209,8 @@ public sealed class WhisperTokenizer
         int NoSpeech,
         int FirstTimestamp,
         int English = -1,
-        int StartOfPrev = -1)
+        int StartOfPrev = -1,
+        int Translate = -1)
     {
         /// <summary>True when this vocabulary carries language tokens and therefore needs one.</summary>
         public bool IsMultilingual => English >= 0;
@@ -294,12 +295,32 @@ public sealed class WhisperTokenizer
                 StartOfTranscript: Find("<|startoftranscript|>", required: true),
                 EndOfText: Find("<|endoftext|>", required: true),
                 Transcribe: Find("<|transcribe|>", required: true),
+
+                // Not required: English-only exports have no translate task, having nothing to
+                // translate from.
+                Translate: Find("<|translate|>", required: false),
                 NoTimestamps: Find("<|notimestamps|>", required: false),
                 NoSpeech: Find("<|nospeech|>", required: false),
                 FirstTimestamp: Find("<|0.00|>", required: false),
                 English: Find("<|en|>", required: false),
                 StartOfPrev: Find("<|startofprev|>", required: false)));
     }
+
+    /// <summary>
+    /// The token for a task, falling back to transcription when the export cannot translate.
+    /// <para>
+    /// Silently, because the alternative is refusing to transcribe a recording over a setting
+    /// the user can change afterwards. What they get is the language they spoke, which is the
+    /// safer of the two wrong answers.
+    /// </para>
+    /// </summary>
+    public int TaskToken(SpeechTask task) =>
+        task == SpeechTask.TranslateToEnglish && Special.Translate >= 0
+            ? Special.Translate
+            : Special.Transcribe;
+
+    /// <summary>True when this export can render speech as English.</summary>
+    public bool CanTranslate => Special.Translate >= 0;
 
     /// <summary>
     /// Decodes token ids to text, dropping every special marker.
@@ -356,6 +377,10 @@ public sealed class WhisperTokenizer
     /// one. See <see cref="DetectLanguage"/>.
     /// </para>
     /// </summary>
+    /// <param name="task">
+    /// Whether to write down what was said or to render it in English. Falls back to writing it
+    /// down when the export has no translate task, which is what an English-only model is.
+    /// </param>
     /// <param name="withTimestamps">False to suppress timestamp tokens.</param>
     /// <param name="languageToken">
     /// The detected language id. Falls back to English when detection has not run and the model
@@ -370,7 +395,8 @@ public sealed class WhisperTokenizer
     public IReadOnlyList<int> BuildPrompt(
         bool withTimestamps = true,
         int languageToken = -1,
-        IReadOnlyList<int>? priorTokens = null)
+        IReadOnlyList<int>? priorTokens = null,
+        SpeechTask task = SpeechTask.Transcribe)
     {
         var prompt = new List<int>();
 
@@ -388,7 +414,7 @@ public sealed class WhisperTokenizer
             prompt.Add(language);
         }
 
-        prompt.Add(Special.Transcribe);
+        prompt.Add(TaskToken(task));
 
         if (!withTimestamps && Special.NoTimestamps >= 0)
         {

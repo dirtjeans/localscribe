@@ -132,6 +132,18 @@
 
                 <Button x:Name="GlossaryButton" Content="Glossary" Click="OnEditGlossary" />
 
+                <!--
+                    Off unless asked. Whisper renders speech as English in the same pass that
+                    recognises it, so this is a choice made before transcribing rather than a
+                    second step afterwards — and it is English-only, because that is the only
+                    target the model has.
+                -->
+                <ToggleButton
+                    x:Name="TranslateButton"
+                    Content="Translate to English"
+                    Click="OnToggleTranslate"
+                    ToolTipService.ToolTip="Write the transcript in English, whatever language is spoken. Off, it keeps the language spoken." />
+
                 <AppBarSeparator />
 
                 <Button x:Name="CopyButton" Click="OnCopy" IsEnabled="False">

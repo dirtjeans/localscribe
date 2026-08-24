@@ -79,13 +79,16 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     private double _sessionSeconds;
     private int _samplesSinceLastPass;
 
-    public LiveTranscriptionSession(ITranscriber transcriber, int sampleRate = PcmAudio.WhisperSampleRate)
+    public LiveTranscriptionSession(
+        ITranscriber transcriber,
+        int sampleRate = PcmAudio.WhisperSampleRate,
+        SpeechTask task = SpeechTask.Transcribe)
     {
         _transcriber = transcriber ?? throw new ArgumentNullException(nameof(transcriber));
         _sampleRate = sampleRate;
 
         // One session is one recording, so this is where the last one is forgotten.
-        _transcriber.BeginRecording();
+        _transcriber.BeginRecording(task);
     }
 
     /// <summary>Everything committed so far, in order.</summary>

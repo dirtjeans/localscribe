@@ -216,6 +216,9 @@ public sealed partial class MainWindow : Window
     private async void OnRetryCleanup(object sender, RoutedEventArgs e) =>
         await _viewModel.RetryCleanupAsync();
 
+    private void OnToggleTranslate(object sender, RoutedEventArgs e) =>
+        _viewModel.TranslateToEnglish = TranslateButton.IsChecked == true;
+
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         _dispatcher.TryEnqueue(() =>

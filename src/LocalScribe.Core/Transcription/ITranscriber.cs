@@ -25,7 +25,11 @@ public interface ITranscriber : IDisposable
     /// Empty by default, because a backend that remembers nothing has nothing to forget.
     /// </para>
     /// </summary>
-    void BeginRecording()
+    /// <param name="task">
+    /// Whether to write the recording down as spoken or render it in English. Settled here
+    /// rather than per window, so one transcript cannot end up with two conventions.
+    /// </param>
+    void BeginRecording(SpeechTask task = SpeechTask.Transcribe)
     {
     }
 
