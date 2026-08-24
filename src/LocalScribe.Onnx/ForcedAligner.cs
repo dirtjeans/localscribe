@@ -267,8 +267,16 @@ public sealed class ForcedAligner : IDisposable
                 continue;
             }
 
-            var from = scores.SecondsAt(first + letters[0].FirstFrame);
             var to = scores.SecondsAt(first + letters[^1].LastFrame + 1);
+
+            // Not reaching back further than a word can be. The search deliberately looks before
+            // a segment's stated start, and the first word is where that room gets spent: on one
+            // recording "Our top story this week…" began 2.5 seconds early, which put it ahead of
+            // the "And I'm Ken Spencer-Brown." that was actually said first. The end of a word is
+            // measured; the start of a long one is mostly whatever came before it.
+            var from = Math.Max(
+                scores.SecondsAt(first + letters[0].FirstFrame),
+                to - WordTimings.LongestWordSeconds);
 
             timed.Add(new WordTimings.Word(spelling.Word, from, Math.Max(to, from))
             {

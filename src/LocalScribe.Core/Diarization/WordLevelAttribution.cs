@@ -37,11 +37,11 @@ public static class WordLevelAttribution
     /// <summary>
     /// How much of a word's span to believe when deciding whose it is.
     /// <para>
-    /// Long enough for any word anybody says. A measured span longer than this is a word that
-    /// has swallowed what came before it, and the end is the part that is really the word.
+    /// The times are bounded where they are made, so this is a second line of defence and covers
+    /// the estimated times too, which come from loudness and are not bounded at all.
     /// </para>
     /// </summary>
-    public const double LongestWordSeconds = 1.5;
+    public const double LongestWordSeconds = WordTimings.LongestWordSeconds;
 
     /// <summary>Labels each segment, dividing any that spans more than one speaker.</summary>
     public static IReadOnlyList<TimedSegment> Apply(

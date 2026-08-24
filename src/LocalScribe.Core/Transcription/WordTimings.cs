@@ -25,6 +25,17 @@ namespace LocalScribe.Core.Transcription;
 /// </summary>
 public static class WordTimings
 {
+    /// <summary>
+    /// The longest a single spoken word runs.
+    /// <para>
+    /// Generous for any word anybody says, and used to bound the ones that come back longer.
+    /// A measured span past this has swallowed the silence or the speech beside it — which
+    /// happens because alignment searches outside a segment's stated bounds, and the first word
+    /// is what the extra room gets spent on.
+    /// </para>
+    /// </summary>
+    public const double LongestWordSeconds = 1.5;
+
     /// <param name="Text">The word as it appears, punctuation and all.</param>
     /// <param name="StartSeconds">Where to seek to hear it.</param>
     public sealed record Word(string Text, double StartSeconds, double EndSeconds)
