@@ -12,6 +12,16 @@ public interface ITranscriber : IDisposable
     string Description { get; }
 
     /// <summary>
+    /// The language of the last recording, as a two-letter code, or null when unknown.
+    /// <para>
+    /// Known only after listening, which is why translation is offered rather than asked about
+    /// in advance: until a recording has been transcribed there is no way to tell whether an
+    /// offer to render it in English would mean anything.
+    /// </para>
+    /// </summary>
+    string? DetectedLanguage => null;
+
+    /// <summary>
     /// Says that the windows from here on belong to a different recording.
     /// <para>
     /// A backend may carry something between windows that is true of one recording and false of

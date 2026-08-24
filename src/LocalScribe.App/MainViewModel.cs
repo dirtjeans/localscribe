@@ -611,6 +611,39 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _translateToEnglish;
 
     /// <summary>
+    /// The language of the transcript on screen, or null when nothing has been transcribed.
+    /// </summary>
+    public string? SpokenLanguage
+    {
+        get => _spokenLanguage;
+        private set
+        {
+            if (_spokenLanguage == value)
+            {
+                return;
+            }
+
+            _spokenLanguage = value;
+            Raise(nameof(SpokenLanguage));
+            Raise(nameof(CanOfferTranslation));
+        }
+    }
+
+    private string? _spokenLanguage;
+
+    /// <summary>
+    /// True when rendering this recording in English would change anything.
+    /// <para>
+    /// English speech is the case where the offer is noise, and no detected language at all is
+    /// the case where it would be a guess. Both hide it.
+    /// </para>
+    /// </summary>
+    public bool CanOfferTranslation =>
+        _sourcePath is { Length: > 0 }
+        && SpokenLanguage is { Length: > 0 } language
+        && !language.Equals("en", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// What to ask the transcriber for.
     /// <para>
     /// Not named Task. A member called that shadows <see cref="System.Threading.Tasks.Task"/>
@@ -1333,6 +1366,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
     }
 
+    /// <summary>
+    /// Transcribes the open recording again, in English this time, or back as spoken.
+    /// <para>
+    /// A second pass over the audio rather than a translation of the text. Whisper renders
+    /// English in the same pass that recognises speech, so there is nothing to translate
+    /// afterwards — and going back is the same work in the other direction.
+    /// </para>
+    /// </summary>
+    public async Task TranslateAgainAsync(bool intoEnglish)
+    {
+        if (_sourcePath is not { Length: > 0 } path || IsBusy)
+        {
+            return;
+        }
+
+        TranslateToEnglish = intoEnglish;
+
+        await TranscribeFileAsync(path).ConfigureAwait(true);
+    }
+
+    /// <summary>Where the open recording was read from, so it can be transcribed again.</summary>
+    private string? _sourcePath;
+
     /// <summary>Transcribes a file from disk.</summary>
     public async Task TranscribeFileAsync(string path)
     {
@@ -1354,6 +1410,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             SourceName = Path.GetFileNameWithoutExtension(path);
             _audio = audio;
+            _sourcePath = path;
 
             // Held so a line in the transcript can be clicked and heard. The timings refer to
             // these samples, not to the file, which is why the decoded audio is what is kept.
@@ -1387,6 +1444,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             });
 
             var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
+
+            // Now, rather than before: what language this is could not be known until it had been
+            // listened to, and offering to translate before that would have been a guess.
+            SpokenLanguage = transcriber.DetectedLanguage;
 
             await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 

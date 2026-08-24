@@ -132,17 +132,6 @@
 
                 <Button x:Name="GlossaryButton" Content="Glossary" Click="OnEditGlossary" />
 
-                <!--
-                    Off unless asked. Whisper renders speech as English in the same pass that
-                    recognises it, so this is a choice made before transcribing rather than a
-                    second step afterwards — and it is English-only, because that is the only
-                    target the model has.
-                -->
-                <ToggleButton
-                    x:Name="TranslateButton"
-                    Content="Translate to English"
-                    Click="OnToggleTranslate"
-                    ToolTipService.ToolTip="Write the transcript in English, whatever language is spoken. Off, it keeps the language spoken." />
 
                 <AppBarSeparator />
 
@@ -503,6 +492,23 @@
                 TextTrimming="CharacterEllipsis"
                 Style="{ThemeResource CaptionTextBlockStyle}"
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+            <!--
+                Offered rather than asked about, and only once there is something to offer: the
+                language is not known until the recording has been listened to, so this appears
+                after transcribing and only when what was spoken was not English. Centred, away
+                from the buttons that act on the transcript, because it makes a new one.
+            -->
+            <ToggleButton
+                x:Name="TranslateButton"
+                Grid.Row="1"
+                Grid.Column="0"
+                Grid.ColumnSpan="2"
+                HorizontalAlignment="Center"
+                Visibility="Collapsed"
+                Content="Translate to English"
+                Click="OnToggleTranslate"
+                ToolTipService.ToolTip="Transcribes the recording again, in English. Turning it off transcribes it again as spoken." />
 
             <TextBlock
                 x:Name="HardwareText"

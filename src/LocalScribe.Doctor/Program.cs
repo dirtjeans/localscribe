@@ -170,6 +170,13 @@ internal static class Program
                 .ConfigureAwait(false);
         }
 
+        if (args.Contains("--segmentation-model"))
+        {
+            return await SegmentationModelCommand
+                .RunAsync(modelDirectory, ArgumentValue(args, "--segmentation-model"))
+                .ConfigureAwait(false);
+        }
+
         if (args.Contains("--speaker-model"))
         {
             return await SpeakerModelCommand
@@ -268,6 +275,7 @@ internal static class Program
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
         Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");
+        Console.WriteLine("  --segmentation-model [n]  Show or switch what decides where speakers change.");
         Console.WriteLine("  --speaker-models <f>  Compare embedding models on a saved .scrb transcript.");
         Console.WriteLine("  --candidates <d>   With --speaker-models: directory of model folders to try.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");

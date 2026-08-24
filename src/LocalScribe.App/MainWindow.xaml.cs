@@ -216,8 +216,14 @@ public sealed partial class MainWindow : Window
     private async void OnRetryCleanup(object sender, RoutedEventArgs e) =>
         await _viewModel.RetryCleanupAsync();
 
-    private void OnToggleTranslate(object sender, RoutedEventArgs e) =>
-        _viewModel.TranslateToEnglish = TranslateButton.IsChecked == true;
+    private async void OnToggleTranslate(object sender, RoutedEventArgs e) =>
+        await _viewModel.TranslateAgainAsync(TranslateButton.IsChecked == true);
+
+    /// <summary>Shows the offer only when it would change something.</summary>
+    private void ShowTranslateOffer() =>
+        TranslateButton.Visibility = _viewModel.CanOfferTranslation
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -225,6 +231,9 @@ public sealed partial class MainWindow : Window
         {
             switch (e.PropertyName)
             {
+                case nameof(MainViewModel.CanOfferTranslation):
+                    ShowTranslateOffer();
+                    break;
                 case nameof(MainViewModel.CleanupNotice):
                 case nameof(MainViewModel.CanRetryCleanup):
                     ShowCleanupNotice();
