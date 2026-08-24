@@ -152,4 +152,79 @@ public class UnfinishedSentencesTests
             }
         }
     }
+
+    /// <summary>
+    /// The mirror case, and the third real one from the same recording: "…my opening statement.
+    /// Then how" belongs to whoever says "do we specify what we're arguing about?"
+    /// </summary>
+    [Fact]
+    public void TheStartOfASentenceMovesForwardToWhoeverFinishesIt()
+    {
+        var pieces = UnfinishedSentences.Apply(
+        [
+            Said("Speaker 2", "back to my opening statement. Then how", 5),
+            Said("Speaker 1", "do we specify what we're arguing about?", 8),
+        ]);
+
+        Assert.Equal(2, pieces.Count);
+        Assert.Equal("back to my opening statement.", pieces[0].Segment.Text);
+        Assert.Equal("Speaker 2", pieces[0].Segment.Speaker);
+        Assert.Equal("Then how do we specify what we're arguing about?", pieces[1].Segment.Text);
+        Assert.Equal("Speaker 1", pieces[1].Segment.Speaker);
+    }
+
+    /// <summary>
+    /// Without a finished sentence in front of it, the whole segment is one unfinished thought
+    /// and its end is its own. That is the backward rule's case, and both must not fire.
+    /// </summary>
+    [Fact]
+    public void AnUnfinishedSegmentDoesNotHandItsEndForward()
+    {
+        var pieces = UnfinishedSentences.Apply(
+        [
+            Said("Speaker 1", "and conscience is one of the defining", 49),
+            Said("Speaker 2", "characteristics", 50),
+        ]);
+
+        Assert.Single(pieces);
+        Assert.Equal("and conscience is one of the defining characteristics", pieces[0].Segment.Text);
+        Assert.Equal("Speaker 1", pieces[0].Segment.Speaker);
+    }
+
+    /// <summary>A new sentence answering a finished one is a real turn and stays put.</summary>
+    [Fact]
+    public void AnAnswerIsNotADanglingOpening()
+    {
+        var pieces = UnfinishedSentences.Apply(
+        [
+            Said("Speaker 1", "That is what I said. Obviously not.", 10),
+            Said("Speaker 2", "You did say it.", 12),
+        ]);
+
+        Assert.Equal(2, pieces.Count);
+        Assert.Equal("Speaker 2", pieces[1].Segment.Speaker);
+    }
+
+    [Theory]
+    [InlineData("back to my opening statement. Then how", "do we specify what we're arguing about?")]
+    [InlineData("I said that. And so", "we went home.")]
+    public void EveryWordSurvivesMovingForward(string first, string second)
+    {
+        var pieces = UnfinishedSentences.Apply(
+            [Said("Speaker 1", first, 10), Said("Speaker 2", second, 11)]);
+
+        Assert.Equal(
+            Words($"{first} {second}"),
+            Words(string.Join(" ", pieces.Select(p => p.Segment.Text))));
+
+        foreach (var piece in pieces)
+        {
+            foreach (var word in piece.Words)
+            {
+                Assert.Equal(
+                    word.Text,
+                    piece.Segment.Text.Substring(word.Offset, word.Text.Length));
+            }
+        }
+    }
 }

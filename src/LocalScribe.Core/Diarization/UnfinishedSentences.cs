@@ -69,6 +69,19 @@ public static class UnfinishedSentences
                 continue;
             }
 
+            // Forward first. A segment ending with a finished sentence and then a short dangling
+            // run is a sentence being started, not one being finished, and the run belongs to
+            // whoever says the rest of it: "…my opening statement. Then how" / "do we specify
+            // what we're arguing about?"
+            if (Opening(before.Words) is { } opening
+                && Continues(after.Words[0].Text)
+                && MoveForward(before, after, opening) is { } handed)
+            {
+                result[i - 1] = handed.Before;
+                result[i] = handed.After;
+                continue;
+            }
+
             var head = Head(after.Words);
             var closes = head <= after.Words.Count && !Unfinished(after.Words[head - 1].Text);
 
@@ -198,6 +211,101 @@ public static class UnfinishedSentences
             rest);
 
         return (grown, remainder);
+    }
+
+    /// <summary>
+    /// How many words at the end of a segment are the start of a new sentence, or null when it
+    /// does not end with one.
+    /// <para>
+    /// A run after the last full stop, with a completed sentence in front of it. Without that
+    /// completed sentence the whole segment is one unfinished thought and its end is its own —
+    /// which is the case the backward rule handles, and the two must not both fire.
+    /// </para>
+    /// </summary>
+    private static int? Opening(IReadOnlyList<WordTimings.Word> words)
+    {
+        var ended = -1;
+
+        for (var i = words.Count - 1; i >= 0; i--)
+        {
+            if (!Unfinished(words[i].Text))
+            {
+                ended = i;
+                break;
+            }
+        }
+
+        var trailing = words.Count - 1 - ended;
+
+        return ended >= 0 && trailing is > 0 && trailing <= MostWords ? words.Count - trailing : null;
+    }
+
+    /// <summary>True when this word reads as the middle of a sentence rather than the start.</summary>
+    private static bool Continues(string word)
+    {
+        foreach (var character in word)
+        {
+            if (char.IsLetter(character))
+            {
+                return char.IsLower(character);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Rebuilds both segments with the trailing words moved on to the second.</summary>
+    private static (TimedSegment Before, TimedSegment After)? MoveForward(
+        TimedSegment before,
+        TimedSegment after,
+        int from)
+    {
+        var cut = before.Words[from].Offset;
+
+        if (cut > before.Segment.Text.Length)
+        {
+            return null;
+        }
+
+        var kept = before.Segment.Text[..cut].Trim();
+        var given = before.Segment.Text[cut..].Trim();
+
+        if (kept.Length == 0 || given.Length == 0)
+        {
+            return null;
+        }
+
+        var joined = $"{given} {after.Segment.Text}";
+        var shift = given.Length + 1;
+
+        var words = new List<WordTimings.Word>(after.Words.Count + before.Words.Count - from);
+
+        for (var i = from; i < before.Words.Count; i++)
+        {
+            words.Add(new WordTimings.Word(
+                before.Words[i].Text, before.Words[i].StartSeconds, before.Words[i].EndSeconds)
+            {
+                Offset = before.Words[i].Offset - cut,
+            });
+        }
+
+        foreach (var word in after.Words)
+        {
+            words.Add(new WordTimings.Word(word.Text, word.StartSeconds, word.EndSeconds)
+            {
+                Offset = word.Offset + shift,
+            });
+        }
+
+        var shrunk = new TimedSegment(
+            before.Segment with { Text = kept, EndSeconds = before.Words[from - 1].EndSeconds },
+            [.. before.Words.Take(from)]);
+
+        var grown = new TimedSegment(
+            after.Segment with { Text = joined, StartSeconds = before.Words[from].StartSeconds },
+            words);
+
+        return (shrunk, grown);
     }
 
     /// <summary>True when this word leaves its sentence open.</summary>
