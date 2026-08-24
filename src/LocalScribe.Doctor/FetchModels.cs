@@ -1,5 +1,11 @@
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
+using LocalScribe.Core.Provisioning;
+
+// Two namespaces define a ModelLayout: this project's, which finds weights by convention, and the
+// merged provisioning one, which records them in a manifest. Only the first is used here. The
+// duplicate name is left over from two branches solving the same problem and is worth collapsing.
+using ModelLayout = LocalScribe.Core.Models.ModelLayout;
 
 namespace LocalScribe.Doctor;
 
@@ -91,6 +97,8 @@ internal static class FetchModels
             return 1;
         }
 
+        await FetchDiarizationAsync(modelRoot).ConfigureAwait(false);
+
         ReportNpuGap(capabilities);
         return 0;
     }
@@ -150,6 +158,70 @@ internal static class FetchModels
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Fetches the models that work out who is speaking.
+    /// <para>
+    /// Small enough not to ask about — a few tens of megabytes against the aligner's six hundred
+    /// — and, like the aligner before it, previously obtainable only by placing files by hand.
+    /// The symptom of not having them is that the speaker column silently never appears.
+    /// </para>
+    /// <para>
+    /// Downloaded from the sherpa-onnx releases, which publish pyannote segmentation and
+    /// WeSpeaker embeddings as ordinary ONNX under fixed names. Nothing of sherpa's runtime is
+    /// used; these are the same weights this app already runs through its own code.
+    /// </para>
+    /// </summary>
+    private static async Task FetchDiarizationAsync(string modelRoot)
+    {
+        var directory = Path.Combine(modelRoot, "diarization");
+
+        if (DiarizationModelInstaller.IsInstalled(directory))
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Speaker models already present in {directory}.");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Fetching the speaker models into {directory}");
+        Console.WriteLine("Without these, the transcript says what was said but not who said it.");
+        Console.WriteLine();
+
+        var installer = new DiarizationModelInstaller(extractor: new TarBz2Extractor());
+
+        // Only when it changes. The installer reports on every read, and the size it names is
+        // rounded to whole megabytes, so a six-megabyte download otherwise prints "0 of 6 MB"
+        // sixteen times before saying anything else.
+        var last = string.Empty;
+
+        var progress = new Progress<InstallProgress>(update =>
+        {
+            if (update.Message == last)
+            {
+                return;
+            }
+
+            last = update.Message;
+            Console.WriteLine($"  {update.Message}");
+        });
+
+        try
+        {
+            var result = await installer.EnsureInstalledAsync(directory, progress).ConfigureAwait(false);
+
+            Console.WriteLine();
+            Console.WriteLine($"  {result.Message}");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException)
+        {
+            // Optional, like the aligner. Losing the speaker labels is a smaller thing than
+            // failing a setup that has otherwise worked.
+            Console.Error.WriteLine();
+            Console.Error.WriteLine($"  The speaker models could not be fetched: {exception.Message}");
+            Console.Error.WriteLine("  Transcription still works; nothing will be labelled by speaker.");
+        }
     }
 
     /// <summary>

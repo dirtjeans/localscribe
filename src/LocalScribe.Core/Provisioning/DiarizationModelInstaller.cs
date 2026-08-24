@@ -52,14 +52,34 @@ public sealed class DiarizationModelInstaller
         ["pyannote-segmentation-3-0", "pyannote-segmentation"];
 
     /// <summary>
-    /// Embedding model preference, English first.
+    /// Embedding model preference. WeSpeaker only, and that is a hard requirement rather than a
+    /// ranking.
     /// <para>
-    /// Ordering matters more than it looks: several of the published extractors are trained on
-    /// Mandarin speakers, and they separate English voices noticeably less well.
+    /// These extractors do not share an input contract. WeSpeaker's take precomputed filterbank
+    /// features on an input named <c>feats</c>, which is what this app computes and feeds. NeMo's
+    /// TitaNet takes raw audio on an input named <c>audio_signal</c> and does its own feature
+    /// extraction. Handing one the other's input does not degrade the answer, it fails.
+    /// </para>
+    /// <para>
+    /// The list led with <c>nemo_en_titanet_small</c>, which is right for a runtime that supports
+    /// several architectures and wrong here, where the feature pipeline — Povey window, HTK mel,
+    /// cepstral mean normalisation — is WeSpeaker's specifically. Fetching by preference alone
+    /// would have installed a model this app cannot use, over one it already had.
+    /// </para>
+    /// <para>
+    /// English-trained first among those: several published extractors are trained on Mandarin
+    /// speakers and separate English voices noticeably less well.
     /// </para>
     /// </summary>
+    /// <para>
+    /// ResNet34-LM specifically, because that is the model the separation threshold was measured
+    /// against. WeSpeaker publishes CAM++ and several deeper ResNets under the same input
+    /// contract, so they would run — and would quietly place voices at different distances,
+    /// against a threshold calibrated for none of them. The plain ResNet34 is the only fallback:
+    /// same architecture, same scale, and the closest thing to the model actually tuned for.
+    /// </para>
     public static IReadOnlyList<string> EmbeddingPreference { get; } =
-        ["nemo_en_titanet_small", "wespeaker_en_voxceleb", "wespeaker_en", "3dspeaker_speech_eres2net"];
+        ["wespeaker_en_voxceleb_resnet34_LM", "wespeaker_en_voxceleb_resnet34"];
 
     private readonly GitHubReleaseCatalog _catalog;
     private readonly IFileDownloader _downloader;
