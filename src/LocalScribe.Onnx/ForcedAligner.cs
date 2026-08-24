@@ -435,7 +435,14 @@ public sealed class ForcedAligner : IDisposable
     /// of its own text, and text that only occurs once has only one place it can go.
     /// </para>
     /// </summary>
-    private const double SearchBackSeconds = 6;
+    /// <para>
+    /// Three rather than six. The sweep that chose this measured drift and not overlap, and six
+    /// scored no better than three on drift while giving the first word of a segment six seconds
+    /// of the previous speaker to stretch into. It took it: one recording had "Atheists" placed
+    /// across 5.1 seconds reaching back over somebody else's sentence, which then attributed the
+    /// word to them and dragged the segment's start time with it.
+    /// </para>
+    private const double SearchBackSeconds = 3;
 
     /// <summary>
     /// How far past a segment's stated end the words may run.

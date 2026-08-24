@@ -34,6 +34,15 @@ public static class WordLevelAttribution
     /// </summary>
     public const double ShortestTurnSeconds = 0.5;
 
+    /// <summary>
+    /// How much of a word's span to believe when deciding whose it is.
+    /// <para>
+    /// Long enough for any word anybody says. A measured span longer than this is a word that
+    /// has swallowed what came before it, and the end is the part that is really the word.
+    /// </para>
+    /// </summary>
+    public const double LongestWordSeconds = 1.5;
+
     /// <summary>Labels each segment, dividing any that spans more than one speaker.</summary>
     public static IReadOnlyList<TimedSegment> Apply(
         IReadOnlyList<TimedSegment> timed,
@@ -55,6 +64,11 @@ public static class WordLevelAttribution
         {
             result.AddRange(Divide(item, worth));
         }
+
+        // In the order they were said. Segments are aligned one at a time and may move, so two
+        // that were adjacent need not come back adjacent — and a transcript whose timestamps go
+        // backwards reads as though lines have gone missing, because the eye stops following it.
+        result.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
 
         return result;
     }
@@ -101,8 +115,14 @@ public static class WordLevelAttribution
                 continue;
             }
 
+            // Judged on the end of the word rather than all of it. A word is not five seconds
+            // long: where one is, it has absorbed the silence or the speech in front of it,
+            // and asking which turn covers the most of that hands the word to whoever was
+            // talking before it started.
+            var from = Math.Max(words[i].StartSeconds, words[i].EndSeconds - LongestWordSeconds);
+
             labels[i] = turns
-                .OrderByDescending(t => t.OverlapWith(words[i].StartSeconds, words[i].EndSeconds))
+                .OrderByDescending(t => t.OverlapWith(from, words[i].EndSeconds))
                 .First()
                 .Label;
         }

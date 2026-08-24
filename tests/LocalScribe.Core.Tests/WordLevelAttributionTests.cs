@@ -143,4 +143,52 @@ public class WordLevelAttributionTests
     [Fact]
     public void NothingAtAllIsNotAFailure() =>
         Assert.Empty(WordLevelAttribution.Apply([], [Turn(0, 0, 5)]));
+
+    /// <summary>
+    /// A word that has swallowed the pause in front of it must not be handed to whoever was
+    /// talking during that pause. On the debate recording "Atheists" was measured across 5.1
+    /// seconds reaching back over the previous speaker, and went to them.
+    /// </para>
+    /// <para>
+    /// Only the swallowed part is discounted. A word whose measured end is also in the wrong
+    /// place is a misalignment and no attribution rule can rescue it — that is what the shorter
+    /// backward search is for.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void AWordThatSwallowedTheSilenceBeforeItStillBelongsToItsSpeaker()
+    {
+        // One long first word, then two ordinary ones, all really said after 10s.
+        IReadOnlyList<WordTimings.Word> words =
+        [
+            new WordTimings.Word("Atheists", 5.0, 11.5) { Offset = 0 },
+            new WordTimings.Word("reject", 11.6, 12.1) { Offset = 9 },
+            new WordTimings.Word("God.", 12.2, 12.7) { Offset = 16 },
+        ];
+
+        var pieces = WordLevelAttribution.Apply(
+            [new TimedSegment(new TranscriptSegment("Atheists reject God.", 5, 12.7), words)],
+            [Turn(0, 0, 10), Turn(1, 10, 13)]);
+
+        Assert.Single(pieces);
+        Assert.Equal("Speaker 2", pieces[0].Segment.Speaker);
+    }
+
+    /// <summary>
+    /// Timestamps that go backwards read as lines having gone missing, because the eye stops
+    /// following the list. Segments are aligned one at a time and may move, so order has to be
+    /// restored rather than assumed.
+    /// </summary>
+    [Fact]
+    public void ThePiecesComeBackInTheOrderTheyWereSaid()
+    {
+        var later = Spoken("later words here", from: 20);
+        var earlier = Spoken("earlier words here", from: 5);
+
+        var pieces = WordLevelAttribution.Apply([later, earlier], [Turn(0, 0, 30)]);
+
+        Assert.Equal(
+            pieces.Select(p => p.Segment.StartSeconds).OrderBy(x => x),
+            pieces.Select(p => p.Segment.StartSeconds));
+    }
 }
