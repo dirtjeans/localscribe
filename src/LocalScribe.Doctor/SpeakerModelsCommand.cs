@@ -20,6 +20,21 @@ namespace LocalScribe.Doctor;
 /// the two distributions matters more than either average, because that is what a single
 /// threshold has to separate.
 /// </para>
+/// <para>
+/// <strong>Whose labels.</strong> This compares models against the labels already on the
+/// transcript, and those labels came from a model. Run on a transcript this app produced, it
+/// therefore measures agreement with the embedding model that produced it, and the incumbent
+/// wins by construction. The first run of this concluded that the smallest and worst-rated model
+/// separated voices best; what it had actually established was that the other models disagreed
+/// with it.
+/// </para>
+/// <para>
+/// It answers an honest question only when the labels came from somewhere else — corrected by
+/// hand, or from a reference set with published annotations. A large effect still shows through
+/// the bias: a model whose same-voice distances exceed its different-voice distances is
+/// separating nothing, and no amount of label noise inverts a distribution. A few points between
+/// two otherwise similar models means nothing at all.
+/// </para>
 /// </summary>
 public static class SpeakerModelsCommand
 {
@@ -90,6 +105,10 @@ public static class SpeakerModelsCommand
         Console.WriteLine("  different  average distance between two voices (higher is better)");
         Console.WriteLine("  confusable share of pairs a single threshold must get wrong (lower is better)");
         Console.WriteLine("  threshold  the distance that separates them best on this recording");
+        Console.WriteLine();
+        Console.WriteLine("  These compare against the labels already on the transcript. Where those came");
+        Console.WriteLine("  from this app, they came from one of these models, and it wins by construction.");
+        Console.WriteLine("  Trust a reversed gap; do not trust a few points between close rivals.");
 
         return 0;
     }

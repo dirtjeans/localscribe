@@ -209,6 +209,13 @@ internal static class FetchModels
 
             Console.WriteLine();
             Console.WriteLine($"  {result.Message}");
+
+            // Record what was installed, so switching away from it later can keep a copy under
+            // its own name rather than under "previous", and switching back costs nothing.
+            if (result.Succeeded)
+            {
+                SpeakerModelCommand.RecordInstalled(directory);
+            }
         }
         catch (Exception exception) when (exception is HttpRequestException or IOException)
         {

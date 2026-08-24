@@ -170,6 +170,13 @@ internal static class Program
                 .ConfigureAwait(false);
         }
 
+        if (args.Contains("--speaker-model"))
+        {
+            return await SpeakerModelCommand
+                .RunAsync(modelDirectory, ArgumentValue(args, "--speaker-model"))
+                .ConfigureAwait(false);
+        }
+
         var compare = ArgumentValue(args, "--speaker-models");
         if (compare is not null)
         {
@@ -260,6 +267,7 @@ internal static class Program
         Console.WriteLine("  --align <f>      Scan a WAV with the alignment model and read the grid back.");
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
+        Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");
         Console.WriteLine("  --speaker-models <f>  Compare embedding models on a saved .scrb transcript.");
         Console.WriteLine("  --candidates <d>   With --speaker-models: directory of model folders to try.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
@@ -269,10 +277,26 @@ internal static class Program
         Console.WriteLine("  --help, -h       This text.");
     }
 
+    /// <summary>
+    /// The value following a named argument, or null when it has none.
+    /// <para>
+    /// A word beginning with two dashes is the next option, not this one's value. Without that,
+    /// <c>--speaker-model --models .</c> reads "--models" as the name of a model and reports it
+    /// as unknown instead of listing what there is.
+    /// </para>
+    /// </summary>
     private static string? ArgumentValue(string[] args, string name)
     {
         var index = Array.IndexOf(args, name);
-        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
+
+        if (index < 0 || index + 1 >= args.Length)
+        {
+            return null;
+        }
+
+        var value = args[index + 1];
+
+        return value.StartsWith("--", StringComparison.Ordinal) ? null : value;
     }
 
     private static void Heading(string title)
