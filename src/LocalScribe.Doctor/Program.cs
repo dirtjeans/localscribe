@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Provisioning;
 using LocalScribe.Core.Refinement;
+using LocalScribe.Diarization;
 using LocalScribe.Onnx;
 
 namespace LocalScribe.Doctor;
@@ -31,6 +32,7 @@ internal static class Program
         var live = args.Contains("--live");
         var maximum = args.Contains("--max");
         var install = args.Contains("--install");
+        var skipDiarization = args.Contains("--no-diarize");
 
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
@@ -43,7 +45,7 @@ internal static class Program
 
         try
         {
-            return await RunAsync(modelRoot, live, maximum, install, cancellation.Token)
+            return await RunAsync(modelRoot, live, maximum, install, skipDiarization, cancellation.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -58,6 +60,7 @@ internal static class Program
         bool live,
         bool maximum,
         bool install,
+        bool skipDiarization,
         CancellationToken cancellationToken)
     {
         Heading("Machine");
@@ -82,13 +85,22 @@ internal static class Program
         var chipsetSlug = DeviceProbe.AssetFolderFor(capabilities.Family);
         var modelDirectory = Path.Combine(modelRoot, chipsetSlug, plan.WhisperModel);
 
-        var provisioner = new Provisioner();
+        // Diarization models are chipset-independent: they are plain ONNX graphs that run on
+        // the CPU, so unlike Whisper they are not stored per-chipset.
+        var diarizationDirectory = skipDiarization ? null : Path.Combine(modelRoot, "diarization");
+
+        // The extractor is supplied here rather than inside Core, which takes no external
+        // dependencies and so cannot decompress bzip2 on its own.
+        var provisioner = new Provisioner(
+            diarizationModels: new DiarizationModelInstaller(extractor: new TarBz2Extractor()));
+
         var provisioning = Provisioner.BuildPlan(
             capabilities,
             plan,
             modelDirectory,
             foundryInstalled,
-            Provisioner.ProcessIsArm64);
+            Provisioner.ProcessIsArm64,
+            diarizationDirectory);
 
         Heading("Prerequisites");
         foreach (var component in provisioning.Components)
@@ -100,8 +112,8 @@ internal static class Program
         {
             Heading("Installing");
             Console.WriteLine(
-                "  Downloading from Hugging Face and Microsoft. Audio never leaves this machine, "
-                + "but setup does reach the network.");
+                "  Downloading from Hugging Face, GitHub, and Microsoft. Audio never leaves this "
+                + "machine, but setup does reach the network.");
             Console.WriteLine();
 
             var progress = new Progress<InstallProgress>(PrintProgress);
@@ -111,7 +123,8 @@ internal static class Program
                 plan.WhisperModel,
                 chipsetSlug,
                 progress,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                diarizationDirectory).ConfigureAwait(false);
 
             Console.WriteLine();
             foreach (var result in results)
@@ -151,6 +164,17 @@ internal static class Program
         Report("Encoder", $"{plan.Encoder.Device} — {plan.Encoder.Reason}");
         Report("Decoder", $"{plan.Decoder.Device} — {plan.Decoder.Reason}");
         Report("Cleanup", $"{plan.LanguageModel.Device} — {plan.LanguageModel.Reason}");
+
+        if (diarizationDirectory is not null)
+        {
+            Report(
+                "Diarization",
+                DiarizationModelInstaller.IsInstalled(diarizationDirectory)
+                    // Stated plainly because it is the most common misreading of this design:
+                    // the model is pyannote's, but no part of it touches the NPU.
+                    ? $"CPU, {plan.CpuBudget.IntraOpThreads} threads — pyannote via sherpa-onnx"
+                    : "unavailable — models not installed");
+        }
         Report("CPU budget", $"{plan.CpuBudget.IntraOpThreads} intra-op, "
             + $"{plan.CpuBudget.InterOpThreads} inter-op, "
             + (plan.CpuBudget.BelowNormalPriority ? "below-normal priority" : "normal priority"));
@@ -219,6 +243,7 @@ internal static class Program
                                 Without this, nothing is changed and nothing is downloaded.
               --models <path>   Where model assets live. Defaults to ./models beside the binary.
               --live            Plan for live transcription rather than batch files.
+              --no-diarize      Leave speaker diarization out of the plan entirely.
               --max             Plan for maximum speed rather than a responsive machine.
               --help            This text.
 

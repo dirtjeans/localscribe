@@ -22,11 +22,16 @@ public sealed class Provisioner
 
     private readonly WhisperModelInstaller _models;
     private readonly FoundryLocalManager _foundry;
+    private readonly DiarizationModelInstaller _diarizationModels;
 
-    public Provisioner(WhisperModelInstaller? models = null, FoundryLocalManager? foundry = null)
+    public Provisioner(
+        WhisperModelInstaller? models = null,
+        FoundryLocalManager? foundry = null,
+        DiarizationModelInstaller? diarizationModels = null)
     {
         _models = models ?? new WhisperModelInstaller();
         _foundry = foundry ?? new FoundryLocalManager();
+        _diarizationModels = diarizationModels ?? new DiarizationModelInstaller();
     }
 
     /// <summary>
@@ -38,12 +43,17 @@ public sealed class Provisioner
     /// <param name="modelDirectory">Directory for the chipset and size in <paramref name="plan"/>.</param>
     /// <param name="foundryInstalled">Whether the foundry CLI was found.</param>
     /// <param name="processIsArm64">Whether this process is running natively on arm64.</param>
+    /// <param name="diarizationDirectory">
+    /// Where the speaker diarization models live. Pass <c>null</c> to leave diarization out of
+    /// the plan entirely.
+    /// </param>
     public static ProvisioningPlan BuildPlan(
         DeviceCapabilities capabilities,
         ExecutionPlan plan,
         string modelDirectory,
         bool foundryInstalled,
-        bool processIsArm64)
+        bool processIsArm64,
+        string? diarizationDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(capabilities);
         ArgumentNullException.ThrowIfNull(plan);
@@ -124,6 +134,22 @@ public sealed class Provisioner
                 : "Install Foundry Local first.",
             Required: false));
 
+        if (diarizationDirectory is not null)
+        {
+            var installed = DiarizationModelInstaller.IsInstalled(diarizationDirectory);
+
+            components.Add(new ComponentStatus(
+                Id: "diarization-models",
+                Title: "Speaker diarization models (pyannote via sherpa-onnx)",
+                Kind: ComponentKind.ModelAssets,
+                Installed: installed,
+                CanInstallAutomatically: true,
+                Detail: installed
+                    ? $"Found in {diarizationDirectory}. Runs on CPU; the NPU is not involved."
+                    : "Not present, so the transcript will have no speaker labels.",
+                Required: false));
+        }
+
         return new ProvisioningPlan(components);
     }
 
@@ -144,7 +170,8 @@ public sealed class Provisioner
         string whisperModel,
         string chipsetSlug,
         IProgress<InstallProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? diarizationDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(provisioningPlan);
 
@@ -166,6 +193,11 @@ public sealed class Provisioner
 
                     "foundry-model" => await InstallFoundryModelAsync(progress, cancellationToken)
                         .ConfigureAwait(false),
+
+                    "diarization-models" when diarizationDirectory is not null =>
+                        await _diarizationModels
+                            .EnsureInstalledAsync(diarizationDirectory, progress, cancellationToken)
+                            .ConfigureAwait(false),
 
                     _ => new InstallResult(component.Id, false, "No installer is defined for this component."),
                 });

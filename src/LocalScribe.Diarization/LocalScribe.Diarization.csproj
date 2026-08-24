@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Brings the pyannote segmentation and speaker embedding models in as ONNX, with a
+         win-arm64 native runtime. Note that this package carries its OWN ONNX Runtime build,
+         separate from the QNN one used for Whisper; see docs/diarization.md. -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.5" />
+    <!-- .NET reads tar natively but has no bzip2 decoder, and the models ship as .tar.bz2. -->
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LocalScribe.Core\LocalScribe.Core.csproj" />
+  </ItemGroup>
+
+</Project>
