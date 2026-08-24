@@ -139,6 +139,7 @@ public static class WordLevelAttribution
         }
 
         Steady(labels);
+        KeepTails(labels, words);
 
         return labels;
     }
@@ -159,7 +160,91 @@ public static class WordLevelAttribution
                 labels[i] = labels[i - 1];
             }
         }
+
+        // The ends have only one neighbour to be wrong against, so the rule above cannot see
+        // them. A segment opening with one word in another voice is the same fault: "All" went
+        // to one speaker and "right, so that is interesting…" to the other.
+        if (labels.Length > 1 && labels[0] != labels[1])
+        {
+            labels[0] = labels[1];
+        }
+
     }
+
+    /// <summary>
+    /// Hands back the end of a sentence to whoever began it.
+    /// <para>
+    /// A new speaker does not finish the last speaker's sentence for them. It happens — people
+    /// complete each other's thoughts — but far less often than a turn boundary lands a word or
+    /// two early, and the cost of the two mistakes is not equal: a sentence split across two
+    /// names reads as a transcription error, while a missed interjection reads as nothing at all.
+    /// </para>
+    /// <para>
+    /// Only a short tail that finishes the sentence it is the end of. A long stretch beginning
+    /// mid-clause is much more likely to be a real turn; so is a short one that does not close
+    /// the sentence, since a sentence still running afterwards was never being finished.
+    /// </para>
+    /// </summary>
+    private static void KeepTails(string?[] labels, IReadOnlyList<WordTimings.Word> words)
+    {
+        var start = LastRun(labels);
+
+        if (start <= 0 || labels.Length - start > TailWords)
+        {
+            return;
+        }
+
+        // Two conditions, and both matter. The sentence has to have still been running when the
+        // speaker supposedly changed, and this has to be the end of it rather than merely a
+        // short unpunctuated run — otherwise every segment whose speaker changes near the end
+        // with no full stop nearby gets merged, which is most of them.
+        if (!Unfinished(words[start - 1].Text) || Unfinished(words[^1].Text))
+        {
+            return;
+        }
+
+        for (var i = start; i < labels.Length; i++)
+        {
+            labels[i] = labels[start - 1];
+        }
+    }
+
+    /// <summary>Where the final run of one speaker begins.</summary>
+    private static int LastRun(string?[] labels)
+    {
+        var start = labels.Length - 1;
+
+        while (start > 0 && labels[start - 1] == labels[start])
+        {
+            start--;
+        }
+
+        return start;
+    }
+
+    /// <summary>True when this word leaves its sentence open.</summary>
+    private static bool Unfinished(string word)
+    {
+        for (var i = word.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetterOrDigit(word[i]))
+            {
+                return true;
+            }
+
+            if (word[i] is '.' or '!' or '?' or '…' or ':' or ';')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// How many words a sentence's tail may be before it stops looking like a tail.
+    /// </summary>
+    private const int TailWords = 4;
 
     /// <summary>Cuts the segment where the label changes, keeping the original text exactly.</summary>
     private static List<TimedSegment> Pieces(TimedSegment item, string?[] labels)

@@ -191,4 +191,60 @@ public class WordLevelAttributionTests
             pieces.Select(p => p.Segment.StartSeconds).OrderBy(x => x),
             pieces.Select(p => p.Segment.StartSeconds));
     }
+
+    /// <summary>
+    /// From the debate recording, and the reason this rule exists: the sentence "…the context
+    /// with which I am using the term God." was cut before its last word, and "God." went to the
+    /// other speaker. A new speaker does not finish the last one's sentence for them.
+    /// </summary>
+    [Fact]
+    public void TheEndOfASentenceGoesBackToWhoeverBeganIt()
+    {
+        var timed = Spoken("using the term God.", from: 0);
+
+        var pieces = WordLevelAttribution.Apply([timed], [Turn(1, 0, 3), Turn(0, 3, 5)]);
+
+        Assert.Single(pieces);
+        Assert.Equal("Speaker 2", pieces[0].Segment.Speaker);
+    }
+
+    /// <summary>A whole sentence after a finished one is a real turn, not a tail.</summary>
+    [Fact]
+    public void AnAnswerAfterAFinishedSentenceIsLeftAlone()
+    {
+        var timed = Spoken("That is absurd. In what way?", from: 0);
+
+        var pieces = WordLevelAttribution.Apply([timed], [Turn(0, 0, 3), Turn(1, 3, 8)]);
+
+        Assert.Equal(2, pieces.Count);
+        Assert.Equal("That is absurd.", pieces[0].Segment.Text);
+        Assert.Equal("Speaker 2", pieces[1].Segment.Speaker);
+    }
+
+    /// <summary>A long stretch beginning mid-clause is more likely a real turn than a tail.</summary>
+    [Fact]
+    public void ALongContinuationIsNotTreatedAsATail()
+    {
+        var timed = Spoken("I was saying that and then you interrupted me completely", from: 0);
+
+        var pieces = WordLevelAttribution.Apply([timed], [Turn(0, 0, 4), Turn(1, 4, 12)]);
+
+        Assert.Equal(2, pieces.Count);
+        Assert.Equal("Speaker 2", pieces[1].Segment.Speaker);
+    }
+
+    /// <summary>
+    /// A segment opening with one word in another voice is the same fault at the other end, and
+    /// the lone-word rule cannot see it: the first word has only one neighbour.
+    /// </summary>
+    [Fact]
+    public void ALoneFirstWordJoinsWhatFollowsIt()
+    {
+        var timed = Spoken("All right, so that is interesting, but it goes on", from: 0);
+
+        var pieces = WordLevelAttribution.Apply([timed], [Turn(0, 0, 1), Turn(1, 1, 12)]);
+
+        Assert.Single(pieces);
+        Assert.Equal("Speaker 2", pieces[0].Segment.Speaker);
+    }
 }
