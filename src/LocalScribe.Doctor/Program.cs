@@ -170,6 +170,14 @@ internal static class Program
                 .ConfigureAwait(false);
         }
 
+        var compare = ArgumentValue(args, "--speaker-models");
+        if (compare is not null)
+        {
+            return SpeakerModelsCommand.Run(
+                compare,
+                ArgumentValue(args, "--candidates") ?? Path.Combine(modelDirectory, "candidates"));
+        }
+
         var archive = ArgumentValue(args, "--check-words");
         if (archive is not null)
         {
@@ -252,6 +260,8 @@ internal static class Program
         Console.WriteLine("  --align <f>      Scan a WAV with the alignment model and read the grid back.");
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
+        Console.WriteLine("  --speaker-models <f>  Compare embedding models on a saved .scrb transcript.");
+        Console.WriteLine("  --candidates <d>   With --speaker-models: directory of model folders to try.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
