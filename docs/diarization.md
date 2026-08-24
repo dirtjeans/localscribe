@@ -69,6 +69,37 @@ Two things would fix this properly, in increasing order of effort:
 2. **A jointly trained model** that does transcription and diarization at once, which never has
    the seam in the first place. See the VibeVoice note in `docs/handoff.md`.
 
+## Where the accuracy actually goes
+
+If speaker labelling looks wrong, the models are the last place to look, not the first.
+
+Measured on the debate recording: of 31 speaker changes the diarizer found, **5 landed on a
+transcript segment edge and 26 landed inside one**. A nine-second segment held two changes; an
+eleven-second one held three. The turns were right. Attribution was throwing them away, because
+it could only cut a segment where a sentence ended.
+
+Two model swaps were tried first and neither changed anything measurable:
+
+| swapped | for | result |
+|---|---|---|
+| WeSpeaker ResNet34-LM | ResNet221, ResNet293, CAM++ | no difference |
+| pyannote segmentation-3.0 | Reverb v1 | no difference |
+
+That is what a downstream bottleneck looks like. Four embedding models spanning a 38% range of
+published error rate all landed in the same place, and two segmentation models produced turn
+boundaries within a fraction of a second of each other. Nothing upstream mattered because the
+information was being discarded after it arrived.
+
+Word-level attribution fixed it. The check, if this is ever in doubt again, is to compare turn
+boundaries against transcript segment boundaries and count how many changes fall inside a
+segment rather than at its edge — a saved `.scrb` archive carries both.
+
+Beware of measuring one embedding model against another using a transcript this app produced:
+those labels came from a model, so the incumbent wins by construction. `--speaker-models` says
+so every time it runs. A reversed gap is still meaningful — a model whose same-voice distances
+exceed its different-voice distances is separating nothing — but a few points between close
+rivals means nothing at all.
+
 ## Known risks
 
 - **Two ONNX Runtimes in one process.** sherpa-onnx bundles its own native ONNX Runtime, while
