@@ -39,7 +39,7 @@ internal sealed class TemporaryDirectory : IDisposable
     }
 }
 
-public sealed class ProvisioningModelLayoutTests
+public sealed class ModelManifestTests
 {
     [Fact]
     public void ConventionalNamesWorkWithoutAManifest()
@@ -50,10 +50,42 @@ public sealed class ProvisioningModelLayoutTests
         directory.Touch("decoder.onnx");
         directory.Touch("vocab.json");
 
-        var layout = ModelLayout.Discover(directory.Path);
+        var layout = ModelManifest.Discover(directory.Path);
 
         Assert.NotNull(layout);
         Assert.Equal("encoder.onnx", layout.Encoder);
+    }
+
+    /// <summary>
+    /// AI Hub ships the graph as <c>encoder/model.onnx</c> beside the context binary rather than
+    /// as a flat <c>encoder.onnx</c>. This once said such a directory held no model while the app
+    /// was loading models out of it perfectly well — two opinions about the same convention, one
+    /// of them knowing less than the other.
+    /// </summary>
+    [Fact]
+    public void TheNestedAiHubLayoutIsAModelToo()
+    {
+        using var directory = new TemporaryDirectory();
+        directory.Touch("encoder/model.onnx");
+        directory.Touch("decoder/model.onnx");
+        directory.Touch("vocab.json");
+
+        var manifest = ModelManifest.Discover(directory.Path);
+
+        Assert.NotNull(manifest);
+        Assert.True(File.Exists(manifest.EncoderPath(directory.Path)));
+        Assert.True(File.Exists(manifest.DecoderPath(directory.Path)));
+    }
+
+    /// <summary>Half of one layout and half of the other is still not a model.</summary>
+    [Fact]
+    public void AMissingHalfIsNotMadeUpForByTheOtherLayout()
+    {
+        using var directory = new TemporaryDirectory();
+        directory.Touch("encoder/model.onnx");
+        directory.Touch("vocab.json");
+
+        Assert.Null(ModelManifest.Discover(directory.Path));
     }
 
     [Fact]
@@ -62,13 +94,13 @@ public sealed class ProvisioningModelLayoutTests
         using var directory = new TemporaryDirectory();
         directory.Touch("encoder.onnx");
 
-        Assert.Null(ModelLayout.Discover(directory.Path));
+        Assert.Null(ModelManifest.Discover(directory.Path));
     }
 
     [Fact]
     public void AMissingDirectoryIsNotAModel()
     {
-        Assert.Null(ModelLayout.Discover(Path.Combine(Path.GetTempPath(), "definitely-not-here-" + Guid.NewGuid())));
+        Assert.Null(ModelManifest.Discover(Path.Combine(Path.GetTempPath(), "definitely-not-here-" + Guid.NewGuid())));
     }
 
     [Fact]
@@ -79,14 +111,14 @@ public sealed class ProvisioningModelLayoutTests
         directory.Touch("HfWhisperDecoder.onnx");
         directory.Touch("vocab.json");
 
-        new ModelLayout
+        new ModelManifest
         {
             Encoder = "HfWhisperEncoder.onnx",
             Decoder = "HfWhisperDecoder.onnx",
             Vocab = "vocab.json",
         }.Save(directory.Path);
 
-        var layout = ModelLayout.Discover(directory.Path);
+        var layout = ModelManifest.Discover(directory.Path);
 
         Assert.NotNull(layout);
         Assert.Equal("HfWhisperEncoder.onnx", layout.Encoder);
@@ -99,9 +131,9 @@ public sealed class ProvisioningModelLayoutTests
         directory.Touch("encoder.onnx");
         directory.Touch("decoder.onnx");
         directory.Touch("vocab.json");
-        directory.Touch(ModelLayout.FileName, "{ not json");
+        directory.Touch(ModelManifest.FileName, "{ not json");
 
-        Assert.NotNull(ModelLayout.Discover(directory.Path));
+        Assert.NotNull(ModelManifest.Discover(directory.Path));
     }
 
     [Fact]
@@ -109,10 +141,10 @@ public sealed class ProvisioningModelLayoutTests
     {
         // A manifest left behind by a failed download must not make the directory look usable.
         using var directory = new TemporaryDirectory();
-        new ModelLayout { Encoder = "gone.onnx", Decoder = "gone2.onnx", Vocab = "vocab.json" }
+        new ModelManifest { Encoder = "gone.onnx", Decoder = "gone2.onnx", Vocab = "vocab.json" }
             .Save(directory.Path);
 
-        Assert.Null(ModelLayout.Discover(directory.Path));
+        Assert.Null(ModelManifest.Discover(directory.Path));
     }
 
     [Theory]
@@ -122,7 +154,7 @@ public sealed class ProvisioningModelLayoutTests
     [InlineData("whisper_base_en-whisperencoderinf.onnx", "whisper_base_en-whisperdecoderinf.onnx")]
     public void RolesAreInferredAcrossTheNamingConventionsPublishersUse(string encoder, string decoder)
     {
-        var layout = ModelLayout.Infer([encoder, decoder, "vocab.json"]);
+        var layout = ModelManifest.Infer([encoder, decoder, "vocab.json"]);
 
         Assert.NotNull(layout);
         Assert.Equal(encoder, layout.Encoder);
@@ -133,7 +165,7 @@ public sealed class ProvisioningModelLayoutTests
     public void ThePlainDecoderIsPreferredOverTheWithPastVariant()
     {
         // Optimum exports ship both. Our decode loop is written against the plain one.
-        var layout = ModelLayout.Infer(["encoder.onnx", "decoder.onnx", "decoder_with_past.onnx", "vocab.json"]);
+        var layout = ModelManifest.Infer(["encoder.onnx", "decoder.onnx", "decoder_with_past.onnx", "vocab.json"]);
 
         Assert.NotNull(layout);
         Assert.Equal("decoder.onnx", layout.Decoder);
@@ -142,8 +174,8 @@ public sealed class ProvisioningModelLayoutTests
     [Fact]
     public void InferenceFailsRatherThanGuessingWhenARoleIsAbsent()
     {
-        Assert.Null(ModelLayout.Infer(["encoder.onnx", "vocab.json"]));
-        Assert.Null(ModelLayout.Infer(["encoder.onnx", "decoder.onnx"]));
+        Assert.Null(ModelManifest.Infer(["encoder.onnx", "vocab.json"]));
+        Assert.Null(ModelManifest.Infer(["encoder.onnx", "decoder.onnx"]));
     }
 
     [Fact]
@@ -154,7 +186,7 @@ public sealed class ProvisioningModelLayoutTests
         directory.Touch("b.onnx");
         directory.Touch("vocab.json");
 
-        var original = new ModelLayout
+        var original = new ModelManifest
         {
             Encoder = "a.onnx",
             Decoder = "b.onnx",
@@ -163,7 +195,7 @@ public sealed class ProvisioningModelLayoutTests
         };
         original.Save(directory.Path);
 
-        var loaded = ModelLayout.Discover(directory.Path);
+        var loaded = ModelManifest.Discover(directory.Path);
 
         Assert.NotNull(loaded);
         Assert.Equal("qualcomm/Whisper-Base-En", loaded.Source);
@@ -206,7 +238,7 @@ public sealed class HuggingFaceCatalogTests
     {
         var selected = HuggingFaceCatalog.SelectAssets(MultiChipsetRepository, "snapdragon-x-elite");
 
-        Assert.NotNull(ModelLayout.Infer(selected));
+        Assert.NotNull(ModelManifest.Infer(selected));
     }
 
     [Theory]

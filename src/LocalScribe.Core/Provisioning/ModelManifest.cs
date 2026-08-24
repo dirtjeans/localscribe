@@ -13,7 +13,7 @@ namespace LocalScribe.Core.Provisioning;
 /// manifest records what each one is.
 /// </para>
 /// </summary>
-public sealed record ModelLayout
+public sealed record ModelManifest
 {
     /// <summary>The name this manifest is stored under inside a model directory.</summary>
     public const string FileName = "localscribe-model.json";
@@ -40,10 +40,10 @@ public sealed record ModelLayout
     };
 
     /// <summary>
-    /// The layout assumed when a directory has no manifest. Lets a hand-assembled directory work
+    /// The names assumed when a directory has no manifest. Lets a hand-assembled directory work
     /// without ceremony, which is what most people will try first.
     /// </summary>
-    public static ModelLayout Conventional { get; } = new()
+    public static ModelManifest Conventional { get; } = new()
     {
         Encoder = "encoder.onnx",
         Decoder = "decoder.onnx",
@@ -51,10 +51,38 @@ public sealed record ModelLayout
     };
 
     /// <summary>
+    /// What a directory holds when it carries no manifest, or null when it holds no model.
+    /// <para>
+    /// Asks <see cref="Core.Models.ModelLayout"/> rather than testing for
+    /// <c>encoder.onnx</c> here, because that is where the convention is defined and it knows
+    /// about more than one. AI Hub ships <c>encoder/model.onnx</c> beside the context binary; a
+    /// second opinion that only recognised the flat names called such a directory empty while
+    /// the app was loading models out of it perfectly well.
+    /// </para>
+    /// </summary>
+    private static ModelManifest? Assumed(string directory)
+    {
+        var encoder = Models.ModelLayout.GraphPath(directory, "encoder");
+        var decoder = Models.ModelLayout.GraphPath(directory, "decoder");
+
+        if (encoder is null || decoder is null)
+        {
+            return null;
+        }
+
+        return new ModelManifest
+        {
+            Encoder = Path.GetRelativePath(directory, encoder),
+            Decoder = Path.GetRelativePath(directory, decoder),
+            Vocab = Conventional.Vocab,
+        };
+    }
+
+    /// <summary>
     /// Reads the manifest from a model directory, falling back to conventional names.
     /// Returns <c>null</c> when the directory does not hold a usable model either way.
     /// </summary>
-    public static ModelLayout? Discover(string directory)
+    public static ModelManifest? Discover(string directory)
     {
         if (!Directory.Exists(directory))
         {
@@ -66,7 +94,7 @@ public sealed record ModelLayout
         {
             try
             {
-                var layout = JsonSerializer.Deserialize<ModelLayout>(
+                var layout = JsonSerializer.Deserialize<ModelManifest>(
                     File.ReadAllText(manifestPath),
                     JsonOptions);
 
@@ -81,7 +109,7 @@ public sealed record ModelLayout
             }
         }
 
-        return Conventional.IsComplete(directory) ? Conventional : null;
+        return Assumed(directory) is { } assumed && assumed.IsComplete(directory) ? assumed : null;
     }
 
     /// <summary>True when every file this layout names is present in the directory.</summary>
@@ -114,7 +142,7 @@ public sealed record ModelLayout
     /// </para>
     /// </summary>
     /// <returns>The inferred layout, or <c>null</c> when a required role could not be filled.</returns>
-    public static ModelLayout? Infer(IEnumerable<string> fileNames, string? source = null)
+    public static ModelManifest? Infer(IEnumerable<string> fileNames, string? source = null)
     {
         ArgumentNullException.ThrowIfNull(fileNames);
 
@@ -126,7 +154,7 @@ public sealed record ModelLayout
 
         return encoder is null || decoder is null || vocab is null
             ? null
-            : new ModelLayout { Encoder = encoder, Decoder = decoder, Vocab = vocab, Source = source };
+            : new ModelManifest { Encoder = encoder, Decoder = decoder, Vocab = vocab, Source = source };
     }
 
     /// <summary>

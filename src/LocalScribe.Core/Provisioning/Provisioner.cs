@@ -85,9 +85,9 @@ public sealed class Provisioner
                 Id: "whisper-model",
                 Title: $"Whisper {plan.WhisperModel} weights",
                 Kind: ComponentKind.ModelAssets,
-                Installed: ModelLayout.Discover(modelDirectory) is not null,
+                Installed: ModelManifest.Discover(modelDirectory) is not null,
                 CanInstallAutomatically: true,
-                Detail: ModelLayout.Discover(modelDirectory) is not null
+                Detail: ModelManifest.Discover(modelDirectory) is not null
                     ? $"Found in {modelDirectory}."
                     : $"Not present in {modelDirectory}.",
                 Required: true),

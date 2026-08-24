@@ -2,10 +2,6 @@ using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
 using LocalScribe.Core.Provisioning;
 
-// Two namespaces define a ModelLayout: this project's, which finds weights by convention, and the
-// merged provisioning one, which records them in a manifest. Only the first is used here. The
-// duplicate name is left over from two branches solving the same problem and is worth collapsing.
-using ModelLayout = LocalScribe.Core.Models.ModelLayout;
 
 namespace LocalScribe.Doctor;
 

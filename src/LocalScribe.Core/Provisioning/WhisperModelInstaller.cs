@@ -32,7 +32,7 @@ public sealed class WhisperModelInstaller
         IProgress<InstallProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        if (ModelLayout.Discover(modelDirectory) is not null)
+        if (ModelManifest.Discover(modelDirectory) is not null)
         {
             return new InstallResult("whisper-model", true, $"{whisperModel} is already installed.");
         }
@@ -54,7 +54,7 @@ public sealed class WhisperModelInstaller
             }
 
             var selected = HuggingFaceCatalog.SelectAssets(files, chipsetSlug);
-            var layout = ModelLayout.Infer(selected, repository);
+            var layout = ModelManifest.Infer(selected, repository);
 
             if (layout is null)
             {
