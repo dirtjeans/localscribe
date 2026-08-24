@@ -177,6 +177,16 @@ public sealed class WhisperOnnxTranscriber : ITranscriber
             Path.Combine(modelDirectory, $"{half}.onnx"));
 
     /// <summary>The language the model reported, once it has heard any speech.</summary>
+    /// <summary>
+    /// Forgets the language, so the next recording is listened to rather than assumed.
+    /// <para>
+    /// The transcriber is loaded once and reused for every recording — loading it is expensive
+    /// and the weights do not change — which is why this is needed at all: what the session
+    /// remembers outlives what it was true of.
+    /// </para>
+    /// </summary>
+    public void BeginRecording() => _session.Language = null;
+
     public string? DetectedLanguage =>
         _session.Language is { } id ? _tokenizer.LanguageCode(id) : null;
 

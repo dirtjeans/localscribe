@@ -82,6 +82,9 @@ public sealed class TranscriptionPipeline
         IProgress<TranscriptionProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        // A different recording, so anything carried over from the last one is wrong now.
+        _transcriber.BeginRecording();
+
         var transcript = await TranscribeAsync(audio, progress, cancellationToken)
             .ConfigureAwait(false);
 

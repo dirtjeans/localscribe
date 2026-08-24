@@ -83,6 +83,9 @@ public sealed class LiveTranscriptionSession : IAsyncDisposable
     {
         _transcriber = transcriber ?? throw new ArgumentNullException(nameof(transcriber));
         _sampleRate = sampleRate;
+
+        // One session is one recording, so this is where the last one is forgotten.
+        _transcriber.BeginRecording();
     }
 
     /// <summary>Everything committed so far, in order.</summary>
