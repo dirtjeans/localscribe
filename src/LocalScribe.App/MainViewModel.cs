@@ -161,6 +161,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Opens a saved transcript, audio and all.</summary>
     public void OpenArchive(string path)
     {
+        // Whatever was waiting for the model is not wanted now. A saved transcript needs no model
+        // at all, so it opens straight away — and having it replaced moments later by a file the
+        // reader had given up on would be its own kind of wrong.
+        _waitingFor = null;
+
         var contents = TranscriptArchive.Load(path);
 
         Discard();
@@ -1407,7 +1412,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Status = _plan.Warnings.Count == 0
             ? "Ready."
             : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
+
+        if (_waitingFor is { Length: > 0 } held)
+        {
+            _waitingFor = null;
+            await TranscribeFileAsync(held).ConfigureAwait(true);
+        }
     }
+
+    /// <summary>
+    /// A file opened before there was anything to transcribe it with, kept until there is.
+    /// <para>
+    /// One, not a queue: opening a second file before the first has started means the second is
+    /// the one wanted.
+    /// </para>
+    /// </summary>
+    private string? _waitingFor;
 
     /// <summary>
     /// Transcribes the open recording again, in English this time, or back as spoken.
@@ -1437,7 +1457,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         if (_plan is null)
         {
-            Status = "Still checking hardware.";
+            // Held rather than refused. A file is still there in a few seconds' time, and the
+            // alternative is telling somebody who has just opened one to open it again — which
+            // reads as the app having ignored them, because from where they sit it did.
+            //
+            // The microphone is the opposite case and stays refused: audio arriving before there
+            // is anything to transcribe it with is audio lost, and a recording that silently
+            // began late would be worse than one that plainly did not start.
+            _waitingFor = path;
+            Status = $"{Path.GetFileNameWithoutExtension(path)} is queued — still checking hardware.";
             return;
         }
 
@@ -1525,6 +1553,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public async Task StartRecordingAsync()
     {
+        // Recording is a decision made now, so it displaces a file that was only ever waiting.
+        _waitingFor = null;
+
         if (_plan is null || IsRecording || IsPreparing)
         {
             return;
