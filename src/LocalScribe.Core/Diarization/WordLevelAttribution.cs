@@ -70,7 +70,10 @@ public static class WordLevelAttribution
         // backwards reads as though lines have gone missing, because the eye stops following it.
         result.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
 
-        return result;
+        // Last, and across segments rather than inside one. Where a sentence was left open, the
+        // words that finish it belong to whoever opened it — and the split is usually at a
+        // segment boundary, which is exactly where the rule inside a segment cannot see.
+        return UnfinishedSentences.Apply(result);
     }
 
     private static IEnumerable<TimedSegment> Divide(TimedSegment item, List<SpeakerTurn> turns)
