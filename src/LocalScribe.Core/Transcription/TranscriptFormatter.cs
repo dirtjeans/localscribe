@@ -104,7 +104,15 @@ public static class TranscriptFormatter
             return true;
         }
 
-        if (next.StartSeconds - previous.EndSeconds >= pauseSeconds)
+        // A pause, but only between sentences. Breaking mid-sentence puts one sentence under two
+        // headings and reads as the transcript having lost something — which is how it was
+        // reported: "Because Metabase plugs into every" ended one paragraph and "database a
+        // company connects to it" began the next, both the same speaker.
+        //
+        // The gap itself is often not real. Segments are placed by measuring where their words
+        // are, so two that run straight on can still end up a second apart on the clock, and a
+        // rule that trusts the clock over the grammar will split them.
+        if (next.StartSeconds - previous.EndSeconds >= pauseSeconds && EndsSentence(previous.Text))
         {
             return true;
         }
