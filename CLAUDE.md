@@ -23,6 +23,9 @@ dotnet run --project src/LocalScribe.Doctor -c Release -r win-arm64
 `LocalScribe.App` is not in `LocalScribe.sln`, because WinUI cannot restore on Linux and its
 presence would break `dotnet build` for non-Windows contributors. Build it by path.
 
+Everything else is in the solution, including `LocalScribe.Diarization` — sherpa-onnx restores
+and compiles on any platform; only running it needs the native library.
+
 ## Invariants
 
 Do not change these without reading the reasoning in `docs/handoff.md`:
@@ -37,6 +40,9 @@ Do not change these without reading the reasoning in `docs/handoff.md`:
 - **Never rename downloaded model files.** Large ONNX graphs reference their weight sidecars by
   name. `localscribe-model.json` records the roles instead.
 - **Never auto-install the Hexagon driver.** Signed kernel driver, account wall. Report it.
+- **Diarization runs on the CPU, not the NPU.** The weights are pyannote's; the runtime is
+  sherpa-onnx's own ONNX Runtime, which has no QNN provider. There is no "pyannote-NPU". See
+  `docs/diarization.md`.
 - **CPU threads are capped on purpose**, so the rest of Windows stays responsive. That is the
   product requirement, not a limitation to optimise away.
 
