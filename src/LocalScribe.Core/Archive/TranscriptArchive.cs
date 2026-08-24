@@ -26,7 +26,30 @@ namespace LocalScribe.Core.Archive;
 public static class TranscriptArchive
 {
     /// <summary>The extension these are saved with.</summary>
-    public const string Extension = ".lscribe";
+    public const string Extension = ".scrb";
+
+    /// <summary>
+    /// Extensions earlier versions saved with, still opened.
+    /// <para>
+    /// A file already on disk does not stop being readable because the name got shorter. Writing
+    /// only the current one and reading all of them is the whole of the compatibility story here:
+    /// the container has not changed, only what it is called.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<string> AlsoOpens { get; } = [".lscribe"];
+
+    /// <summary>Every extension that can be opened, current first.</summary>
+    public static IReadOnlyList<string> Extensions { get; } = [Extension, .. AlsoOpens];
+
+    /// <summary>True when this path names an archive, whatever era it was saved in.</summary>
+    public static bool IsArchive(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+
+        var extension = Path.GetExtension(path);
+
+        return Extensions.Any(known => extension.Equals(known, StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>
     /// Bumped when a reader would need to know the difference. Written into every archive so an

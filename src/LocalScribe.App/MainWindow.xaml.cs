@@ -133,7 +133,7 @@ public sealed partial class MainWindow : Window
     public void OpenWhenReady(string path)
     {
         // Saved transcripts need no model, so they never wait for one.
-        if (Path.GetExtension(path).Equals(TranscriptArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        if (TranscriptArchive.IsArchive(path))
         {
             OpenArchive(path);
             return;
@@ -174,7 +174,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (Path.GetExtension(file.Name).Equals(TranscriptArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        if (TranscriptArchive.IsArchive(file.Name))
         {
             OpenArchive(file.Path);
             return;
@@ -1401,7 +1401,7 @@ public sealed partial class MainWindow : Window
 
         var extension = Path.GetExtension(file.Name).ToLowerInvariant();
 
-        if (extension == TranscriptArchive.Extension)
+        if (TranscriptArchive.IsArchive(file.Name))
         {
             try
             {
@@ -1457,7 +1457,11 @@ public sealed partial class MainWindow : Window
         // window owns it, or the call fails at runtime rather than at compile time.
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
 
-        picker.FileTypeFilter.Add(TranscriptArchive.Extension);
+        foreach (var known in TranscriptArchive.Extensions)
+        {
+            picker.FileTypeFilter.Add(known);
+        }
+
 
         foreach (var extension in AudioFileLoader.SupportedExtensions)
         {
@@ -1473,7 +1477,7 @@ public sealed partial class MainWindow : Window
         // A saved transcript is opened, not transcribed again: it already has its words, its
         // timings and its speakers, and running the model over it would only spend minutes
         // arriving somewhere worse.
-        if (Path.GetExtension(file.Name).Equals(TranscriptArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        if (TranscriptArchive.IsArchive(file.Name))
         {
             OpenArchive(file.Path);
             return;
