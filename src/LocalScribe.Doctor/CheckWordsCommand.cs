@@ -73,14 +73,29 @@ public static class CheckWordsCommand
 
         var began = 0.0;
         var placed = new List<(double From, double To, string Text)>();
+        var limit = scores.SecondsAt(scores.Frames);
 
-        foreach (var segment in contents.Segments)
+        foreach (var raw in contents.Segments)
         {
+            // The same allowance the app makes: a segment stamped past the end of the recording
+            // is looked for in whatever is left of it, because that is where its words are.
+            var segment = raw.StartSeconds < limit
+                ? raw
+                : raw with { StartSeconds = began, EndSeconds = limit };
+
             var words = aligner.Align(scores, segment, began, CancellationToken.None);
 
             if (words is null)
             {
+                // Named, not just counted. A segment the aligner could not place keeps times
+                // estimated from loudness, which are good to about half a second — so the marker
+                // wanders inside it while every measured segment around it is exact. Knowing
+                // which stretch that is separates "the times are drifting" from "these few
+                // seconds were never measured".
                 estimated++;
+                Console.WriteLine(
+                    $"  Estimated    {segment.StartSeconds,7:F2}-{segment.EndSeconds,-7:F2} "
+                    + $"\"{(segment.Text.Length <= 44 ? segment.Text : segment.Text[..41] + "…")}\"");
                 continue;
             }
 

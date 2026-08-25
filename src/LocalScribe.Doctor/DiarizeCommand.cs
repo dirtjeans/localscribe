@@ -170,6 +170,11 @@ internal static class DiarizeCommand
         IReadOnlyList<SpeakerTurn> turns;
         var watch = Stopwatch.StartNew();
 
+        // Read off the diarizer before it goes out of scope, since the counts live on it.
+        var found = 0;
+        var kept = 0;
+        var nested = 0;
+
         try
         {
             using var diarizer = SpeakerDiarizer.Load(modelDirectory);
@@ -180,6 +185,10 @@ internal static class DiarizeCommand
             turns = tracking
                 ? diarizer.DiarizeByTracking(audio, maxSpeakers, maxSpeakers, distance)
                 : diarizer.Diarize(audio, distance, maxSpeakers);
+
+            found = diarizer.LastSpansFound;
+            kept = diarizer.LastSpansKept;
+            nested = diarizer.LastNestedDropped;
         }
         catch (FileNotFoundException exception)
         {
@@ -210,6 +219,11 @@ internal static class DiarizeCommand
 
         var distinct = turns.Select(t => t.Speaker).Distinct().Count();
         var speech = turns.Sum(t => t.DurationSeconds);
+
+        Heading("Speech spans");
+        Console.WriteLine($"  Found        {found} across the overlapping windows");
+        Console.WriteLine($"  Kept         {kept} after near-duplicates were dropped");
+        Console.WriteLine($"  Nested       {nested} dropped though far shorter than what covered them");
 
         Heading("Summary");
         Console.WriteLine($"  Speakers   {distinct}");

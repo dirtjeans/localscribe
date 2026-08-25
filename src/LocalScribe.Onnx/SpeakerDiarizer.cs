@@ -931,32 +931,79 @@ public sealed class SpeakerDiarizer : IDisposable
     /// same seconds come from adjacent windows seeing the same voice; the longer is the better
     /// look at it.
     /// </summary>
-    private static List<(double Start, double End)> Deduplicate(List<(double Start, double End)> spans)
+    private List<(double Start, double End)> Deduplicate(List<(double Start, double End)> spans)
     {
         var ordered = spans
             .OrderByDescending(s => s.End - s.Start)
             .ToList();
 
         var kept = new List<(double Start, double End)>();
+        var nested = 0;
 
         foreach (var span in ordered)
         {
             var duration = span.End - span.Start;
+            var swallowedBy = 0.0;
 
             var covered = kept.Any(k =>
             {
                 var overlap = Math.Min(k.End, span.End) - Math.Max(k.Start, span.Start);
-                return overlap > 0 && overlap >= duration * 0.75;
+
+                if (overlap <= 0 || overlap < duration * 0.75)
+                {
+                    return false;
+                }
+
+                swallowedBy = Math.Max(swallowedBy, k.End - k.Start);
+                return true;
             });
 
             if (!covered)
             {
                 kept.Add(span);
+                continue;
+            }
+
+            if (swallowedBy > duration * NestedRatio)
+            {
+                nested++;
             }
         }
 
+        LastSpansFound = spans.Count;
+        LastSpansKept = kept.Count;
+        LastNestedDropped = nested;
+
         return kept.OrderBy(s => s.Start).ToList();
     }
+
+    /// <summary>
+    /// How much longer a covering span must be before the two are counted as different speech.
+    /// <para>
+    /// Used for reporting only. Keeping the spans this identifies was tried and was worse: it
+    /// took 109 kept spans to 261 and the turns from 22 to 25, while the speaker count went from
+    /// a correct five to seven. Short spans embed badly and cluster into people who are not
+    /// there, and three turns is not worth two invented speakers.
+    /// </para>
+    /// </summary>
+    private const double NestedRatio = 2.0;
+
+    /// <summary>How many speech spans the windows produced, before near-duplicates were dropped.</summary>
+    public int LastSpansFound { get; private set; }
+
+    /// <summary>How many survived.</summary>
+    public int LastSpansKept { get; private set; }
+
+    /// <summary>
+    /// How many were dropped despite being far shorter than what covered them.
+    /// <para>
+    /// Overlapping windows hear the same speech many times, and those copies are the same length,
+    /// so dropping one is right. A short span sitting inside a much longer one is a different
+    /// thing wearing the same shape: two voices at once, one of them briefly. Counted separately
+    /// because the rule cannot currently tell them apart and this is how much that costs.
+    /// </para>
+    /// </summary>
+    public int LastNestedDropped { get; private set; }
 
     /// <summary>Runs of consecutive active frames for one local speaker, as times.</summary>
     private IEnumerable<(double Start, double End)> SpansFor(

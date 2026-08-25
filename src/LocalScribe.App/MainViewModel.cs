@@ -385,12 +385,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // a drift, which is the fault this replaces.
                 var began = 0.0;
 
+                // Where the recording actually stops, which is not always where the transcript
+                // thinks it does.
+                var limit = scores.SecondsAt(scores.Frames);
+
                 for (var i = 0; i < segments.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    var words = aligner.Align(scores, segments[i], began, cancellationToken);
+                    // A segment stamped past the end of the recording has no audio under it at
+                    // all, so it cannot be aligned and falls back to times estimated from a
+                    // stretch that does not exist. The transcriber's last window is padded to a
+                    // full thirty seconds, so its timestamps can run past where the audio stops:
+                    // on a 442-second podcast the outro was stamped 443 to 460 and the marker had
+                    // nothing to follow for the last three lines.
+                    //
+                    // The words are still in the recording — they are in whatever is left of it.
+                    // So the search is given exactly that: from where the last segment ended to
+                    // the end of the audio.
+                    var stated = segments[i].StartSeconds < limit
+                        ? segments[i]
+                        : segments[i] with { StartSeconds = began, EndSeconds = limit };
+
+                    var words = aligner.Align(scores, stated, began, cancellationToken);
 
                     if (words is null)
                     {
