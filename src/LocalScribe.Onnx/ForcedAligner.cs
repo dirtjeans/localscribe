@@ -189,9 +189,14 @@ public sealed class ForcedAligner : IDisposable
     /// bad alignment presented as a measurement is worse than an honest approximation.
     /// </para>
     /// </summary>
+    /// <param name="notBefore">
+    /// The earliest second the search may reach back to. Pass the previous segment's aligned
+    /// start, not its end.
+    /// </param>
     public IReadOnlyList<WordTimings.Word>? Align(
         AlignmentScores scores,
         TranscriptSegment segment,
+        double notBefore = 0,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(scores);
@@ -220,7 +225,17 @@ public sealed class ForcedAligner : IDisposable
         // fix — the words were being placed correctly inside a window that was in the wrong place.
         //
         // The scan knows where the sounds are. Given room to look, the aligner finds them.
-        var first = scores.FrameAt(segment.StartSeconds - SearchBackSeconds);
+        // Bounded by where the previous segment began, which is not the ratchet that clamping to
+        // where it ended was. That version stopped a late segment's successors from ever reaching
+        // back past it, so a drift could be inherited and never corrected. This one only says
+        // that a segment cannot begin before the one before it began — order, not position — and
+        // a segment can still move back across its predecessor's speech to find its words.
+        //
+        // Without any bound, the room gets spent in full on almost every segment: 78 of 99
+        // boundaries overlapped, twelve segments ended up wholly inside their predecessor, and
+        // "Our top story this week…" reached back past the "And I'm Ken Spencer-Brown." that was
+        // said before it.
+        var first = scores.FrameAt(Math.Max(notBefore, segment.StartSeconds - SearchBackSeconds));
         var count = scores.FrameAt(segment.EndSeconds + SearchForwardSeconds) - first;
 
         if (count < ShortestAlignableSeconds / scores.FrameSeconds)

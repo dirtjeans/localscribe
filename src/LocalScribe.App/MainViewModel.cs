@@ -380,12 +380,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await Task.Run(() =>
             {
+                // Where the previous segment turned out to begin, so this one cannot begin
+                // before it. Its start rather than its end: the end would forbid recovering from
+                // a drift, which is the fault this replaces.
+                var began = 0.0;
+
                 for (var i = 0; i < segments.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    var words = aligner.Align(scores, segments[i], cancellationToken);
+                    var words = aligner.Align(scores, segments[i], began, cancellationToken);
 
                     if (words is null)
                     {
@@ -406,6 +411,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                             EndSeconds = Math.Max(sounded[^1].EndSeconds, sounded[0].StartSeconds),
                         }
                         : segments[i];
+
+                    if (sounded.Count > 0)
+                    {
+                        began = sounded[0].StartSeconds;
+                    }
 
                     placed.Add(new TimedSegment(moved, words));
                 }

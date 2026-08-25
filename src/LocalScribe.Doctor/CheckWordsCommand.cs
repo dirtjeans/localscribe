@@ -68,11 +68,14 @@ public static class CheckWordsCommand
         var checkedWords = 0;
         var unheard = 0;
         var shifts = new List<double>();
+        var overTime = new List<(double At, double Shift)>();
         var adrift = new List<(double At, double Shift, string Word, string Heard)>();
+
+        var began = 0.0;
 
         foreach (var segment in contents.Segments)
         {
-            var words = aligner.Align(scores, segment, CancellationToken.None);
+            var words = aligner.Align(scores, segment, began, CancellationToken.None);
 
             if (words is null)
             {
@@ -81,6 +84,11 @@ public static class CheckWordsCommand
             }
 
             measured++;
+
+            if (words.FirstOrDefault(w => w.EndSeconds > w.StartSeconds) is { } opened)
+            {
+                began = opened.StartSeconds;
+            }
 
             foreach (var word in words)
             {
@@ -107,6 +115,7 @@ public static class CheckWordsCommand
                 }
 
                 shifts.Add(shift);
+                overTime.Add((word.StartSeconds, shift));
 
                 if (Math.Abs(shift) >= NoticeableDrift)
                 {
@@ -133,6 +142,8 @@ public static class CheckWordsCommand
             Console.WriteLine($"  Typical    {shifts[shifts.Count / 2]:+0.00;-0.00}s out");
             Console.WriteLine($"  Worst      {shifts[0]:+0.00;-0.00}s to {shifts[^1]:+0.00;-0.00}s");
         }
+
+        Drift(overTime, contents.Audio.DurationSeconds);
 
         Heading("Words that are not where they say they are");
 
@@ -162,6 +173,49 @@ public static class CheckWordsCommand
         Console.WriteLine("  reaches it early. Negative means it was said earlier, so the marker lags.");
 
         return 0;
+    }
+
+    /// <summary>
+    /// Whether the transcript slips further from the audio as it goes.
+    /// <para>
+    /// A single figure for the whole recording hides this completely: drift that grows can
+    /// average to nothing, and a marker that is fine for five minutes and seconds out by the end
+    /// is a different fault from one that is a little out throughout. Reported in fifths, which
+    /// is enough to see a trend without inviting anyone to read noise as one.
+    /// </para>
+    /// </summary>
+    private static void Drift(List<(double At, double Shift)> overTime, double duration)
+    {
+        if (overTime.Count < 10 || duration <= 0)
+        {
+            return;
+        }
+
+        Heading("Drift through the recording");
+
+        const int parts = 5;
+
+        for (var part = 0; part < parts; part++)
+        {
+            var from = duration * part / parts;
+            var to = duration * (part + 1) / parts;
+
+            var here = overTime
+                .Where(w => w.At >= from && w.At < to)
+                .Select(w => w.Shift)
+                .OrderBy(shift => shift)
+                .ToList();
+
+            if (here.Count == 0)
+            {
+                Console.WriteLine($"  {from,6:F0}-{to,-6:F0} nothing measurable");
+                continue;
+            }
+
+            Console.WriteLine(
+                $"  {from,6:F0}-{to,-6:F0} {here[here.Count / 2],7:+0.00;-0.00}s typical, "
+                + $"{here.Count} words");
+        }
     }
 
     /// <summary>

@@ -1123,6 +1123,48 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Which paragraph is being spoken now.
+    /// <para>
+    /// Not simply the first one covering the instant. Segments are placed by measuring where
+    /// their words are, so two can cover the same moment and one can sit wholly inside another —
+    /// on a podcast, twelve did. Taking the first leaves the nested one unable to ever light,
+    /// and lights its neighbour instead.
+    /// </para>
+    /// <para>
+    /// A paragraph with a word actually covering the instant wins, because that is the question
+    /// being asked. Failing that, the last one to have begun: between two that overlap, the one
+    /// that started more recently is the one being spoken.
+    /// </para>
+    /// </summary>
+    private ParagraphView? Playing(double seconds)
+    {
+        ParagraphView? covering = null;
+        ParagraphView? latest = null;
+
+        foreach (var paragraph in _paragraphs)
+        {
+            if (!paragraph.Contains(seconds))
+            {
+                continue;
+            }
+
+            if (latest is null || paragraph.StartSeconds >= latest.StartSeconds)
+            {
+                latest = paragraph;
+            }
+
+            if (covering is null
+                && _spokenWords.TryGetValue(paragraph, out var spans)
+                && spans.Any(w => seconds >= w.From && seconds < w.To))
+            {
+                covering = paragraph;
+            }
+        }
+
+        return covering ?? latest;
+    }
+
+    /// <summary>
     /// Which word of a paragraph is being said, or the last one to have started.
     /// <para>
     /// The same rule <see cref="HighlightMatches(TextBlock, ParagraphView?)"/> paints by, kept
@@ -1159,7 +1201,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void FollowSpokenWord()
     {
-        var paragraph = _paragraphs.FirstOrDefault(p => p.Contains(_position));
+        var paragraph = Playing(_position);
 
         var marked = paragraph is not null && _spokenWords.TryGetValue(paragraph, out var spans)
             ? WordAt(spans, _position)
