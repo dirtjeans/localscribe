@@ -41,6 +41,10 @@ public sealed partial class MainWindow : Window
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
+        // Words are drawn with a colour taken from the theme when the row is built, so a theme
+        // changed afterwards leaves every paragraph in the old ink.
+        TranscriptList.ActualThemeChanged += OnThemeChanged;
+
         _viewModel.Player.PositionChanged += OnPlaybackPosition;
         _viewModel.Player.Stopped += OnPlaybackStopped;
         _viewModel.Player.Failed += OnPlaybackFailed;
@@ -974,7 +978,7 @@ public sealed partial class MainWindow : Window
             var link = new Hyperlink
             {
                 UnderlineStyle = UnderlineStyle.None,
-                Foreground = body.Foreground,
+                Foreground = TextBrush(body),
             };
 
             link.Inlines.Add(new Run { Text = words[i].Text });
@@ -1034,6 +1038,42 @@ public sealed partial class MainWindow : Window
     /// arriving in the middle of it.
     /// </summary>
     private const double RunUpSeconds = 0.12;
+
+    /// <summary>Redraws the paragraphs on screen in the colours of the theme now in force.</summary>
+    private void OnThemeChanged(FrameworkElement sender, object args)
+    {
+        foreach (var paragraph in _realised.ToList())
+        {
+            if (TranscriptList.ContainerFromItem(paragraph) is ContentControl container
+                && container.ContentTemplateRoot is FrameworkElement root
+                && FindBodyText(root) is { } body)
+            {
+                FillWithWords(body, paragraph);
+                HighlightMatches(body, paragraph);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The colour a word should be, asked of the theme rather than copied off the block.
+    /// <para>
+    /// A hyperlink does not inherit the surrounding text colour — left alone it is accent blue —
+    /// so one has to be given. Taking the block's own brush looks like the careful answer and is
+    /// not: it is read while the row is being built, which during a transcription happens over
+    /// and over as segments arrive, and whatever it returns is then frozen onto every word in
+    /// that row. Read at the wrong moment it hands near-black ink to a near-black page, and the
+    /// paragraph simply is not there. The timestamps beside it stay visible because nothing was
+    /// ever copied onto them.
+    /// </para>
+    /// <para>
+    /// Asking the theme for the same resource the block's own style uses gives an answer that is
+    /// right for the theme in force, whenever it is asked.
+    /// </para>
+    /// </summary>
+    private static Brush? TextBrush(TextBlock body) =>
+        Application.Current.Resources.TryGetValue("TextFillColorPrimaryBrush", out var brush)
+            ? brush as Brush
+            : body.Foreground;
 
     /// <summary>The paragraph's own text, found by its tag rather than by position in the tree.</summary>
     private static TextBlock? FindBodyText(DependencyObject element)
