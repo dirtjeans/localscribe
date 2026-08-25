@@ -491,10 +491,14 @@ public sealed class ForcedAligner : IDisposable
     /// <summary>
     /// How far past a segment's stated end the words may run.
     /// <para>
-    /// Small, and not for symmetry's sake. Room to search forward is what lets a segment slide
-    /// onto the next speaker's audio: given four seconds of it, "Atheists reject God, but they
-    /// don't understand what they're rejecting" was matched against a stretch that actually says
-    /// "accept conscience as a guide". Errors here run one way, so the room does too.
+    /// Kept at a second, unlike the backward reach, because cutting it costs something the
+    /// backward one did not: matched words more than doubled their failures, from 42 to 96, while
+    /// drift stayed at zero. The last words of a segment genuinely need room to be found.
+    /// </para>
+    /// <para>
+    /// The overlap it creates is dealt with where it does harm instead. Two segments sharing a
+    /// second of the clock is only a problem for things that walk the transcript in order, so the
+    /// bounds are tidied after the words are placed and the word times themselves are left alone.
     /// </para>
     /// </summary>
     private const double SearchForwardSeconds = 1;

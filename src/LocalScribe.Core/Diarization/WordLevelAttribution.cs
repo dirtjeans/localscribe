@@ -73,7 +73,46 @@ public static class WordLevelAttribution
         // Last, and across segments rather than inside one. Where a sentence was left open, the
         // words that finish it belong to whoever opened it — and the split is usually at a
         // segment boundary, which is exactly where the rule inside a segment cannot see.
-        return UnfinishedSentences.Apply(result);
+        return Untangle(UnfinishedSentences.Apply(result));
+    }
+
+    /// <summary>
+    /// Stops two segments claiming the same moment.
+    /// <para>
+    /// A segment's bounds come from its words, and the words are found by searching a little
+    /// past where the segment was said to end — so a segment routinely ends after the next one
+    /// begins. Every word can still be at the right moment; what breaks is everything that walks
+    /// the transcript in order, which is how a line ends up printed before the line it follows
+    /// and how the marker picks the wrong paragraph to light.
+    /// </para>
+    /// <para>
+    /// Only the bounds are moved. The words keep the times they were measured at, because those
+    /// are what the marker follows and they were not wrong.
+    /// </para>
+    /// </summary>
+    private static List<TimedSegment> Untangle(IReadOnlyList<TimedSegment> ordered)
+    {
+        var result = new List<TimedSegment>(ordered);
+
+        for (var i = 1; i < result.Count; i++)
+        {
+            var previous = result[i - 1].Segment;
+
+            if (previous.EndSeconds <= result[i].Segment.StartSeconds)
+            {
+                continue;
+            }
+
+            result[i - 1] = result[i - 1] with
+            {
+                Segment = previous with
+                {
+                    EndSeconds = Math.Max(previous.StartSeconds, result[i].Segment.StartSeconds),
+                },
+            };
+        }
+
+        return result;
     }
 
     private static IEnumerable<TimedSegment> Divide(TimedSegment item, List<SpeakerTurn> turns)

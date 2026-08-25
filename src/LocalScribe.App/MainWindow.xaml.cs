@@ -1117,6 +1117,7 @@ public sealed partial class MainWindow : Window
             body.TextHighlighters.Add(new TextHighlighter
             {
                 Background = SpokenBackground,
+                Foreground = SpokenForeground,
                 Ranges = { new TextRange { StartIndex = speaking.Offset, Length = speaking.Length } },
             });
         }
@@ -1262,6 +1263,15 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private static readonly SolidColorBrush SpokenBackground =
         new(Windows.UI.Color.FromArgb(255, 0xD6, 0xE4, 0xFF));
+
+    /// <summary>
+    /// And the text on it. A highlighter sets the paper and not the ink, which works while the
+    /// ink is dark: in a dark theme the text is nearly white, and near-white on pale blue is
+    /// unreadable exactly where the reader is being asked to look. Both marks now name both
+    /// colours, so neither depends on what the rest of the window happens to be doing.
+    /// </summary>
+    private static readonly SolidColorBrush SpokenForeground =
+        new(Windows.UI.Color.FromArgb(255, 0x1A, 0x1A, 0x1A));
 
     /// <summary>
     /// The empty state is only for an empty transcript, not for a search that found nothing —
