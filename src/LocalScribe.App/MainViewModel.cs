@@ -555,14 +555,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // samples — 52/48 against 51/49, and ten rapid turns alternating cleanly in
                 // both — and the difference between a usable transcript and an unusable one on
                 // the real recording.
-                var found = diarizer.DiarizeByTracking(
-                    audio,
-                    maxSpeakers: speakers,
-                    exactSpeakers: speakers,
-                    progress: progress,
-                    cancellationToken: _cancellation?.Token ?? default);
+                // Which of the two, as recorded beside the models. Neither wins everywhere:
+                // tracking rescued a phone recording of an argument that clustering split into
+                // nineteen speakers, and clustering found five voices in a studio podcast where
+                // tracking found three and 22 turns in seven minutes.
+                var method = DiarizationChoice.Read(
+                    Path.Combine(_modelRoot, "diarization"));
 
-                _overlaps = diarizer.LastOverlaps;
+                var found = method == DiarizationMethod.Voices
+                    ? diarizer.Diarize(
+                        audio,
+                        maxSpeakers: speakers,
+                        exactSpeakers: speakers,
+                        progress: progress,
+                        cancellationToken: _cancellation?.Token ?? default)
+                    : diarizer.DiarizeByTracking(
+                        audio,
+                        maxSpeakers: speakers,
+                        exactSpeakers: speakers,
+                        progress: progress,
+                        cancellationToken: _cancellation?.Token ?? default);
+
+                // Crosstalk is a by-product of following speakers between windows, so the other
+                // path reports none rather than stale marks from a previous run.
+                _overlaps = method == DiarizationMethod.Voices ? [] : diarizer.LastOverlaps;
 
                 return found;
             }).ConfigureAwait(true);

@@ -170,6 +170,11 @@ internal static class Program
                 .ConfigureAwait(false);
         }
 
+        if (args.Contains("--diarizer"))
+        {
+            return DiarizerCommand.Run(modelDirectory, ArgumentValue(args, "--diarizer"));
+        }
+
         if (args.Contains("--segmentation-model"))
         {
             return await SegmentationModelCommand
@@ -276,6 +281,7 @@ internal static class Program
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
         Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");
         Console.WriteLine("  --segmentation-model [n]  Show or switch what decides where speakers change.");
+        Console.WriteLine("  --diarizer [n]   Show or switch how speakers are worked out: tracking or voices.");
         Console.WriteLine("  --speaker-models <f>  Compare embedding models on a saved .scrb transcript.");
         Console.WriteLine("  --candidates <d>   With --speaker-models: directory of model folders to try.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
