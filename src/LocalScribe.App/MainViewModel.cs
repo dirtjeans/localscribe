@@ -446,8 +446,53 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // the moment being played.
         placed.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
 
+        Record(segments, placed);
+
         return placed;
     }
+
+    /// <summary>
+    /// Writes down what aligning did to the segment boundaries.
+    /// <para>
+    /// Here rather than in the doctor because here is the only place the question can be asked
+    /// honestly. The doctor reads a saved archive, whose segments have already been through this,
+    /// so its input is crowded before the experiment starts. The segments arriving here still
+    /// carry the transcriber's own times and do not overlap, which is what makes the difference
+    /// between the two columns mean something.
+    /// </para>
+    /// <para>
+    /// A file rather than the status line: it is a page of numbers nobody wants during a
+    /// transcription, and it needs to survive the run to be read afterwards.
+    /// </para>
+    /// </summary>
+    private void Record(IReadOnlyList<TranscriptSegment> before, IReadOnlyList<TimedSegment> after)
+    {
+        try
+        {
+            var report = AlignmentCrowding.Describe(before, after);
+
+            File.WriteAllText(
+                CrowdingReportPath,
+                AlignmentCrowding.Format(report, SourceName));
+
+            // Only when there is something to say. Overlapping segments are what put a line in
+            // the wrong place and what sends the marker to the wrong paragraph, and the number
+            // is meaningless to anybody who is not chasing that.
+            if (report.OverlappedAfter > report.OverlappedBefore)
+            {
+                Status = $"Transcribed. {report.OverlappedAfter} of {Math.Max(1, report.Segments - 1)} "
+                    + $"segment boundaries overlap — see {Path.GetFileName(CrowdingReportPath)}.";
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A diagnostic that cannot be written is not worth failing a transcription over.
+        }
+    }
+
+    /// <summary>Where the crowding report is written.</summary>
+    public static string CrowdingReportPath { get; } =
+        Path.Combine(Path.GetTempPath(), "localscribe-alignment.txt");
 
     /// <summary>
     /// Lets go of the network but keeps what a second attempt would need.
