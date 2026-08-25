@@ -72,6 +72,7 @@ public static class CheckWordsCommand
         var adrift = new List<(double At, double Shift, string Word, string Heard)>();
 
         var began = 0.0;
+        var placed = new List<(double From, double To, string Text)>();
 
         foreach (var segment in contents.Segments)
         {
@@ -85,9 +86,10 @@ public static class CheckWordsCommand
 
             measured++;
 
-            if (words.FirstOrDefault(w => w.EndSeconds > w.StartSeconds) is { } opened)
+            if (words.Where(w => w.EndSeconds > w.StartSeconds).ToList() is { Count: > 0 } sounded)
             {
-                began = opened.StartSeconds;
+                began = sounded[0].StartSeconds;
+                placed.Add((sounded[0].StartSeconds, sounded[^1].EndSeconds, segment.Text));
             }
 
             foreach (var word in words)
@@ -144,6 +146,7 @@ public static class CheckWordsCommand
         }
 
         Drift(overTime, contents.Audio.DurationSeconds);
+        Crowding(placed);
 
         Heading("Words that are not where they say they are");
 
@@ -173,6 +176,61 @@ public static class CheckWordsCommand
         Console.WriteLine("  reaches it early. Negative means it was said earlier, so the marker lags.");
 
         return 0;
+    }
+
+    /// <summary>
+    /// How much the aligned segments sit on top of each other.
+    /// <para>
+    /// Segments are aligned one at a time and each may reach back to find its words, so they can
+    /// overlap and one can end up wholly inside another. That is not a timing error — every word
+    /// can be in the right place — but it breaks everything that walks the transcript in order:
+    /// which paragraph is being spoken, which word inside it, and what order two of them go in.
+    /// It needs its own number, because a drift figure of zero says nothing about it.
+    /// </para>
+    /// </summary>
+    private static void Crowding(List<(double From, double To, string Text)> placed)
+    {
+        if (placed.Count < 2)
+        {
+            return;
+        }
+
+        Heading("Segments sitting on each other");
+
+        var overlapping = 0;
+        var nested = 0;
+        var worst = (Overlap: 0.0, Text: string.Empty);
+
+        for (var i = 1; i < placed.Count; i++)
+        {
+            var overlap = placed[i - 1].To - placed[i].From;
+
+            if (overlap <= 0.05)
+            {
+                continue;
+            }
+
+            overlapping++;
+
+            if (placed[i].To <= placed[i - 1].To)
+            {
+                nested++;
+            }
+
+            if (overlap > worst.Overlap)
+            {
+                worst = (overlap, placed[i].Text);
+            }
+        }
+
+        Console.WriteLine($"  Overlapping  {overlapping} of {placed.Count - 1} boundaries");
+        Console.WriteLine($"  Swallowed    {nested} segments sit wholly inside the one before");
+
+        if (worst.Overlap > 0)
+        {
+            var text = worst.Text.Length <= 46 ? worst.Text : string.Concat(worst.Text.AsSpan(0, 43), "\u2026");
+            Console.WriteLine($"  Worst        {worst.Overlap:F2}s, on \"{text}\"");
+        }
     }
 
     /// <summary>

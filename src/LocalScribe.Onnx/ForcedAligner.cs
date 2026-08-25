@@ -465,7 +465,16 @@ public sealed class ForcedAligner : IDisposable
     /// across 5.1 seconds reaching back over somebody else's sentence, which then attributed the
     /// word to them and dragged the segment's start time with it.
     /// </para>
-    private const double SearchBackSeconds = 3;
+    /// <para>
+    /// One and a half, chosen against two measurements rather than one. The first sweep looked at
+    /// drift alone and found three as good as eight, so three was taken without asking what it
+    /// cost elsewhere. Measuring crowding as well shows the cost is small and the benefit is too:
+    /// from three seconds to none, overlapping boundaries fall from 94 in 97 to 82, and twenty
+    /// more words stop being found. Reaching back is not what piles segments on top of each
+    /// other — 82 of 97 still overlap with no reach at all — so this buys a little of both rather
+    /// than pretending either end of the range is the answer.
+    /// </para>
+    private const double SearchBackSeconds = 1.5;
 
     /// <summary>
     /// How far past a segment's stated end the words may run.
