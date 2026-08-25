@@ -109,4 +109,35 @@ public class AlignmentCrowdingTests
         Assert.Equal(0, report.Segments);
         Assert.Empty(report.Moved);
     }
+
+    /// <summary>
+    /// A total says nothing about a transcript that reads correctly for five minutes and comes
+    /// apart at the end, which is how this was reported. Where the crowding is matters as much
+    /// as how much of it there is.
+    /// </summary>
+    [Fact]
+    public void CrowdingIsReportedByWhereItIs()
+    {
+        // Clean for the first half, every boundary overlapping in the second.
+        var before = new List<TranscriptSegment>();
+        var after = new List<TimedSegment>();
+
+        for (var i = 0; i < 10; i++)
+        {
+            before.Add(Said($"s{i}", i * 10, (i + 1) * 10));
+            after.Add(i < 5
+                ? Placed($"s{i}", i * 10, (i + 1) * 10)
+                : Placed($"s{i}", (i * 10) - 1, (i + 1) * 10));
+        }
+
+        var report = AlignmentCrowding.Describe(before, after);
+
+        Assert.Equal(5, report.ByFifth.Count);
+        Assert.Equal(0, report.ByFifth[0].Overlapping);
+        Assert.True(report.ByFifth[^1].Overlapping > 0, "the end should show its crowding");
+    }
+
+    [Fact]
+    public void FifthsAreOmittedWhenThereIsNothingToSplit() =>
+        Assert.Empty(AlignmentCrowding.Describe([Said("one", 0, 5)], [Placed("one", 0, 5)]).ByFifth);
 }

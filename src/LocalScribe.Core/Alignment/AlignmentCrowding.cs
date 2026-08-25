@@ -41,7 +41,8 @@ public static class AlignmentCrowding
         int Swallowed,
         double Worst,
         string WorstText,
-        IReadOnlyList<(double By, double From, double To, string Text)> Moved);
+        IReadOnlyList<(double By, double From, double To, string Text)> Moved,
+        IReadOnlyList<(double From, double To, int Overlapping, int Total)> ByFifth);
 
     /// <summary>Compares the segments going in with the ones coming out.</summary>
     public static Report Describe(
@@ -102,7 +103,57 @@ public static class AlignmentCrowding
             swallowed,
             worst.Overlap,
             worst.Text,
-            [.. moved.OrderByDescending(m => Math.Abs(m.By)).Take(12)]);
+            [.. moved.OrderByDescending(m => Math.Abs(m.By)).Take(12)],
+            Fifths(placed));
+    }
+
+    /// <summary>
+    /// Where in the recording the crowding is, rather than only how much of it there is.
+    /// <para>
+    /// A total says nothing about a transcript that reads correctly for five minutes and comes
+    /// apart at the end, which is how this was reported. If the crowding is even, the cause is
+    /// even; if it climbs, something is accumulating.
+    /// </para>
+    /// </summary>
+    private static List<(double From, double To, int Overlapping, int Total)> Fifths(
+        IReadOnlyList<TranscriptSegment> placed)
+    {
+        var result = new List<(double, double, int, int)>();
+
+        if (placed.Count < 2)
+        {
+            return result;
+        }
+
+        var duration = placed[^1].EndSeconds;
+
+        for (var part = 0; part < 5; part++)
+        {
+            var from = duration * part / 5;
+            var to = duration * (part + 1) / 5;
+
+            var overlapping = 0;
+            var total = 0;
+
+            for (var i = 1; i < placed.Count; i++)
+            {
+                if (placed[i].StartSeconds < from || placed[i].StartSeconds >= to)
+                {
+                    continue;
+                }
+
+                total++;
+
+                if (placed[i - 1].EndSeconds - placed[i].StartSeconds > Noticeable)
+                {
+                    overlapping++;
+                }
+            }
+
+            result.Add((from, to, overlapping, total));
+        }
+
+        return result;
     }
 
     private static int Overlapping(IReadOnlyList<TranscriptSegment> segments)
@@ -138,6 +189,17 @@ public static class AlignmentCrowding
         if (report.Worst > 0)
         {
             text.AppendLine(culture, $"Worst overlap       {report.Worst:F2}s on \"{Short(report.WorstText)}\"");
+        }
+
+        if (report.ByFifth.Count > 0)
+        {
+            text.AppendLine();
+            text.AppendLine("Overlapping boundaries through the recording");
+
+            foreach (var (from, to, overlapping, total) in report.ByFifth)
+            {
+                text.AppendLine(culture, $"  {from,6:F0}-{to,-6:F0} {overlapping,4} of {total,-4}");
+            }
         }
 
         if (report.Moved.Count > 0)

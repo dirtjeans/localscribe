@@ -446,8 +446,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // the moment being played.
         placed.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
 
-        Record(segments, placed);
-
         return placed;
     }
 
@@ -796,6 +794,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (timed.Any(t => t.Words.Count > 0))
         {
             var pieces = WordLevelAttribution.Apply(timed, turns);
+
+            // Here rather than after aligning. Aligning is not the last thing that moves a
+            // boundary — dividing segments between speakers sets new ones from the words, and
+            // the tidying that stops two segments claiming the same moment runs after that. A
+            // report taken before either could not see whether they worked, and did not: it came
+            // back byte-identical across a build that changed both.
+            Record([.. timed.Select(t => t.Segment)], pieces);
 
             lock (_alignedGate)
             {
