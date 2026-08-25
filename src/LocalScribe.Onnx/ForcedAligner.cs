@@ -466,15 +466,27 @@ public sealed class ForcedAligner : IDisposable
     /// word to them and dragged the segment's start time with it.
     /// </para>
     /// <para>
-    /// One and a half, chosen against two measurements rather than one. The first sweep looked at
-    /// drift alone and found three as good as eight, so three was taken without asking what it
-    /// cost elsewhere. Measuring crowding as well shows the cost is small and the benefit is too:
-    /// from three seconds to none, overlapping boundaries fall from 94 in 97 to 82, and twenty
-    /// more words stop being found. Reaching back is not what piles segments on top of each
-    /// other — 82 of 97 still overlap with no reach at all — so this buys a little of both rather
-    /// than pretending either end of the range is the answer.
+    /// A quarter of a second, which is slack for rounding rather than room to search.
     /// </para>
-    private const double SearchBackSeconds = 1.5;
+    /// <para>
+    /// Every larger value was spent in full and spent wrongly. Instrumenting a real run —
+    /// segments still carrying the transcriber's own times, which do not overlap — showed 74 of
+    /// 80 boundaries overlapping afterwards, and the segments that moved had all moved by exactly
+    /// the limit: -1.50s at a limit of 1.5, over and over. Not a drift being corrected. The first
+    /// word of a segment landing at the very start of whatever window it is given, often ending
+    /// before its own segment begins.
+    /// </para>
+    /// <para>
+    /// A sweep of this against a saved archive said the search was innocent, because an archive's
+    /// segments have already been aligned and its input was crowded before the experiment
+    /// started. Measuring inside the run is what separated what aligning does from what it
+    /// inherits, and reversed the answer.
+    /// </para>
+    /// <para>
+    /// Nothing measurable is lost. Typical drift was +0.00 in every fifth of both recordings at
+    /// every width tried, including none at all — the room was never buying accuracy.
+    /// </para>
+    private const double SearchBackSeconds = 0.25;
 
     /// <summary>
     /// How far past a segment's stated end the words may run.
