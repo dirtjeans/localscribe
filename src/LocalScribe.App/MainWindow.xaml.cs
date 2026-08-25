@@ -1184,21 +1184,22 @@ public sealed partial class MainWindow : Window
 
         foreach (var paragraph in _paragraphs)
         {
-            if (!paragraph.Contains(seconds))
-            {
-                continue;
-            }
-
-            if (latest is null || paragraph.StartSeconds >= latest.StartSeconds)
-            {
-                latest = paragraph;
-            }
-
+            // A word covering this instant settles it, whether or not the paragraph's own bounds
+            // reach that far. They often do not: a segment's end is pulled back to where the next
+            // one begins so that no two claim the same moment, while its last words were found by
+            // searching a little past that and are still being spoken there. Asking the bounds
+            // first hands that second to the following paragraph and leaves the words that are
+            // actually sounding unlit.
             if (covering is null
                 && _spokenWords.TryGetValue(paragraph, out var spans)
                 && spans.Any(w => seconds >= w.From && seconds < w.To))
             {
                 covering = paragraph;
+            }
+
+            if (paragraph.Contains(seconds) && (latest is null || paragraph.StartSeconds >= latest.StartSeconds))
+            {
+                latest = paragraph;
             }
         }
 
@@ -1216,22 +1217,31 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private static int WordAt(IReadOnlyList<SpokenWord> spans, double position)
     {
+        var covering = -1;
         var started = -1;
 
         for (var i = 0; i < spans.Count; i++)
         {
+            // Whichever began most recently, not whichever comes last in the paragraph. The two
+            // are the same only while the words are in the order they were said, and a paragraph
+            // holding an interjection is not: "…how they secure AI agents, Of course, that's
+            // hugely topical. Or they're talking about…" reads in one order and was spoken in
+            // another. Taking the last match in reading order then jumps the marker to the end of
+            // the paragraph and leaves it there.
             if (position >= spans[i].From && position < spans[i].To)
             {
-                return i;
+                if (covering < 0 || spans[i].From > spans[covering].From)
+                {
+                    covering = i;
+                }
             }
-
-            if (position >= spans[i].From)
+            else if (position >= spans[i].From && (started < 0 || spans[i].From > spans[started].From))
             {
                 started = i;
             }
         }
 
-        return started;
+        return covering >= 0 ? covering : started;
     }
 
     /// <summary>

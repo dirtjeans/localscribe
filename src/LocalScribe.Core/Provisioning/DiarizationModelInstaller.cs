@@ -171,7 +171,7 @@ public sealed class DiarizationModelInstaller
         {
             throw new InvalidOperationException(
                 $"{asset.Name} is an archive and no extractor for it was supplied. Reference "
-                + "LocalScribe.Diarization, which provides one, or unpack it by hand.");
+                + "the doctor, which provides one, or unpack it by hand.");
         }
 
         var staging = Path.Combine(directory, ".staging");
