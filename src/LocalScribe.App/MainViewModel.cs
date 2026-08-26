@@ -359,6 +359,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var untimed = () => (IReadOnlyList<TimedSegment>)
             [.. segments.Select(segment => new TimedSegment(segment, []))];
 
+        _unheardTail = 0;
+
         if (_aligner is not { } aligner || _scores is not { } scores)
         {
             return untimed();
@@ -375,6 +377,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         var placed = new List<TimedSegment>(segments.Count);
+        var unheard = 0;
 
         try
         {
@@ -393,11 +396,50 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    var stated = segments[i].StartSeconds < limit
-                        ? segments[i]
-                        : segments[i] with { StartSeconds = began, EndSeconds = limit };
+                    var pastEnd = segments[i].StartSeconds >= limit;
+
+                    var stated = pastEnd
+                        ? segments[i] with { StartSeconds = began, EndSeconds = limit }
+                        : segments[i];
 
                     var words = aligner.Align(scores, stated, cancellationToken);
+
+                    // A segment stamped past the end of the recording gets one chance to prove
+                    // its words exist in whatever audio remains. If they cannot be placed, or
+                    // place into a small fraction of the time the text would take to say, they
+                    // were never spoken. The transcriber pads its final window to thirty
+                    // seconds, and on a recording that simply stops it continues in the most
+                    // plausible way: on one draft cut it invented the entire sign-off —
+                    // seventeen lines stamped beyond the audio, crammed into its last two
+                    // seconds, a marker with nothing to follow and a minute of one speaker who
+                    // never said any of it. Text nobody said is the one thing a transcript must
+                    // not keep, so this is the one place a line is dropped rather than kept
+                    // with a guessed time.
+                    if (pastEnd)
+                    {
+                        var claimed = Math.Max(
+                            1.0, segments[i].EndSeconds - segments[i].StartSeconds);
+
+                        var proof = words?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+
+                        var span = proof is { Count: > 0 }
+                            ? proof[^1].EndSeconds - proof[0].StartSeconds
+                            : 0;
+
+                        // Spanning time is not enough: an invented line crammed onto whatever
+                        // real speech is left spreads plausibly and looks placed. It has to read
+                        // as itself where it landed.
+                        var heard = proof is { Count: > 0 }
+                            ? aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds)
+                            : string.Empty;
+
+                        if (span < claimed * 0.3
+                            || TextLikeness.Share(segments[i].Text, heard) < 0.45)
+                        {
+                            unheard++;
+                            continue;
+                        }
+                    }
 
                     if (words is null)
                     {
@@ -442,7 +484,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ReleaseAlignmentModel();
         }
 
-        if (placed.Count != segments.Count)
+        _unheardTail = unheard;
+
+        if (placed.Count + unheard != segments.Count)
         {
             return untimed();
         }
@@ -498,6 +542,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Where the crowding report is written.</summary>
     public static string CrowdingReportPath { get; } =
         Path.Combine(Path.GetTempPath(), "localscribe-alignment.txt");
+
+    /// <summary>
+    /// Trailing lines dropped because the recording ends before they are spoken.
+    /// </summary>
+    private int _unheardTail;
 
     /// <summary>
     /// Lets go of the network but keeps what a second attempt would need.
@@ -1605,7 +1654,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 
-            Status = "Done.";
+            Status = _unheardTail > 0
+                ? $"Done. The recording ends before its last {_unheardTail} line(s) are spoken, "
+                    + "so they were left out."
+                : "Done.";
         }
         catch (OperationCanceledException)
         {
@@ -1899,7 +1951,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             try
             {
                 await FinishTranscriptAsync(committed, _audio, _cancellation?.Token ?? default);
-                Status = "Done.";
+                Status = _unheardTail > 0
+                ? $"Done. The recording ends before its last {_unheardTail} line(s) are spoken, "
+                    + "so they were left out."
+                : "Done.";
             }
             finally
             {

@@ -75,14 +75,40 @@ public static class CheckWordsCommand
         var placed = new List<(double From, double To, string Text)>();
         var limit = scores.SecondsAt(scores.Frames);
 
+        var unheardTail = 0;
+
         foreach (var raw in contents.Segments)
         {
-            // The same allowance the app makes for a segment stamped past the end of the audio.
-            var segment = raw.StartSeconds < limit
-                ? raw
-                : raw with { StartSeconds = began, EndSeconds = limit };
+            // The same judgement the app makes: a segment stamped past the end of the audio must
+            // prove its words exist in what remains, or it is the transcriber continuing past a
+            // recording that simply stopped.
+            var pastEnd = raw.StartSeconds >= limit;
+
+            var segment = pastEnd
+                ? raw with { StartSeconds = began, EndSeconds = limit }
+                : raw;
 
             var words = aligner.Align(scores, segment, CancellationToken.None);
+
+            if (pastEnd)
+            {
+                var claimed = Math.Max(1.0, raw.EndSeconds - raw.StartSeconds);
+                var proof = words?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+                var span = proof is { Count: > 0 } ? proof[^1].EndSeconds - proof[0].StartSeconds : 0;
+
+                var heard = proof is { Count: > 0 }
+                    ? aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds)
+                    : string.Empty;
+
+                if (span < claimed * 0.3 || TextLikeness.Share(raw.Text, heard) < 0.45)
+                {
+                    unheardTail++;
+                    Console.WriteLine(
+                        $"  Unheard      {raw.StartSeconds,7:F2}-{raw.EndSeconds,-7:F2} "
+                        + $"\"{(raw.Text.Length <= 44 ? raw.Text : raw.Text[..41] + "…")}\"");
+                    continue;
+                }
+            }
 
             if (words is null)
             {
@@ -147,6 +173,7 @@ public static class CheckWordsCommand
         Heading("Segments");
         Console.WriteLine($"  Timed      {measured}");
         Console.WriteLine($"  Estimated  {estimated}   (the aligner could not place these)");
+        Console.WriteLine($"  Unheard    {unheardTail}   (stamped past the end of the audio, words not found in it)");
         Console.WriteLine($"  Words      {checkedWords} long enough to find, {unheard} not matched in the audio");
 
         if (shifts.Count > 0)
