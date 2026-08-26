@@ -380,38 +380,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await Task.Run(() =>
             {
-                // Where the previous segment turned out to begin, so this one cannot begin
-                // before it. Its start rather than its end: the end would forbid recovering from
-                // a drift, which is the fault this replaces.
+                // Where the previous segment's words ended — the left edge of each window, so
+                // the chain of placements is ordered by construction.
                 var began = 0.0;
-
-                // Where the recording actually stops, which is not always where the transcript
-                // thinks it does.
-                var limit = scores.SecondsAt(scores.Frames);
 
                 for (var i = 0; i < segments.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    // A segment stamped past the end of the recording has no audio under it at
-                    // all, so it cannot be aligned and falls back to times estimated from a
-                    // stretch that does not exist. The transcriber's last window is padded to a
-                    // full thirty seconds, so its timestamps can run past where the audio stops:
-                    // on a 442-second podcast the outro was stamped 443 to 460 and the marker had
-                    // nothing to follow for the last three lines.
-                    //
-                    // The words are still in the recording — they are in whatever is left of it.
-                    // So the search is given exactly that: from where the last segment ended to
-                    // the end of the audio.
-                    var stated = segments[i].StartSeconds < limit
-                        ? segments[i]
-                        : segments[i] with { StartSeconds = began, EndSeconds = limit };
-
-                    var words = aligner.Align(scores, stated, began, cancellationToken);
+                    var words = aligner.Align(scores, segments[i], began, cancellationToken);
 
                     if (words is null)
                     {
+                        // The frontier stays put. Advancing it to the failed segment's stated end
+                        // was tried and cascaded: one failure overshot the next segment's words,
+                        // which then failed, and eighteen segments in a row fell back to
+                        // estimates. Staying is also simply right for the common causes — a
+                        // duplicated line consumed no audio, and a nonsense stamp refers to none
+                        // — so the next segment picks up exactly where the last good one ended.
                         placed.Add(new TimedSegment(segments[i], []));
                         continue;
                     }
@@ -432,7 +419,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     if (sounded.Count > 0)
                     {
-                        began = sounded[0].StartSeconds;
+                        // The end, not the start: the next window opens where these words ran
+                        // out, which is where the next segment's speech begins.
+                        began = sounded[^1].EndSeconds;
                     }
 
                     placed.Add(new TimedSegment(moved, words));

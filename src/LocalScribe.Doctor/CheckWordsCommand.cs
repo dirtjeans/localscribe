@@ -73,16 +73,9 @@ public static class CheckWordsCommand
 
         var began = 0.0;
         var placed = new List<(double From, double To, string Text)>();
-        var limit = scores.SecondsAt(scores.Frames);
 
-        foreach (var raw in contents.Segments)
+        foreach (var segment in contents.Segments)
         {
-            // The same allowance the app makes: a segment stamped past the end of the recording
-            // is looked for in whatever is left of it, because that is where its words are.
-            var segment = raw.StartSeconds < limit
-                ? raw
-                : raw with { StartSeconds = began, EndSeconds = limit };
-
             var words = aligner.Align(scores, segment, began, CancellationToken.None);
 
             if (words is null)
@@ -103,7 +96,7 @@ public static class CheckWordsCommand
 
             if (words.Where(w => w.EndSeconds > w.StartSeconds).ToList() is { Count: > 0 } sounded)
             {
-                began = sounded[0].StartSeconds;
+                began = sounded[^1].EndSeconds;
                 placed.Add((sounded[0].StartSeconds, sounded[^1].EndSeconds, segment.Text));
             }
 

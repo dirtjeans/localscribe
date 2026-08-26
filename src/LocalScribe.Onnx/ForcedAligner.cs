@@ -190,8 +190,8 @@ public sealed class ForcedAligner : IDisposable
     /// </para>
     /// </summary>
     /// <param name="notBefore">
-    /// The earliest second the search may reach back to. Pass the previous segment's aligned
-    /// start, not its end.
+    /// Where the previous segment's last word ended, or zero at the start of the recording.
+    /// This is the left edge of the search window, not a floor under one.
     /// </param>
     public IReadOnlyList<WordTimings.Word>? Align(
         AlignmentScores scores,
@@ -214,36 +214,67 @@ public sealed class ForcedAligner : IDisposable
             return null;
         }
 
-        // Searched wider than the segment claims to be, because the segment's own times are the
-        // thing least worth trusting here.
+        // The window starts where the previous segment's words ended, not where this segment
+        // claims to begin. Its stated start is the least trustworthy number here, and anchoring
+        // to it forced a choice between two faults with no value in between. Reach back
+        // generously from it and the first word absorbs the previous speaker: blanks are cheap
+        // over silence but expensive over speech, so on someone else's audio the first word's
+        // letters outscore blank and the word pins to the window edge — every segment moved by
+        // exactly the limit, and a short intro was swallowed whole by the segment after it.
+        // Reach back barely and a segment stamped late, which the transcriber does routinely,
+        // cannot reach its own words at all: "environment" sat three seconds from where it was
+        // said, unrecoverable at any small reach.
         //
-        // They come from the transcriber, which times whole segments and gets them wrong in ways
-        // that persist: a repetition loop occupies a stretch of the timeline that no speech was
-        // ever in, and everything after it is pushed later by that much for the rest of the
-        // window. On the debate recording that left a two-second hole and a marker three seconds
-        // behind the voice from that point on, which no amount of care about placing words could
-        // fix — the words were being placed correctly inside a window that was in the wrong place.
+        // Speech is contiguous. The previous segment's last word ends where this one's first
+        // word begins, give or take a breath — so a window opening there contains at most a
+        // breath of silence before its own speech, which blanks absorb happily, and a late or
+        // even past-the-end stamp costs nothing because the stated start is never consulted.
+        // Each window begins where the last one's words ran out, so the placements are ordered
+        // by construction.
         //
-        // The scan knows where the sounds are. Given room to look, the aligner finds them.
-        // Bounded by where the previous segment began, which is not the ratchet that clamping to
-        // where it ended was. That version stopped a late segment's successors from ever reaching
-        // back past it, so a drift could be inherited and never corrected. This one only says
-        // that a segment cannot begin before the one before it began — order, not position — and
-        // a segment can still move back across its predecessor's speech to find its words.
-        //
-        // Without any bound, the room gets spent in full on almost every segment: 78 of 99
-        // boundaries overlapped, twelve segments ended up wholly inside their predecessor, and
-        // "Our top story this week…" reached back past the "And I'm Ken Spencer-Brown." that was
-        // said before it.
-        var first = scores.FrameAt(Math.Max(notBefore, segment.StartSeconds - SearchBackSeconds));
-        var count = scores.FrameAt(segment.EndSeconds + SearchForwardSeconds) - first;
+        // The stated end still sets the far edge, padded — but never closer than the segment's
+        // own claimed duration past the frontier, so a stamp that is wrong wholesale still
+        // leaves room for the words to exist.
+        var duration = Math.Max(
+            segment.EndSeconds - segment.StartSeconds, ShortestAlignableSeconds);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Strictly from the frontier first; once more with a bounded retreat if that fails.
+        // The retreat is for crosstalk, which is the one honest exception to speech being
+        // contiguous: where two people talk over each other, the next segment's words genuinely
+        // begin before the previous segment's words end, and a window opening at the frontier
+        // cannot hold them. Two seconds of retreat re-admits the absorption risk in miniature,
+        // but only on segments that strictly failed — where some error is unavoidable and a
+        // slightly-pinned first word beats a loudness estimate for the whole segment.
+        return Place(scores, segment, words, tokens, spellings, notBefore, duration)
+            ?? (notBefore > 0
+                ? Place(
+                    scores, segment, words, tokens, spellings,
+                    Math.Max(0, notBefore - CrosstalkRetreatSeconds), duration)
+                : null);
+    }
+
+    /// <summary>How far before the frontier a failed segment may look for its words.</summary>
+    private const double CrosstalkRetreatSeconds = 2.0;
+
+    private IReadOnlyList<WordTimings.Word>? Place(
+        AlignmentScores scores,
+        TranscriptSegment segment,
+        List<WordTimings.Word> words,
+        IReadOnlyList<int> tokens,
+        IReadOnlyList<AlignmentAlphabet.Spelling> spellings,
+        double notBefore,
+        double duration)
+    {
+        var first = scores.FrameAt(notBefore);
+        var count = scores.FrameAt(
+            Math.Max(segment.EndSeconds, notBefore + duration) + SearchForwardSeconds) - first;
 
         if (count < ShortestAlignableSeconds / scores.FrameSeconds)
         {
             return null;
         }
-
-        cancellationToken.ThrowIfCancellationRequested();
 
         var placed = CtcForcedAlignment.Align(
             scores.Between(first, count), count, scores.Alphabet, tokens, _alphabet.Blank);
@@ -465,28 +496,7 @@ public sealed class ForcedAligner : IDisposable
     /// across 5.1 seconds reaching back over somebody else's sentence, which then attributed the
     /// word to them and dragged the segment's start time with it.
     /// </para>
-    /// <para>
-    /// A quarter of a second, which is slack for rounding rather than room to search.
-    /// </para>
-    /// <para>
-    /// Every larger value was spent in full and spent wrongly. Instrumenting a real run —
-    /// segments still carrying the transcriber's own times, which do not overlap — showed 74 of
-    /// 80 boundaries overlapping afterwards, and the segments that moved had all moved by exactly
-    /// the limit: -1.50s at a limit of 1.5, over and over. Not a drift being corrected. The first
-    /// word of a segment landing at the very start of whatever window it is given, often ending
-    /// before its own segment begins.
-    /// </para>
-    /// <para>
-    /// A sweep of this against a saved archive said the search was innocent, because an archive's
-    /// segments have already been aligned and its input was crowded before the experiment
-    /// started. Measuring inside the run is what separated what aligning does from what it
-    /// inherits, and reversed the answer.
-    /// </para>
-    /// <para>
-    /// Nothing measurable is lost. Typical drift was +0.00 in every fifth of both recordings at
-    /// every width tried, including none at all — the room was never buying accuracy.
-    /// </para>
-    private const double SearchBackSeconds = 0.25;
+
 
     /// <summary>
     /// How far past a segment's stated end the words may run.
