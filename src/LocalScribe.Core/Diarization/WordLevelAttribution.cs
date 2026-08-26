@@ -65,10 +65,14 @@ public static class WordLevelAttribution
             result.AddRange(Divide(item, worth));
         }
 
-        // In the order they were said. Segments are aligned one at a time and may move, so two
-        // that were adjacent need not come back adjacent — and a transcript whose timestamps go
-        // backwards reads as though lines have gone missing, because the eye stops following it.
-        result.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
+        // The transcriber's order is kept, never re-derived from the placed times. Sorting by
+        // placement was a safety net when every segment was aligned in its own independent
+        // window and could move anywhere; once the windows chained, it became an amplifier.
+        // Where the text is locally wrong — a repeated line, crosstalk transcribed twice — the
+        // placements are off by a bounded second or two, and sorting on them let segments
+        // leapfrog each other, splicing the outro into the middle of an answer. A bounded time
+        // error was turned into an unbounded order error. The decoder emits segments in the
+        // order they were spoken; that order is the one thing it is always right about.
 
         // Last, and across segments rather than inside one. Where a sentence was left open, the
         // words that finish it belong to whoever opened it — and the split is usually at a

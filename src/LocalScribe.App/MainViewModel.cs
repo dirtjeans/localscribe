@@ -447,12 +447,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return untimed();
         }
 
-        // Back into time order. Segments move to wherever their words turned out to be, and two
-        // that were adjacent before need not come back in the order they left — the list is
-        // walked in time by everything downstream, and a paragraph is found by which one contains
-        // the moment being played.
-        placed.Sort((left, right) => left.Segment.StartSeconds.CompareTo(right.Segment.StartSeconds));
-
+        // In the transcriber's order, never re-sorted by the placed times. The windows chain, so
+        // the placements come out ordered whenever the text is right — and where the text is
+        // locally wrong, a repeated line or crosstalk heard twice, sorting on the placements let
+        // segments leapfrog each other and spliced the outro into the middle of an answer. The
+        // decoder emits segments in the order they were spoken, and that order is the one thing
+        // it is always right about.
         return placed;
     }
 

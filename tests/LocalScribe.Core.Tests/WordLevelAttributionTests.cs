@@ -175,21 +175,22 @@ public class WordLevelAttributionTests
     }
 
     /// <summary>
-    /// Timestamps that go backwards read as lines having gone missing, because the eye stops
-    /// following the list. Segments are aligned one at a time and may move, so order has to be
-    /// restored rather than assumed.
+    /// The transcriber's order survives, even when the placed times disagree with it. Sorting by
+    /// placement was tried and it scrambled text: where a repeated line made placements locally
+    /// wrong by a second or two, segments leapfrogged each other and the outro was spliced into
+    /// the middle of an answer. The decoder emits segments in the order they were spoken, and
+    /// that order is the one thing it is always right about.
     /// </summary>
     [Fact]
-    public void ThePiecesComeBackInTheOrderTheyWereSaid()
+    public void TheTranscribersOrderIsNeverRederivedFromTimes()
     {
-        var later = Spoken("later words here", from: 20);
-        var earlier = Spoken("earlier words here", from: 5);
+        var first = Spoken("the first thing said", from: 21);
+        var second = Spoken("the second thing said", from: 20);
 
-        var pieces = WordLevelAttribution.Apply([later, earlier], [Turn(0, 0, 30)]);
+        var pieces = WordLevelAttribution.Apply([first, second], [Turn(0, 0, 40)]);
 
-        Assert.Equal(
-            pieces.Select(p => p.Segment.StartSeconds).OrderBy(x => x),
-            pieces.Select(p => p.Segment.StartSeconds));
+        Assert.Equal("the first thing said", pieces[0].Segment.Text);
+        Assert.Equal("the second thing said", pieces[1].Segment.Text);
     }
 
     /// <summary>
