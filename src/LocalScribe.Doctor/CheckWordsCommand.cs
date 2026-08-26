@@ -73,10 +73,16 @@ public static class CheckWordsCommand
 
         var began = 0.0;
         var placed = new List<(double From, double To, string Text)>();
+        var limit = scores.SecondsAt(scores.Frames);
 
-        foreach (var segment in contents.Segments)
+        foreach (var raw in contents.Segments)
         {
-            var words = aligner.Align(scores, segment, began, CancellationToken.None);
+            // The same allowance the app makes for a segment stamped past the end of the audio.
+            var segment = raw.StartSeconds < limit
+                ? raw
+                : raw with { StartSeconds = began, EndSeconds = limit };
+
+            var words = aligner.Align(scores, segment, CancellationToken.None);
 
             if (words is null)
             {

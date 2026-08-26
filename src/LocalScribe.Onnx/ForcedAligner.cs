@@ -189,14 +189,9 @@ public sealed class ForcedAligner : IDisposable
     /// bad alignment presented as a measurement is worse than an honest approximation.
     /// </para>
     /// </summary>
-    /// <param name="notBefore">
-    /// Where the previous segment's last word ended, or zero at the start of the recording.
-    /// This is the left edge of the search window, not a floor under one.
-    /// </param>
     public IReadOnlyList<WordTimings.Word>? Align(
         AlignmentScores scores,
         TranscriptSegment segment,
-        double notBefore = 0,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(scores);
@@ -214,62 +209,30 @@ public sealed class ForcedAligner : IDisposable
             return null;
         }
 
-        // The window starts where the previous segment's words ended, not where this segment
-        // claims to begin. Its stated start is the least trustworthy number here, and anchoring
-        // to it forced a choice between two faults with no value in between. Reach back
-        // generously from it and the first word absorbs the previous speaker: blanks are cheap
-        // over silence but expensive over speech, so on someone else's audio the first word's
-        // letters outscore blank and the word pins to the window edge — every segment moved by
-        // exactly the limit, and a short intro was swallowed whole by the segment after it.
-        // Reach back barely and a segment stamped late, which the transcriber does routinely,
-        // cannot reach its own words at all: "environment" sat three seconds from where it was
-        // said, unrecoverable at any small reach.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Anchored to the segment's stated start, reaching back three seconds — and not chained
+        // from where the previous segment's words ended, which was tried and measured. The two
+        // schemes fail differently. Stamps are noisy but unbiased: each segment resets to the
+        // audio, so the error never accumulates, and the median misplacement is zero in every
+        // fifth of both test recordings. A chain is quiet but integrates: one late tail at a
+        // window seam pushed everything after it, and the marker oscillated two to four seconds
+        // out for the rest of the recording, with nothing ever pulling it back. Scattered
+        // per-word noise loses to that on every count a listener cares about.
         //
-        // Speech is contiguous. The previous segment's last word ends where this one's first
-        // word begins, give or take a breath — so a window opening there contains at most a
-        // breath of silence before its own speech, which blanks absorb happily, and a late or
-        // even past-the-end stamp costs nothing because the stated start is never consulted.
-        // Each window begins where the last one's words ran out, so the placements are ordered
-        // by construction.
-        //
-        // The stated end still sets the far edge, padded — but never closer than the segment's
-        // own claimed duration past the frontier, so a stamp that is wrong wholesale still
-        // leaves room for the words to exist.
+        // Reaching back three seconds was once the thing that scrambled transcripts, and what
+        // pardoned it is everything that changed since: segment order now comes from the decoder
+        // and is never re-derived from placements, bounds are untangled after attribution, and a
+        // word's speaker is judged on its last stretch rather than its whole span — so a first
+        // word that pins a little early costs a slightly early marker on one word, not a
+        // swallowed segment or a spliced paragraph.
         var duration = Math.Max(
             segment.EndSeconds - segment.StartSeconds, ShortestAlignableSeconds);
 
-        cancellationToken.ThrowIfCancellationRequested();
-
-        // Strictly from the frontier first; once more with a bounded retreat if that fails.
-        // The retreat is for crosstalk, which is the one honest exception to speech being
-        // contiguous: where two people talk over each other, the next segment's words genuinely
-        // begin before the previous segment's words end, and a window opening at the frontier
-        // cannot hold them. Two seconds of retreat re-admits the absorption risk in miniature,
-        // but only on segments that strictly failed — where some error is unavoidable and a
-        // slightly-pinned first word beats a loudness estimate for the whole segment.
-        return Place(scores, segment, words, tokens, spellings, notBefore, duration)
-            ?? (notBefore > 0
-                ? Place(
-                    scores, segment, words, tokens, spellings,
-                    Math.Max(0, notBefore - CrosstalkRetreatSeconds), duration)
-                : null);
-    }
-
-    /// <summary>How far before the frontier a failed segment may look for its words.</summary>
-    private const double CrosstalkRetreatSeconds = 2.0;
-
-    private IReadOnlyList<WordTimings.Word>? Place(
-        AlignmentScores scores,
-        TranscriptSegment segment,
-        List<WordTimings.Word> words,
-        IReadOnlyList<int> tokens,
-        IReadOnlyList<AlignmentAlphabet.Spelling> spellings,
-        double notBefore,
-        double duration)
-    {
-        var first = scores.FrameAt(notBefore);
+        var first = scores.FrameAt(Math.Max(0, segment.StartSeconds - SearchBackSeconds));
         var count = scores.FrameAt(
-            Math.Max(segment.EndSeconds, notBefore + duration) + SearchForwardSeconds) - first;
+            Math.Max(segment.EndSeconds, segment.StartSeconds + duration)
+                + SearchForwardSeconds) - first;
 
         if (count < ShortestAlignableSeconds / scores.FrameSeconds)
         {
@@ -497,6 +460,13 @@ public sealed class ForcedAligner : IDisposable
     /// word to them and dragged the segment's start time with it.
     /// </para>
 
+
+    /// <summary>
+    /// How far before a segment's stated start its words may really be. Segment stamps drift
+    /// late routinely; three seconds covers every case measured, and the harms wide reach once
+    /// caused are prevented downstream rather than here.
+    /// </summary>
+    private const double SearchBackSeconds = 3;
 
     /// <summary>
     /// How far past a segment's stated end the words may run.

@@ -380,25 +380,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await Task.Run(() =>
             {
-                // Where the previous segment's words ended — the left edge of each window, so
-                // the chain of placements is ordered by construction.
+                // Where the previous segment's words ended. Consulted for exactly one thing:
+                // a segment stamped past the end of the recording has no usable anchor of its
+                // own — the transcriber's last window is padded to thirty seconds, so the outro
+                // can be stamped beyond where the audio stops — and the end of the last placed
+                // words is the only honest guess at where its speech begins.
                 var began = 0.0;
+                var limit = scores.SecondsAt(scores.Frames);
 
                 for (var i = 0; i < segments.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     progress?.Report((i + 1) / (double)segments.Count);
 
-                    var words = aligner.Align(scores, segments[i], began, cancellationToken);
+                    var stated = segments[i].StartSeconds < limit
+                        ? segments[i]
+                        : segments[i] with { StartSeconds = began, EndSeconds = limit };
+
+                    var words = aligner.Align(scores, stated, cancellationToken);
 
                     if (words is null)
                     {
-                        // The frontier stays put. Advancing it to the failed segment's stated end
-                        // was tried and cascaded: one failure overshot the next segment's words,
-                        // which then failed, and eighteen segments in a row fell back to
-                        // estimates. Staying is also simply right for the common causes — a
-                        // duplicated line consumed no audio, and a nonsense stamp refers to none
-                        // — so the next segment picks up exactly where the last good one ended.
                         placed.Add(new TimedSegment(segments[i], []));
                         continue;
                     }
@@ -419,8 +421,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     if (sounded.Count > 0)
                     {
-                        // The end, not the start: the next window opens where these words ran
-                        // out, which is where the next segment's speech begins.
                         began = sounded[^1].EndSeconds;
                     }
 
