@@ -24,6 +24,15 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+
+    <!--
+      The .NET runtime ships in the folder too, for the same reason the Windows App SDK does.
+      This app is a folder someone is handed, not something installed; published framework-
+      dependent it runs only while the machine happens to hold a matching .NET Desktop runtime,
+      and stops with an "install .NET" dialog the day an update removes it. The folder already
+      carries models a hundred times this size.
+    -->
+    <SelfContained>true</SelfContained>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 
