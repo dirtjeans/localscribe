@@ -189,9 +189,15 @@ public sealed class ForcedAligner : IDisposable
     /// bad alignment presented as a measurement is worse than an honest approximation.
     /// </para>
     /// </summary>
+    /// <param name="allowWideRetry">
+    /// Whether a placement that fails its grade may look again with a far wider window. Off for
+    /// a segment already on trial for never having been spoken: extra audio is extra rope for
+    /// invented text to fake a passing grade with, and on one archive it did.
+    /// </param>
     public IReadOnlyList<WordTimings.Word>? Align(
         AlignmentScores scores,
         TranscriptSegment segment,
+        bool allowWideRetry = true,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(scores);
@@ -229,10 +235,96 @@ public sealed class ForcedAligner : IDisposable
         var duration = Math.Max(
             segment.EndSeconds - segment.StartSeconds, ShortestAlignableSeconds);
 
-        var first = scores.FrameAt(Math.Max(0, segment.StartSeconds - SearchBackSeconds));
+        // A narrow window first, and a wide one only on evidence. The stamps usually hold, but
+        // their drift is a sawtooth — it grows through each of the transcriber's thirty-second
+        // windows and resets at the seam, and on one recording it passed five seconds — so a
+        // fixed reach fails inside the teeth, and a smoothed running correction chases the
+        // resets and corrupts the segments after them; that was built, measured, and taken out.
+        // What a drifted placement cannot do is read as itself: its words sit over some other
+        // stretch of speech, and the decoded letters underneath do not resemble the text. So
+        // every placement is graded, and only a failing grade pays for the wide window — with
+        // its own risk of reaching into a neighbour — and then only if the wide attempt
+        // actually grades better.
+        var narrow = PlaceWindow(
+            scores, segment, words, tokens, spellings,
+            SearchBackSeconds, SearchForwardSeconds, duration);
+
+        var grade = Grade(scores, segment, narrow);
+
+        if (grade >= ReadsAsItself || !allowWideRetry)
+        {
+            return narrow;
+        }
+
+        var wide = PlaceWindow(
+            scores, segment, words, tokens, spellings,
+            DriftedReachSeconds, SearchForwardSeconds + 2, duration);
+
+        return Grade(scores, segment, wide) > grade ? wide : narrow;
+    }
+
+    /// <summary>A placement below this does not read as its own text where it landed.</summary>
+    private const double ReadsAsItself = 0.5;
+
+    /// <summary>How far back a segment that failed its grade may look.</summary>
+    private const double DriftedReachSeconds = 10;
+
+    /// <summary>
+    /// How much a placement's audio resembles the words placed on it, 0 to 1.
+    /// <para>
+    /// Judged by halves, taking the worse, because a whole-segment score is blind to a shift.
+    /// A placement four seconds late still shares most of its text with the audio under it —
+    /// the tail of the segment really is down there, one phrase along — and scored whole it
+    /// passes while its first words sit on somebody else's speech. The first half of a shifted
+    /// placement always fails, and the minimum is what lets that failure count.
+    /// </para>
+    /// </summary>
+    private double Grade(
+        AlignmentScores scores,
+        TranscriptSegment segment,
+        IReadOnlyList<WordTimings.Word>? placement)
+    {
+        var sounded = placement?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+
+        if (sounded is not { Count: > 0 })
+        {
+            return 0;
+        }
+
+        if (sounded.Count < 6)
+        {
+            return TextLikeness.Share(
+                segment.Text,
+                Read(scores, sounded[0].StartSeconds, sounded[^1].EndSeconds));
+        }
+
+        var half = sounded.Count / 2;
+
+        var first = TextLikeness.Share(
+            string.Join(" ", sounded.Take(half).Select(w => w.Text)),
+            Read(scores, sounded[0].StartSeconds, sounded[half - 1].EndSeconds));
+
+        var second = TextLikeness.Share(
+            string.Join(" ", sounded.Skip(half).Select(w => w.Text)),
+            Read(scores, sounded[half].StartSeconds, sounded[^1].EndSeconds));
+
+        return Math.Min(first, second);
+    }
+
+    private IReadOnlyList<WordTimings.Word>? PlaceWindow(
+        AlignmentScores scores,
+        TranscriptSegment segment,
+        List<WordTimings.Word> words,
+        IReadOnlyList<int> tokens,
+        IReadOnlyList<AlignmentAlphabet.Spelling> spellings,
+        double reachBack,
+        double reachForward,
+        double duration)
+    {
+        var first = scores.FrameAt(Math.Max(0, segment.StartSeconds - reachBack));
         var count = scores.FrameAt(
             Math.Max(segment.EndSeconds, segment.StartSeconds + duration)
-                + SearchForwardSeconds) - first;
+                + reachForward) - first;
 
         if (count < ShortestAlignableSeconds / scores.FrameSeconds)
         {

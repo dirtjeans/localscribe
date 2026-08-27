@@ -88,7 +88,8 @@ public static class CheckWordsCommand
                 ? raw with { StartSeconds = began, EndSeconds = limit }
                 : raw;
 
-            var words = aligner.Align(scores, segment, CancellationToken.None);
+            var words = aligner.Align(
+                scores, segment, allowWideRetry: !pastEnd, cancellationToken: CancellationToken.None);
 
             if (pastEnd)
             {

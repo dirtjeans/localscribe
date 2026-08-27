@@ -402,7 +402,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         ? segments[i] with { StartSeconds = began, EndSeconds = limit }
                         : segments[i];
 
-                    var words = aligner.Align(scores, stated, cancellationToken);
+                    var words = aligner.Align(
+                        scores, stated, allowWideRetry: !pastEnd, cancellationToken: cancellationToken);
 
                     // A segment stamped past the end of the recording gets one chance to prove
                     // its words exist in whatever audio remains. If they cannot be placed, or
