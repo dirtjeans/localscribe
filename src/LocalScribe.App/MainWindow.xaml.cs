@@ -1448,9 +1448,27 @@ public sealed partial class MainWindow : Window
     /// Follows playback by moving the selection, so the highlight is the same mechanism the user
     /// clicked with rather than a second one that has to be kept in step with it.
     /// </summary>
-    private void OnPlaybackPosition(double seconds) =>
+    private void OnPlaybackPosition(double seconds)
+    {
+        Interlocked.Exchange(ref _latestPositionBits, BitConverter.DoubleToInt64Bits(seconds));
+
+        // One update in flight at a time, always carrying the newest position. Twenty arrive a
+        // second whatever the UI is doing, and queueing each one means a repaint that costs more
+        // than its fifty milliseconds puts the queue permanently behind: the marker then replays
+        // the past, a few words back where the paragraphs are short and sentences back where
+        // they are long, and it cannot catch up while sound keeps coming. A dropped stale
+        // position is invisible; an accumulated one was not.
+        if (Interlocked.Exchange(ref _positionUpdateQueued, 1) == 1)
+        {
+            return;
+        }
+
         _dispatcher.TryEnqueue(() =>
         {
+            // Cleared before reading, so a position arriving after the read queues a fresh pass.
+            Interlocked.Exchange(ref _positionUpdateQueued, 0);
+            var latest = BitConverter.Int64BitsToDouble(Interlocked.Read(ref _latestPositionBits));
+
             // Ignored while dragging: the pointer is the authority then, and letting playback
             // fight it makes the waveform jitter under the finger.
             if (_scrubbing)
@@ -1458,11 +1476,18 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            _position = seconds;
-            MovePlayhead(seconds);
-            HighlightAt(seconds);
+            _position = latest;
+            MovePlayhead(latest);
+            HighlightAt(latest);
             FollowSpokenWord();
         });
+    }
+
+    /// <summary>The newest reported playback position, as the bits of a double.</summary>
+    private long _latestPositionBits;
+
+    /// <summary>Whether a position update is already waiting for the UI thread.</summary>
+    private int _positionUpdateQueued;
 
     private void OnPlaybackStopped() =>
         _dispatcher.TryEnqueue(() =>
