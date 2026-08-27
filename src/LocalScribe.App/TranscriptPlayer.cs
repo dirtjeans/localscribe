@@ -112,6 +112,10 @@ public sealed class TranscriptPlayer : IDisposable
                 // clicked all day and never made a sound.
                 _output.Init(_source.ToWaveProvider16());
                 _output.Play();
+
+                _wall.Restart();
+                _nextLogAtSeconds = 0;
+                Log(FormattableString.Invariant($"-- playing from {seconds:F2}s"));
             }
             catch (Exception exception)
             {
@@ -161,6 +165,15 @@ public sealed class TranscriptPlayer : IDisposable
             var played = output.GetPosition() / (double)format.AverageBytesPerSecond;
 
             PositionChanged?.Invoke(_startedAtSeconds + played);
+
+            var wall = _wall.Elapsed.TotalSeconds;
+
+            if (wall >= _nextLogAtSeconds)
+            {
+                _nextLogAtSeconds = wall + 5;
+                Log(FormattableString.Invariant(
+                    $"at {_startedAtSeconds + played,7:F2}  wall {wall,7:F2}  device {played,7:F2}  gap {wall - played,6:F2}"));
+            }
         }
         catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
         {
@@ -170,6 +183,30 @@ public sealed class TranscriptPlayer : IDisposable
 
     /// <summary>Where in the recording this playback began, since the device counts from zero.</summary>
     private double _startedAtSeconds;
+
+    /// <summary>
+    /// Real time since Play, for checking the device's counter rather than trusting it. The
+    /// marker follows the device position, so a counter that runs slow drags the highlight
+    /// behind the sound while every word time in the transcript is correct — and nothing in the
+    /// transcript can show it. The gap between this and the device should hold steady at the
+    /// output latency; a gap that climbs is the device under-counting.
+    /// </summary>
+    private readonly System.Diagnostics.Stopwatch _wall = new();
+    private double _nextLogAtSeconds;
+
+    private static void Log(string line)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(Path.GetTempPath(), "localscribe-clock.txt"),
+                line + Environment.NewLine);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A diagnostic that cannot be written is not worth interrupting playback over.
+        }
+    }
 
     private void OnDeviceStopped(object? sender, StoppedEventArgs e) => Stopped?.Invoke();
 
