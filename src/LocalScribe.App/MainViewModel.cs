@@ -366,16 +366,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return untimed();
         }
 
-        // Rebuilt, not added to. Words are looked up by when they were said rather than by which
-        // segment produced them, so anything left over from a previous run sits in the same time
-        // range as the new words and is indistinguishable from them. Two alignments of one
-        // recording do not average out — they interleave, and every segment then finds about
-        // twice the words it has text for.
-        lock (_alignedGate)
-        {
-            _alignedFor.Clear();
-        }
-
         var placed = new List<TimedSegment>(segments.Count);
         var unheard = 0;
 
@@ -383,64 +373,95 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await Task.Run(() =>
             {
-                // Where the previous segment's words ended. Consulted for exactly one thing:
-                // a segment stamped past the end of the recording has no usable anchor of its
-                // own — the transcriber's last window is padded to thirty seconds, so the outro
-                // can be stamped beyond where the audio stops — and the end of the last placed
-                // words is the only honest guess at where its speech begins.
-                var began = 0.0;
                 var limit = scores.SecondsAt(scores.Frames);
+
+                // The whole transcript in one pass, so text order and time order are jointly
+                // monotonic by construction. Per-segment windows were tried in every shape a
+                // window has and each failed somewhere; the pass makes those failures
+                // unrepresentable rather than tuned against.
+                var all = aligner.AlignAll(scores, segments, cancellationToken);
+
+                // A segment stamped past the end of the recording is almost always real speech
+                // whose stamps the final padded window inflated — reading the last seconds of
+                // one such recording back proved an outro convicted as invented was spoken,
+                // word for word. The global pass places inflated stamps correctly on its own,
+                // so this is only a safety net for text that truly has no audio, and conviction
+                // demands both failures at once: words that neither occupy a plausible share of
+                // the time the text needs nor read as themselves where they landed. Dropping
+                // real speech is the worse lie, and this trial has told it once already.
+                var dropped = new bool[segments.Count];
+
+                for (var i = 0; i < segments.Count; i++)
+                {
+                    if (segments[i].StartSeconds < limit)
+                    {
+                        continue;
+                    }
+
+                    var claimed = Math.Max(
+                        1.0, segments[i].EndSeconds - segments[i].StartSeconds);
+
+                    var proof = all[i]?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+
+                    var span = proof is { Count: > 0 }
+                        ? proof[^1].EndSeconds - proof[0].StartSeconds
+                        : 0;
+
+                    var heard = proof is { Count: > 0 }
+                        ? aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds)
+                        : string.Empty;
+
+                    if (span < claimed * 0.3
+                        && TextLikeness.Share(segments[i].Text, heard) < 0.45)
+                    {
+                        dropped[i] = true;
+                        unheard++;
+                    }
+                }
+
+                // Once judged, the pass runs again without the condemned lines. Under a global
+                // path the invented tokens do not just cram — the path has to reserve real
+                // frames for them, squeezing the words that actually own that audio, and one
+                // invented line can even fake a passing grade with the room another's tokens
+                // freed up. Dropping them and realigning returns the audio to its owners. The
+                // pass costs well under a second, so a second one is free.
+                if (unheard > 0)
+                {
+                    var survivors = new List<TranscriptSegment>(segments.Count - unheard);
+                    var back = new List<int>(segments.Count - unheard);
+
+                    for (var i = 0; i < segments.Count; i++)
+                    {
+                        if (!dropped[i])
+                        {
+                            survivors.Add(segments[i]);
+                            back.Add(i);
+                        }
+                    }
+
+                    var again = aligner.AlignAll(scores, survivors, cancellationToken);
+                    var remapped = new IReadOnlyList<WordTimings.Word>?[segments.Count];
+
+                    for (var k = 0; k < back.Count; k++)
+                    {
+                        remapped[back[k]] = again[k];
+                    }
+
+                    all = remapped;
+                }
+
+                progress?.Report(1);
 
                 for (var i = 0; i < segments.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    progress?.Report((i + 1) / (double)segments.Count);
 
-                    var pastEnd = segments[i].StartSeconds >= limit;
-
-                    var stated = pastEnd
-                        ? segments[i] with { StartSeconds = began, EndSeconds = limit }
-                        : segments[i];
-
-                    var words = aligner.Align(
-                        scores, stated, allowWideRetry: !pastEnd, cancellationToken: cancellationToken);
-
-                    // A segment stamped past the end of the recording gets one chance to prove
-                    // its words exist in whatever audio remains. If they cannot be placed, or
-                    // place into a small fraction of the time the text would take to say, they
-                    // were never spoken. The transcriber pads its final window to thirty
-                    // seconds, and on a recording that simply stops it continues in the most
-                    // plausible way: on one draft cut it invented the entire sign-off —
-                    // seventeen lines stamped beyond the audio, crammed into its last two
-                    // seconds, a marker with nothing to follow and a minute of one speaker who
-                    // never said any of it. Text nobody said is the one thing a transcript must
-                    // not keep, so this is the one place a line is dropped rather than kept
-                    // with a guessed time.
-                    if (pastEnd)
+                    if (dropped[i])
                     {
-                        var claimed = Math.Max(
-                            1.0, segments[i].EndSeconds - segments[i].StartSeconds);
-
-                        var proof = words?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
-
-                        var span = proof is { Count: > 0 }
-                            ? proof[^1].EndSeconds - proof[0].StartSeconds
-                            : 0;
-
-                        // Spanning time is not enough: an invented line crammed onto whatever
-                        // real speech is left spreads plausibly and looks placed. It has to read
-                        // as itself where it landed.
-                        var heard = proof is { Count: > 0 }
-                            ? aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds)
-                            : string.Empty;
-
-                        if (span < claimed * 0.3
-                            || TextLikeness.Share(segments[i].Text, heard) < 0.45)
-                        {
-                            unheard++;
-                            continue;
-                        }
+                        continue;
                     }
+
+                    var words = all[i];
 
                     if (words is null)
                     {
@@ -448,10 +469,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         continue;
                     }
 
-                    // The segment moves to where its words turned out to be. Leaving it where the
-                    // transcriber put it would keep the clock beside the paragraph wrong, and
-                    // would leave the reader's position looked up in one place while the words
-                    // for it were measured in another.
                     var sounded = words.Where(w => w.EndSeconds > w.StartSeconds).ToList();
 
                     var moved = sounded.Count > 0
@@ -461,11 +478,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                             EndSeconds = Math.Max(sounded[^1].EndSeconds, sounded[0].StartSeconds),
                         }
                         : segments[i];
-
-                    if (sounded.Count > 0)
-                    {
-                        began = sounded[^1].EndSeconds;
-                    }
 
                     placed.Add(new TimedSegment(moved, words));
                 }
@@ -492,24 +504,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return untimed();
         }
 
-        // In the transcriber's order, never re-sorted by the placed times. The windows chain, so
-        // the placements come out ordered whenever the text is right — and where the text is
-        // locally wrong, a repeated line or crosstalk heard twice, sorting on the placements let
-        // segments leapfrog each other and spliced the outro into the middle of an answer. The
-        // decoder emits segments in the order they were spoken, and that order is the one thing
-        // it is always right about.
         return placed;
     }
 
     /// <summary>
-    /// Writes down what aligning did to the segment boundaries.
-    /// <para>
-    /// Here rather than in the doctor because here is the only place the question can be asked
-    /// honestly. The doctor reads a saved archive, whose segments have already been through this,
-    /// so its input is crowded before the experiment starts. The segments arriving here still
-    /// carry the transcriber's own times and do not overlap, which is what makes the difference
-    /// between the two columns mean something.
-    /// </para>
+    /// Writes down what aligning and attribution did to the segment boundaries.
     /// <para>
     /// A file rather than the status line: it is a page of numbers nobody wants during a
     /// transcription, and it needs to survive the run to be read afterwards.
@@ -525,9 +524,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 CrowdingReportPath,
                 AlignmentCrowding.Format(report, SourceName));
 
-            // Only when there is something to say. Overlapping segments are what put a line in
-            // the wrong place and what sends the marker to the wrong paragraph, and the number
-            // is meaningless to anybody who is not chasing that.
             if (report.OverlappedAfter > report.OverlappedBefore)
             {
                 Status = $"Transcribed. {report.OverlappedAfter} of {Math.Max(1, report.Segments - 1)} "

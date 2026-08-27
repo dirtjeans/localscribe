@@ -263,6 +263,186 @@ public sealed class ForcedAligner : IDisposable
         return Grade(scores, segment, wide) > grade ? wide : narrow;
     }
 
+    /// <summary>
+    /// Places every segment's words in one pass over the whole recording.
+    /// <para>
+    /// This supersedes aligning segment by segment. A per-segment window is a local decision
+    /// about a global constraint — text and time are jointly monotonic across the whole
+    /// transcript — and every window shape tried failed somewhere: anchored windows could not
+    /// recover stamps that drifted past their reach, chained ones integrated error, and any of
+    /// them could lock a repeated phrase onto its twin. One path over everything makes those
+    /// failures unrepresentable rather than tuned against.
+    /// </para>
+    /// <para>
+    /// The stamps are demoted to what they are good for: centring the search corridor. Inside
+    /// it, the audio decides everything.
+    /// </para>
+    /// </summary>
+    /// <returns>One word list per segment, null where a segment could not be spelled at all.</returns>
+    public IReadOnlyList<IReadOnlyList<WordTimings.Word>?> AlignAll(
+        AlignmentScores scores,
+        IReadOnlyList<TranscriptSegment> segments,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scores);
+        ArgumentNullException.ThrowIfNull(segments);
+
+        var results = new IReadOnlyList<WordTimings.Word>?[segments.Count];
+
+        var allTokens = new List<int>();
+        var parts = new (List<WordTimings.Word> Words,
+            IReadOnlyList<AlignmentAlphabet.Spelling> Spellings, int TokenStart)?[segments.Count];
+
+        var limit = scores.SecondsAt(scores.Frames);
+        var anchors = new List<(double Second, int Token)> { (0, 0) };
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var words = Words(segments[i].Text);
+
+            if (words.Count == 0)
+            {
+                continue;
+            }
+
+            var (tokens, spellings) = _alphabet.Spell([.. words.Select(w => w.Text)]);
+
+            if (tokens.Count == 0 || spellings.Count == 0)
+            {
+                continue;
+            }
+
+            var start = allTokens.Count;
+            allTokens.AddRange(tokens);
+            parts[i] = (words, spellings, start);
+
+            var from = Math.Clamp(segments[i].StartSeconds, 0, limit);
+
+            anchors.Add((from, start));
+            anchors.Add((Math.Clamp(segments[i].EndSeconds, from, limit), start + tokens.Count));
+        }
+
+        if (allTokens.Count == 0)
+        {
+            return results;
+        }
+
+        anchors.Add((limit, allTokens.Count));
+
+        // Wide enough to swallow every drift ever measured with an order of magnitude to spare:
+        // fifteen seconds of letters either side of the spine, never fewer than 400 states.
+        var halfBand = Math.Max(
+            400, (int)(allTokens.Count / Math.Max(1.0, limit) * 15) * 2);
+
+        var placed = GlobalCtcAlignment.Align(
+            scores,
+            allTokens,
+            _alphabet.Blank,
+            Spine(scores, anchors, allTokens.Count),
+            halfBand,
+            cancellationToken);
+
+        if (placed is null)
+        {
+            return results;
+        }
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (parts[i] is { } part)
+            {
+                results[i] = Assemble(scores, part.Words, part.Spellings, placed, part.TokenStart);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// The corridor's spine: for each frame, roughly which trellis state the stamps expect to
+    /// be active. Monotone in both axes, because the corridor must never run backwards through
+    /// the text — that guarantee is what kills the repeated-phrase double lock.
+    /// </summary>
+    private static int[] Spine(
+        AlignmentScores scores, List<(double Second, int Token)> anchors, int tokens)
+    {
+        anchors.Sort((a, b) => a.Second.CompareTo(b.Second));
+
+        var high = 0;
+
+        for (var i = 0; i < anchors.Count; i++)
+        {
+            high = Math.Max(high, anchors[i].Token);
+            anchors[i] = (anchors[i].Second, high);
+        }
+
+        var centers = new int[scores.Frames];
+        var at = 0;
+
+        for (var t = 0; t < scores.Frames; t++)
+        {
+            var second = scores.SecondsAt(t);
+
+            while (at + 1 < anchors.Count && anchors[at + 1].Second <= second)
+            {
+                at++;
+            }
+
+            var (fromSecond, fromToken) = anchors[at];
+            var (toSecond, toToken) = at + 1 < anchors.Count ? anchors[at + 1] : anchors[at];
+
+            var share = toSecond > fromSecond
+                ? (second - fromSecond) / (toSecond - fromSecond)
+                : 0;
+
+            centers[t] = Math.Clamp(
+                (fromToken + (int)(share * (toToken - fromToken))) * 2, 0, tokens * 2);
+        }
+
+        return centers;
+    }
+
+    /// <summary>One segment's words, timed from the global placements.</summary>
+    private static IReadOnlyList<WordTimings.Word> Assemble(
+        AlignmentScores scores,
+        List<WordTimings.Word> words,
+        IReadOnlyList<AlignmentAlphabet.Spelling> spellings,
+        IReadOnlyList<CtcForcedAlignment.Placement> placed,
+        int tokenStart)
+    {
+        var spelled = spellings.ToDictionary(spelling => spelling.Index);
+        var timed = new List<WordTimings.Word>(words.Count);
+        var previous = scores.SecondsAt(placed[tokenStart].FirstFrame);
+
+        for (var i = 0; i < words.Count; i++)
+        {
+            if (!spelled.TryGetValue(i, out var spelling))
+            {
+                timed.Add(new WordTimings.Word(words[i].Text, previous, previous)
+                {
+                    Offset = words[i].Offset,
+                });
+
+                continue;
+            }
+
+            var firstToken = tokenStart + spelling.First;
+            var lastToken = firstToken + spelling.Count - 1;
+
+            var from = scores.SecondsAt(placed[firstToken].FirstFrame);
+            var to = scores.SecondsAt(placed[lastToken].LastFrame + 1);
+
+            timed.Add(new WordTimings.Word(spelling.Word, from, Math.Max(to, from))
+            {
+                Offset = words[i].Offset,
+            });
+
+            previous = Math.Max(to, from);
+        }
+
+        return timed;
+    }
+
     /// <summary>A placement below this does not read as its own text where it landed.</summary>
     private const double ReadsAsItself = 0.5;
 

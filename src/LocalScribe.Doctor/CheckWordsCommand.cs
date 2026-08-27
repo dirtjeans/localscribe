@@ -71,57 +71,84 @@ public static class CheckWordsCommand
         var overTime = new List<(double At, double Shift)>();
         var adrift = new List<(double At, double Shift, string Word, string Heard)>();
 
-        var began = 0.0;
         var placed = new List<(double From, double To, string Text)>();
         var limit = scores.SecondsAt(scores.Frames);
-
         var unheardTail = 0;
 
-        foreach (var raw in contents.Segments)
+        // One pass over everything, exactly as the app runs it: align, judge the lines stamped
+        // past the end of the audio, then realign the survivors so the condemned lines' stolen
+        // frames go back to the words that own them.
+        var all = aligner.AlignAll(scores, contents.Segments, CancellationToken.None);
+        var droppedTail = new bool[contents.Segments.Count];
+
+        for (var i = 0; i < contents.Segments.Count; i++)
         {
-            // The same judgement the app makes: a segment stamped past the end of the audio must
-            // prove its words exist in what remains, or it is the transcriber continuing past a
-            // recording that simply stopped.
-            var pastEnd = raw.StartSeconds >= limit;
+            var raw = contents.Segments[i];
 
-            var segment = pastEnd
-                ? raw with { StartSeconds = began, EndSeconds = limit }
-                : raw;
-
-            var words = aligner.Align(
-                scores, segment, allowWideRetry: !pastEnd, cancellationToken: CancellationToken.None);
-
-            if (pastEnd)
+            if (raw.StartSeconds < limit)
             {
-                var claimed = Math.Max(1.0, raw.EndSeconds - raw.StartSeconds);
-                var proof = words?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
-                var span = proof is { Count: > 0 } ? proof[^1].EndSeconds - proof[0].StartSeconds : 0;
+                continue;
+            }
 
-                var heard = proof is { Count: > 0 }
-                    ? aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds)
-                    : string.Empty;
+            var claimed = Math.Max(1.0, raw.EndSeconds - raw.StartSeconds);
+            var proof = all[i]?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+            var span = proof is { Count: > 0 } ? proof[^1].EndSeconds - proof[0].StartSeconds : 0;
 
-                if (span < claimed * 0.3 || TextLikeness.Share(raw.Text, heard) < 0.45)
+            var heard = proof is { Count: > 0 }
+                ? aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds)
+                : string.Empty;
+
+            if (span < claimed * 0.3 && TextLikeness.Share(raw.Text, heard) < 0.45)
+            {
+                droppedTail[i] = true;
+                unheardTail++;
+                Console.WriteLine(
+                    $"  Unheard      {raw.StartSeconds,7:F2}-{raw.EndSeconds,-7:F2} "
+                    + $"\"{(raw.Text.Length <= 44 ? raw.Text : raw.Text[..41] + "…")}\"");
+            }
+        }
+
+        if (unheardTail > 0)
+        {
+            var survivors = new List<TranscriptSegment>();
+            var back = new List<int>();
+
+            for (var i = 0; i < contents.Segments.Count; i++)
+            {
+                if (!droppedTail[i])
                 {
-                    unheardTail++;
-                    Console.WriteLine(
-                        $"  Unheard      {raw.StartSeconds,7:F2}-{raw.EndSeconds,-7:F2} "
-                        + $"\"{(raw.Text.Length <= 44 ? raw.Text : raw.Text[..41] + "…")}\"");
-                    continue;
+                    survivors.Add(contents.Segments[i]);
+                    back.Add(i);
                 }
             }
 
+            var again = aligner.AlignAll(scores, survivors, CancellationToken.None);
+            var remapped = new IReadOnlyList<WordTimings.Word>?[contents.Segments.Count];
+
+            for (var k = 0; k < back.Count; k++)
+            {
+                remapped[back[k]] = again[k];
+            }
+
+            all = remapped;
+        }
+
+        for (var i = 0; i < contents.Segments.Count; i++)
+        {
+            if (droppedTail[i])
+            {
+                continue;
+            }
+
+            var raw = contents.Segments[i];
+            var words = all[i];
+
             if (words is null)
             {
-                // Named, not just counted. A segment the aligner could not place keeps times
-                // estimated from loudness, which are good to about half a second — so the marker
-                // wanders inside it while every measured segment around it is exact. Knowing
-                // which stretch that is separates "the times are drifting" from "these few
-                // seconds were never measured".
                 estimated++;
                 Console.WriteLine(
-                    $"  Estimated    {segment.StartSeconds,7:F2}-{segment.EndSeconds,-7:F2} "
-                    + $"\"{(segment.Text.Length <= 44 ? segment.Text : segment.Text[..41] + "…")}\"");
+                    $"  Estimated    {raw.StartSeconds,7:F2}-{raw.EndSeconds,-7:F2} "
+                    + $"\"{(raw.Text.Length <= 44 ? raw.Text : raw.Text[..41] + "…")}\"");
                 continue;
             }
 
@@ -129,8 +156,7 @@ public static class CheckWordsCommand
 
             if (words.Where(w => w.EndSeconds > w.StartSeconds).ToList() is { Count: > 0 } sounded)
             {
-                began = sounded[^1].EndSeconds;
-                placed.Add((sounded[0].StartSeconds, sounded[^1].EndSeconds, segment.Text));
+                placed.Add((sounded[0].StartSeconds, sounded[^1].EndSeconds, raw.Text));
             }
 
             foreach (var word in words)
@@ -149,10 +175,6 @@ public static class CheckWordsCommand
 
                 if (Locate(aligner, scores, word) is not { } shift)
                 {
-                    // The greedy read-back misspells words the way any recogniser does, so this
-                    // is usually the decode being approximate rather than the word being absent.
-                    // Counted rather than listed, because the rate matters and the instances do
-                    // not.
                     unheard++;
                     continue;
                 }
