@@ -178,6 +178,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             : Path.GetFileNameWithoutExtension(path);
 
         SetTranscript(contents.Segments);
+        RecordSpans(contents.Segments);
         Player.Load(contents.Audio);
 
         Status = $"Opened {SourceName}. {contents.Segments.Count} segment(s), "
@@ -250,6 +251,59 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return _alignedFor.TryGetValue(segment, out var measured)
                 ? MeasuredWords.Pair(measured, own)
                 : null;
+        }
+    }
+
+    /// <summary>
+    /// Writes what the marker will actually follow, one line per segment. The aligner's times
+    /// have been verified against the audio and the playback clock against a stopwatch, and the
+    /// highlight still lags — so the link left unproven is whether the words on screen carry the
+    /// measured times at all. Where the table lookup misses, the marker follows a loudness
+    /// estimate instead, and nothing anywhere reported which of the two it was doing.
+    /// </summary>
+    private void RecordSpans(IReadOnlyList<TranscriptSegment> segments)
+    {
+        if (_audio is not { } audio)
+        {
+            return;
+        }
+
+        try
+        {
+            var text = new StringBuilder();
+            var measured = 0;
+
+            foreach (var segment in segments)
+            {
+                var aligned = Aligned(segment);
+                var words = aligned ?? WordTimings.For(audio, segment);
+
+                if (aligned is not null)
+                {
+                    measured++;
+                }
+
+                var span = words.Count > 0
+                    ? FormattableString.Invariant(
+                        $"words {words[0].StartSeconds,7:F2}-{words[^1].EndSeconds,-7:F2}")
+                    : "words none           ";
+
+                var head = segment.Text.Length <= 40 ? segment.Text : segment.Text[..37] + "…";
+
+                text.AppendLine(FormattableString.Invariant(
+                    $"{(aligned is not null ? "measured" : "ESTIMATE")} {segment.StartSeconds,7:F2}-{segment.EndSeconds,-7:F2} {span} \"{head}\""));
+            }
+
+            var header = FormattableString.Invariant(
+                $"Displayed word times — {SourceName}{Environment.NewLine}measured {measured} of {segments.Count} segments{Environment.NewLine}{Environment.NewLine}");
+
+            File.WriteAllText(
+                Path.Combine(Path.GetTempPath(), "localscribe-spans.txt"),
+                header + text);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A diagnostic that cannot be written is not worth failing the transcript over.
         }
     }
 
@@ -1281,6 +1335,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
+        RecordSpans(finished);
 
         ReportCleanup(refiner);
     }
