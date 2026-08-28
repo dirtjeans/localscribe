@@ -105,4 +105,53 @@ public static class PowersetDecoder
 
         return active;
     }
+
+    /// <summary>
+    /// Runs of frames on which at least two local speakers are active at once — the model's own
+    /// crosstalk testimony. The overlap classes exist precisely so the powerset can say "both",
+    /// and this is the one place in the pipeline that reads them as such: everything downstream
+    /// resolves each moment to a single winner, which is right for attribution and silent about
+    /// the contest.
+    /// </summary>
+    /// <param name="active">From <see cref="Decode"/>, frame-major.</param>
+    /// <param name="frames">Number of frames.</param>
+    /// <param name="speakers">Local speaker count.</param>
+    /// <returns>Half-open frame runs: first frame in the run, first frame past it.</returns>
+    public static IEnumerable<(int First, int Until)> OverlappedFrames(
+        bool[] active, int frames, int speakers)
+    {
+        ArgumentNullException.ThrowIfNull(active);
+
+        int? runStart = null;
+
+        for (var frame = 0; frame <= frames; frame++)
+        {
+            var contested = false;
+
+            if (frame < frames)
+            {
+                var count = 0;
+
+                for (var speaker = 0; speaker < speakers; speaker++)
+                {
+                    if (active[(frame * speakers) + speaker])
+                    {
+                        count++;
+                    }
+                }
+
+                contested = count >= 2;
+            }
+
+            if (contested && runStart is null)
+            {
+                runStart = frame;
+            }
+            else if (!contested && runStart is { } begin)
+            {
+                runStart = null;
+                yield return (begin, frame);
+            }
+        }
+    }
 }

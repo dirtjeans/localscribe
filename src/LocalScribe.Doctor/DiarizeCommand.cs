@@ -174,6 +174,7 @@ internal static class DiarizeCommand
         var found = 0;
         var kept = 0;
         var nested = 0;
+        IReadOnlyList<(double Start, double End)> contested = [];
 
         try
         {
@@ -189,6 +190,7 @@ internal static class DiarizeCommand
             found = diarizer.LastSpansFound;
             kept = diarizer.LastSpansKept;
             nested = diarizer.LastNestedDropped;
+            contested = diarizer.LastOverlaps;
         }
         catch (FileNotFoundException exception)
         {
@@ -224,6 +226,27 @@ internal static class DiarizeCommand
         Console.WriteLine($"  Found        {found} across the overlapping windows");
         Console.WriteLine($"  Kept         {kept} after near-duplicates were dropped");
         Console.WriteLine($"  Nested       {nested} dropped though far shorter than what covered them");
+
+        // Where the model heard two voices at once. This is what the app's crosstalk badge is
+        // built from, so a recording full of interruptions should show plenty here — and one
+        // that shows none has found a bug, not a polite conversation.
+        Heading("Crosstalk");
+
+        if (contested.Count == 0)
+        {
+            Console.WriteLine("  (none heard)");
+        }
+        else
+        {
+            foreach (var (start, end) in contested.Where(c => c.End - c.Start >= 0.5))
+            {
+                Console.WriteLine($"  {start,7:F2} - {end,7:F2}  ({end - start,5:F2}s)");
+            }
+
+            Console.WriteLine(
+                $"  {contested.Count} stretch(es), {contested.Sum(c => c.End - c.Start):F1}s in all "
+                + "(listed where at least half a second)");
+        }
 
         Heading("Summary");
         Console.WriteLine($"  Speakers   {distinct}");

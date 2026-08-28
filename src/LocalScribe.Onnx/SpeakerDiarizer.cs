@@ -865,6 +865,7 @@ public sealed class SpeakerDiarizer : IDisposable
 
         var shift = (int)(_windowSamples * WindowShiftFraction);
         var windows = new List<Window>();
+        var contested = new List<(double Start, double End)>();
 
         for (var offset = 0; offset < audio.Samples.Length; offset += shift)
         {
@@ -906,9 +907,53 @@ public sealed class SpeakerDiarizer : IDisposable
             }
 
             windows.Add(new Window(windowStart, bySpeaker));
+
+            // The frames where the model heard two voices at once, kept as times. Everything
+            // else this method feeds resolves each moment to one winner; this is the record of
+            // the moments that had no clean winner to give.
+            var limit = windowStart + (available / (double)audio.SampleRate);
+
+            foreach (var (first, until) in
+                PowersetDecoder.OverlappedFrames(active, frames, _localSpeakers))
+            {
+                var start = windowStart + _receptiveFieldStart + (first * _receptiveFieldShift);
+                var end = Math.Min(
+                    limit, windowStart + _receptiveFieldStart + (until * _receptiveFieldShift));
+
+                if (end > start)
+                {
+                    contested.Add((start, end));
+                }
+            }
         }
 
+        // Windows overlap by ninety percent, so the same contested moment arrives many times
+        // over; the union is the moment itself. The tracking path overwrites this afterwards
+        // with its own between-window measure, which was proven on real recordings first.
+        LastOverlaps = MergeSpans(contested);
+
         return windows;
+    }
+
+    /// <summary>Overlapping or touching spans folded into one, in order.</summary>
+    private static IReadOnlyList<(double Start, double End)> MergeSpans(
+        List<(double Start, double End)> spans)
+    {
+        var merged = new List<(double Start, double End)>();
+
+        foreach (var span in spans.OrderBy(s => s.Start))
+        {
+            if (merged.Count > 0 && span.Start <= merged[^1].End)
+            {
+                merged[^1] = (merged[^1].Start, Math.Max(merged[^1].End, span.End));
+            }
+            else
+            {
+                merged.Add(span);
+            }
+        }
+
+        return merged;
     }
 
     private List<(double Start, double End)> CollectSpeechSpans(

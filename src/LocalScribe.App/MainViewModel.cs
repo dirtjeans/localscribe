@@ -895,9 +895,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         progress: progress,
                         cancellationToken: _cancellation?.Token ?? default);
 
-                // Crosstalk is a by-product of following speakers between windows, so the other
-                // path reports none rather than stale marks from a previous run.
-                _overlaps = method == DiarizationMethod.Voices ? [] : diarizer.LastOverlaps;
+                // Both paths report crosstalk now: tracking measures it between windows, and
+                // the voices path reads the segmentation model's own overlap classes — the
+                // frames on which it heard two speakers at once.
+                _overlaps = diarizer.LastOverlaps;
 
                 return found;
             }).ConfigureAwait(true);
@@ -1064,7 +1065,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Before the aligned-times table is keyed, because the mark rewrites the segment
             // records and the table is keyed by value — marking afterwards would quietly hand
             // every crosstalk paragraph a loudness estimate instead of its measured words.
-            pieces = CrosstalkMarks.Apply(pieces);
+            pieces = CrosstalkMarks.Apply(pieces, _overlaps);
 
             // Here rather than after aligning. Aligning is not the last thing that moves a
             // boundary — dividing segments between speakers sets new ones from the words, and
@@ -1088,7 +1089,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var attributed = SpeakerDiarizer.Attribute([.. timed.Select(t => t.Segment)], turns);
 
-        return SpeakerAttribution.KeepSentencesWhole(attributed);
+        // No measured words on this path, so the bounds-based mark is the honest one.
+        return SpeakerAttribution.MarkOverlaps(
+            SpeakerAttribution.KeepSentencesWhole(attributed), _overlaps);
     }
 
     /// <summary>Says what cleanup left undone, or takes the notice away when it did not.</summary>
@@ -1493,11 +1496,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ? await AlignWordsAsync(cleaned, new Progress<double>(stages.Words), cancellationToken)
             : [.. cleaned.Select(segment => new TimedSegment(segment, []))];
 
+        // Crosstalk is marked inside Attribute, not here: marking rewrites the segment records,
+        // and the aligned-times table Attribute builds is keyed by value — a record rewritten
+        // after keying quietly trades its measured words for a loudness estimate.
         var finished = _lastTurns is null
             ? [.. timed.Select(t => t.Segment)]
             : Attribute(timed, _lastTurns);
 
-        finished = SpeakerAttribution.MarkOverlaps(finished, _overlaps);
         SetTranscript(finished);
         RecordSpans(finished);
 

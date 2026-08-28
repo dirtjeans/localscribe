@@ -3,14 +3,15 @@ using LocalScribe.Core.Transcription;
 namespace LocalScribe.Core.Diarization;
 
 /// <summary>
-/// Marks the stretches where two people were provably talking at once.
+/// Marks the lines spoken while somebody else was talking.
 /// <para>
-/// The evidence is the measured word times, not the diarizer. When crosstalk is transcribed at
-/// all, both streams end up in the text, and the global alignment puts each word on the sound
-/// it came from — so two different speakers' words sounding at the same moments is the aligner
-/// testifying that the moments were contested. The diarizer's tuning is not consulted and not
-/// touched; whatever labels it chose, the mark says those labels were earned under the worst
-/// conditions the recording has.
+/// The evidence is the segmentation model's own overlap classes — the powerset decoder reports
+/// frames on which two local speakers are active at once, and those moments arrive here as
+/// contested time spans. Nothing else can testify to this: the transcriber usually writes down
+/// only the louder stream, so the text reads clean, and the global alignment is a single
+/// monotone path that cannot place two words on the same instant even when both streams were
+/// transcribed. The first version of this mark used word-time collisions as evidence and could
+/// therefore never fire; a debate full of audible crosstalk came back unmarked.
 /// </para>
 /// <para>
 /// The mark exists for the reader, not the pipeline. A name on a line implies more certainty
@@ -21,68 +22,57 @@ namespace LocalScribe.Core.Diarization;
 public static class CrosstalkMarks
 {
     /// <summary>
-    /// How much simultaneous speech makes crosstalk worth saying. Words at a clean turn
-    /// boundary brush against each other for a couple of tenths of a second — the aligner
-    /// works on twenty-millisecond frames and a handover is not a conversation. Three
-    /// quarters of a second of two voices is somebody genuinely being talked over.
+    /// How much of a line must fall on contested moments before the line is marked. A clean
+    /// handover grazes the overlap classes for tenths of a second; three quarters of a second
+    /// of two voices is somebody genuinely being talked over.
     /// </summary>
     public const double NoticeableSeconds = 0.75;
 
-    /// <summary>
-    /// How many segments apart two voices can be and still be compared. Crosstalk is local —
-    /// an interjection lands in the middle of the sentence it interrupts, not a page later.
-    /// </summary>
-    public const int Reach = 3;
-
-    /// <summary>Flags both sides of every contested stretch, changing nothing else.</summary>
-    public static IReadOnlyList<TimedSegment> Apply(IReadOnlyList<TimedSegment> timed)
+    /// <summary>Flags every line that spent noticeable time contested, changing nothing else.</summary>
+    /// <param name="timed">The attributed pieces, words and all.</param>
+    /// <param name="contested">Where two voices sounded at once, from the segmentation model.</param>
+    public static IReadOnlyList<TimedSegment> Apply(
+        IReadOnlyList<TimedSegment> timed,
+        IReadOnlyList<(double Start, double End)> contested)
     {
         ArgumentNullException.ThrowIfNull(timed);
+        ArgumentNullException.ThrowIfNull(contested);
 
-        var overlapped = new bool[timed.Count];
-        var coverage = new List<(double From, double To)>[timed.Count];
-
-        for (var i = 0; i < timed.Count; i++)
+        if (contested.Count == 0)
         {
-            coverage[i] = Coverage(timed[i].Words);
+            return timed;
         }
 
-        for (var i = 0; i < timed.Count; i++)
-        {
-            for (var j = i + 1; j <= Math.Min(timed.Count - 1, i + Reach); j++)
-            {
-                if (timed[i].Segment.Speaker is not { Length: > 0 } first
-                    || timed[j].Segment.Speaker is not { Length: > 0 } second
-                    || first == second)
-                {
-                    continue;
-                }
+        var windows = contested.OrderBy(c => c.Start).ToList();
 
-                if (Shared(coverage[i], coverage[j]) >= NoticeableSeconds)
-                {
-                    overlapped[i] = true;
-                    overlapped[j] = true;
-                }
-            }
-        }
-
-        return [.. timed.Select((item, index) => overlapped[index]
-            ? item with { Segment = item.Segment with { Overlapped = true } }
-            : item)];
+        return [.. timed.Select(item =>
+            Shared(Coverage(item), windows) >= NoticeableSeconds
+                ? item with { Segment = item.Segment with { Overlapped = true } }
+                : item)];
     }
 
     /// <summary>
-    /// When this segment's voice was actually sounding: its word spans, merged. The envelope
-    /// from first word to last would count the silences a speaker leaves while the other talks,
-    /// and turn taking turns into crosstalk.
+    /// When this line's voice was actually sounding: its measured word spans, merged — or its
+    /// stated bounds when no words were measured, which overstates a little and is the honest
+    /// fallback for a transcript that was never aligned.
     /// </summary>
-    private static List<(double From, double To)> Coverage(IReadOnlyList<WordTimings.Word> words)
+    private static List<(double From, double To)> Coverage(TimedSegment item)
     {
+        var sounded = item.Words
+            .Where(w => w.EndSeconds > w.StartSeconds)
+            .OrderBy(w => w.StartSeconds)
+            .ToList();
+
+        if (sounded.Count == 0)
+        {
+            return item.Segment.EndSeconds > item.Segment.StartSeconds
+                ? [(item.Segment.StartSeconds, item.Segment.EndSeconds)]
+                : [];
+        }
+
         var merged = new List<(double From, double To)>();
 
-        foreach (var word in words
-            .Where(w => w.EndSeconds > w.StartSeconds)
-            .OrderBy(w => w.StartSeconds))
+        foreach (var word in sounded)
         {
             if (merged.Count > 0 && word.StartSeconds <= merged[^1].To)
             {
@@ -97,20 +87,20 @@ public static class CrosstalkMarks
         return merged;
     }
 
-    /// <summary>Seconds during which both coverages are sounding at once.</summary>
+    /// <summary>Seconds during which the line's voice and a contested span coincide.</summary>
     private static double Shared(
-        List<(double From, double To)> first, List<(double From, double To)> second)
+        List<(double From, double To)> voice, List<(double Start, double End)> contested)
     {
         var total = 0.0;
         var i = 0;
         var j = 0;
 
-        while (i < first.Count && j < second.Count)
+        while (i < voice.Count && j < contested.Count)
         {
             total += Math.Max(
-                0, Math.Min(first[i].To, second[j].To) - Math.Max(first[i].From, second[j].From));
+                0, Math.Min(voice[i].To, contested[j].End) - Math.Max(voice[i].From, contested[j].Start));
 
-            if (first[i].To < second[j].To)
+            if (voice[i].To < contested[j].End)
             {
                 i++;
             }
