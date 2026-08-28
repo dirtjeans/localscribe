@@ -40,12 +40,39 @@ public sealed partial class FoundryLocalManager
     }
 
     /// <summary>
-    /// Installs Foundry Local through winget.
+    /// Installs Foundry Local through the platform's package manager: winget on Windows,
+    /// Homebrew on macOS. Foundry ships for both, and going through the manager the machine
+    /// already trusts beats downloading installers by hand.
     /// </summary>
     public async Task<InstallResult> InstallAsync(
         IProgress<InstallProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            progress?.Report(new InstallProgress("foundry", "Installing Foundry Local via Homebrew…"));
+
+            // The tap-qualified name installs without a separate tap step.
+            var brewed = await _runner.RunAsync(
+                "brew",
+                "install microsoft/foundrylocal/foundrylocal",
+                TimeSpan.FromMinutes(20),
+                cancellationToken).ConfigureAwait(false);
+
+            if (brewed.NotFound)
+            {
+                return new InstallResult(
+                    "foundry",
+                    false,
+                    "Homebrew is not available. Install it from https://brew.sh, or install "
+                    + "Foundry Local by hand from https://aka.ms/foundry-local-install");
+            }
+
+            return brewed.Succeeded
+                ? new InstallResult("foundry", true, "Foundry Local installed.")
+                : new InstallResult("foundry", false, $"brew failed: {Summarise(brewed.CombinedOutput)}");
+        }
+
         progress?.Report(new InstallProgress("foundry", "Installing Foundry Local via winget…"));
 
         var result = await _runner.RunAsync(

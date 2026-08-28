@@ -1839,20 +1839,6 @@ public sealed partial class MainWindow : Window
                 Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
             });
         }
-        else
-        {
-            content.Children.Add(new InfoBar
-            {
-                IsOpen = true,
-                IsClosable = false,
-                Severity = InfoBarSeverity.Warning,
-                Title = "No cleanup model is running",
-                Message = "The glossary has no effect until one is. Start GenieX, or run "
-                    + "'foundry service start' for Foundry Local. Transcription itself is "
-                    + "unaffected — only the corrections, summary and action items need it.",
-            });
-        }
-
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -1862,6 +1848,34 @@ public sealed partial class MainWindow : Window
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
+
+        if (_viewModel.CleanupModel is null)
+        {
+            // The one-click way out, not just the diagnosis. Everything the button does is
+            // named in the message, runs on this machine, and reports into the status line —
+            // the model is a download, not an account or a service.
+            var fetch = new Button { Content = "Download and start it" };
+
+            fetch.Click += async (_, _) =>
+            {
+                dialog.Hide();
+                await _viewModel.ProvisionCleanupAsync();
+            };
+
+            content.Children.Add(new InfoBar
+            {
+                IsOpen = true,
+                IsClosable = false,
+                Severity = InfoBarSeverity.Warning,
+                Title = "No cleanup model is running",
+                Message = "The glossary has no effect until one is. Transcription itself is "
+                    + "unaffected — only the corrections, summary and action items need it. "
+                    + "Downloading fetches Foundry Local's small instruct model (about a "
+                    + "gigabyte, one time) and runs it here; progress lands in the status "
+                    + "line. If you use GenieX instead, just start it and reopen the app.",
+                ActionButton = fetch,
+            });
+        }
 
         if (await dialog.ShowAsync() == ContentDialogResult.Primary)
         {

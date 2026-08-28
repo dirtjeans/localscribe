@@ -8,6 +8,7 @@ using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
 using LocalScribe.Core.Pipeline;
+using LocalScribe.Core.Provisioning;
 using LocalScribe.Core.Refinement;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Onnx;
@@ -1742,15 +1743,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Where the work will run, but not which weights: that is not known until they are
         // opened, and naming the size the planner asked for is how the window spent a session
         // claiming medium.en while running large-v3-turbo.
-        // Naming the cleanup backend, not just its device. Which model is doing the punctuation
-        // decides how good the punctuation is, and this is the line people read when the answer
-        // is "not very".
-        var cleanup = _languageModel is { } model
-            ? model.Description
-            : "no cleanup model found";
-
-        HardwareSummary = $"encoder on {_plan.Encoder.Device}, decoder on {_plan.Decoder.Device}, "
-            + $"cleanup: {cleanup}";
+        AnnounceHardware();
         Status = _plan.Warnings.Count == 0
             ? "Ready."
             : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
@@ -2216,6 +2209,115 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// running, which disables the cleanup stage without disabling transcription.
     /// </summary>
     private ILanguageModel? _languageModel;
+
+    private void AnnounceHardware()
+    {
+        if (_plan is not { } plan)
+        {
+            return;
+        }
+
+        // Naming the cleanup backend, not just its device. Which model is doing the punctuation
+        // decides how good the punctuation is, and this is the line people read when the answer
+        // is "not very".
+        var cleanup = _languageModel is { } model
+            ? model.Description
+            : "no cleanup model found";
+
+        HardwareSummary = $"encoder on {plan.Encoder.Device}, decoder on {plan.Decoder.Device}, "
+            + $"cleanup: {cleanup}";
+    }
+
+    /// <summary>
+    /// Gets a cleanup model running, from wherever the machine currently is: installs Foundry
+    /// Local if its CLI is missing, starts the service, downloads the default model, and
+    /// reconnects. Everything is user-initiated — this runs from a button that says what it
+    /// does — and everything it downloads runs on this machine.
+    /// <para>
+    /// If a transcript is already open, cleanup runs on it once the model is up, because
+    /// enabling cleanup was the whole point of the click.
+    /// </para>
+    /// </summary>
+    public async Task<bool> ProvisionCleanupAsync()
+    {
+        if (_languageModel is not null)
+        {
+            return true;
+        }
+
+        if (_provisioningCleanup)
+        {
+            return false;
+        }
+
+        _provisioningCleanup = true;
+
+        try
+        {
+            var foundry = new FoundryLocalManager();
+            var progress = new Progress<InstallProgress>(p => Status = p.Message);
+
+            if (!await foundry.IsInstalledAsync())
+            {
+                var installed = await foundry.InstallAsync(progress);
+
+                if (!installed.Succeeded)
+                {
+                    Status = installed.Message;
+                    return false;
+                }
+            }
+
+            var started = await foundry.StartServiceAsync(progress);
+
+            if (!started.Succeeded)
+            {
+                Status = started.Message;
+                return false;
+            }
+
+            // Idempotent: a model already in the cache reports success without moving data.
+            var downloaded = await foundry.DownloadModelAsync(progress: progress);
+
+            if (!downloaded.Succeeded)
+            {
+                Status = downloaded.Message;
+                return false;
+            }
+
+            Status = "Connecting to the cleanup model…";
+            _languageModel = await LocalLanguageModel.ResolveAsync();
+
+            if (_languageModel is null)
+            {
+                Status = "Foundry Local is running, but no model answered. "
+                    + "Try 'foundry service status' in a terminal.";
+                return false;
+            }
+
+            AnnounceHardware();
+            Raise(nameof(CleanupModel));
+            Status = $"Cleanup ready on {_languageModel.Description}.";
+
+            if (_rawSegments.Count > 0 && !IsBusy)
+            {
+                await RetryCleanupAsync();
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Status = $"Could not set up the cleanup model: {exception.Message}";
+            return false;
+        }
+        finally
+        {
+            _provisioningCleanup = false;
+        }
+    }
+
+    private bool _provisioningCleanup;
 
     private TranscriptRefiner? BuildRefiner() =>
         _languageModel is null ? null : new TranscriptRefiner(_languageModel);

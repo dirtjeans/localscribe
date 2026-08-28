@@ -85,6 +85,12 @@ invariant is about sidecar references and applies to Core ML `.mlmodelc` bundles
   exposes the same OpenAI-shaped HTTP surface and the refiner should treat that as a
   configuration difference, not a code path.
 
+  The glossary dialog's "Download and start it" button drives
+  `FoundryLocalManager` — install if missing, start the service, download the default model,
+  reconnect, and rerun cleanup on the open transcript. The manager already branches to
+  Homebrew on macOS (`OperatingSystem.IsMacOS()` in `InstallAsync`), but that branch has
+  never executed; verify it the first time the button is pressed on a Mac.
+
 ## The UI: recommendation and reasoning
 
 **Avalonia.** Three reasons:
