@@ -329,6 +329,13 @@ public sealed class ForcedAligner : IDisposable
 
         anchors.Add((limit, allTokens.Count));
 
+        // The stamps of the final padded window arrive up to eighteen seconds past the end of
+        // the audio, and clamped to the end they become confident lies that collapse the tail
+        // of the spine onto the last frames — far enough from the truth that the band cannot
+        // reach back to it. Anchors that could not be spoken are dropped, and the spine
+        // interpolates across the gap at the recording's own pace instead.
+        anchors = CredibleAnchors.Prune(anchors, allTokens.Count, limit);
+
         // Wide enough to swallow every drift ever measured with an order of magnitude to spare:
         // fifteen seconds of letters either side of the spine, never fewer than 400 states.
         var halfBand = Math.Max(
