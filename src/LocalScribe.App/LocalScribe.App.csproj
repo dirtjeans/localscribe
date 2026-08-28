@@ -47,6 +47,15 @@
   <ItemGroup>
     <Content Include="Assets\localscribe.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\localscribe.png" CopyToOutputDirectory="PreserveNewest" />
+
+    <!--
+      The icon Explorer shows on saved .scrb transcripts. Shipped as a file beside the exe
+      rather than embedded, because the registry's DefaultIcon points at a path and a plain
+      .ico keeps tools/register-scrb.ps1 independent of resource indexes. Regenerate with
+      tools/make-scrb-icon.py.
+    -->
+    <Content Include="Assets\scrb.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\scrb.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
