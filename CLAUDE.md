@@ -9,9 +9,11 @@ planned in [docs/handoff-macos.md](docs/handoff-macos.md); if you are on a Mac, 
 
 ## The state that matters
 
-The core library and its tests are verified. `LocalScribe.App` has never been compiled, and
-`LocalScribe.Onnx` has compiled but never executed a model — both were written in a Linux cloud
-container with no Windows toolchain and no NPU.
+Everything runs on the real hardware now: transcription on the NPU, word-level alignment,
+diarization, cleanup, playback with a synced highlight, `.scrb` archives. Claims about this
+codebase are settled by measurement, not argument — the doctor's `--check-words`, `--align`,
+`--replay`, and `--diarize`, plus the app's `%TEMP%` diagnostics, are the instruments;
+`docs/handoff.md` explains each and the discipline that goes with them.
 
 ## Build and test
 
