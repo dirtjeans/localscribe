@@ -422,6 +422,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var placed = new List<TimedSegment>(segments.Count);
         var unheard = 0;
+        var doubled = 0;
 
         try
         {
@@ -481,8 +482,96 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // pass costs well under a second, so a second one is free.
                 if (unheard > 0)
                 {
-                    var survivors = new List<TranscriptSegment>(segments.Count - unheard);
-                    var back = new List<int>(segments.Count - unheard);
+                    Repass();
+                }
+
+                // A line the transcriber wrote twice is the one failure the global pass cannot
+                // absorb. Trimming catches the copies it can see at a seam, but a copy landing
+                // a few words inside a segment survives it — and under a single monotone path a
+                // surviving twin is no longer cosmetic: every letter of it must be funded with
+                // real frames, so the path parks the copy on top of whatever is actually said
+                // there and shoves the sentences around it seconds off. On one podcast a
+                // duplicated "They cannot be victims to this." put the marker a few words
+                // behind where the copy sat and a sentence or two behind by the end.
+                //
+                // Conviction takes two proofs, because reading badly alone is how mumbled and
+                // crosstalked lines read too. The text must be a verbatim copy of a neighbour's
+                // — folded, so hyphens and case cannot hide it — and the audio under its
+                // placement must not read as it. One conviction per round, then the pass runs
+                // again: a real line merely displaced by the twin is re-placed, not condemned
+                // with it.
+                for (var round = 0; round < 3; round++)
+                {
+                    var worst = -1;
+                    // The bar is "reads as itself", not "reads as nothing". A twin parked on its
+                    // neighbour's sentence still shares letters with it by coincidence — LCS is
+                    // generous over short strings — and 0.35 let this one pass. A real verbatim
+                    // repeat sits on its own audio and clears 0.5 easily.
+                    var worstShare = 0.5;
+
+                    for (var i = 0; i < segments.Count; i++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        if (dropped[i])
+                        {
+                            continue;
+                        }
+
+                        var own = TextLikeness.Fold(segments[i].Text);
+
+                        if (own.Length < 12 || !CopiedNearby(i, own))
+                        {
+                            continue;
+                        }
+
+                        var proof = all[i]?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+
+                        if (proof is not { Count: > 0 })
+                        {
+                            continue;
+                        }
+
+                        var heard = aligner.Read(
+                            scores, proof[0].StartSeconds, proof[^1].EndSeconds);
+                        var asItself = TextLikeness.Share(segments[i].Text, heard);
+
+                        if (asItself < worstShare)
+                        {
+                            worstShare = asItself;
+                            worst = i;
+                        }
+                    }
+
+                    if (worst < 0)
+                    {
+                        break;
+                    }
+
+                    dropped[worst] = true;
+                    doubled++;
+                    Repass();
+                }
+
+                progress?.Report(1);
+
+                bool CopiedNearby(int i, string own)
+                {
+                    for (var n = Math.Max(0, i - 2); n <= Math.Min(segments.Count - 1, i + 2); n++)
+                    {
+                        if (n != i && TextLikeness.Fold(segments[n].Text).Contains(own, StringComparison.Ordinal))
+                        {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                }
+
+                void Repass()
+                {
+                    var survivors = new List<TranscriptSegment>(segments.Count);
+                    var back = new List<int>(segments.Count);
 
                     for (var i = 0; i < segments.Count; i++)
                     {
@@ -503,8 +592,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     all = remapped;
                 }
-
-                progress?.Report(1);
 
                 for (var i = 0; i < segments.Count; i++)
                 {
@@ -552,8 +639,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _unheardTail = unheard;
+        _doubledLines = doubled;
 
-        if (placed.Count + unheard != segments.Count)
+        if (placed.Count + unheard + doubled != segments.Count)
         {
             return untimed();
         }
@@ -598,6 +686,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// Trailing lines dropped because the recording ends before they are spoken.
     /// </summary>
     private int _unheardTail;
+
+    /// <summary>Lines dropped because the transcriber wrote them twice.</summary>
+    private int _doubledLines;
+
+    /// <summary>What "finished" should say, given what had to be left out along the way.</summary>
+    private string DoneStatus()
+    {
+        var text = "Done.";
+
+        if (_unheardTail > 0)
+        {
+            text += $" The recording ends before its last {_unheardTail} line(s) are spoken, "
+                + "so they were left out.";
+        }
+
+        if (_doubledLines > 0)
+        {
+            text += $" {_doubledLines} line(s) the transcriber wrote twice were dropped.";
+        }
+
+        return text;
+    }
 
     /// <summary>
     /// Lets go of the network but keeps what a second attempt would need.
@@ -1706,10 +1816,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 
-            Status = _unheardTail > 0
-                ? $"Done. The recording ends before its last {_unheardTail} line(s) are spoken, "
-                    + "so they were left out."
-                : "Done.";
+            Status = DoneStatus();
         }
         catch (OperationCanceledException)
         {
@@ -2003,10 +2110,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             try
             {
                 await FinishTranscriptAsync(committed, _audio, _cancellation?.Token ?? default);
-                Status = _unheardTail > 0
-                ? $"Done. The recording ends before its last {_unheardTail} line(s) are spoken, "
-                    + "so they were left out."
-                : "Done.";
+                Status = DoneStatus();
             }
             finally
             {

@@ -110,6 +110,80 @@ public static class CheckWordsCommand
 
         if (unheardTail > 0)
         {
+            Repass();
+        }
+
+        // The same twin trial the app runs: a line whose folded text is a verbatim copy of a
+        // neighbour's and whose placed audio does not read as it was never spoken twice — the
+        // stitcher just kept both copies of a window seam. One conviction per round, then the
+        // pass runs again so displaced real lines are re-placed rather than condemned.
+        for (var round = 0; round < 3; round++)
+        {
+            var worst = -1;
+            // The bar is "reads as itself", not "reads as nothing" — LCS is generous
+            // over short strings, and a twin on its neighbour's sentence can score 0.4.
+            var worstShare = 0.5;
+
+            for (var i = 0; i < contents.Segments.Count; i++)
+            {
+                if (droppedTail[i])
+                {
+                    continue;
+                }
+
+                var own = TextLikeness.Fold(contents.Segments[i].Text);
+
+                if (own.Length < 12 || !CopiedNearby(i, own))
+                {
+                    continue;
+                }
+
+                var proof = all[i]?.Where(w => w.EndSeconds > w.StartSeconds).ToList();
+
+                if (proof is not { Count: > 0 })
+                {
+                    continue;
+                }
+
+                var heard = aligner.Read(scores, proof[0].StartSeconds, proof[^1].EndSeconds);
+                var asItself = TextLikeness.Share(contents.Segments[i].Text, heard);
+
+                if (asItself < worstShare)
+                {
+                    worstShare = asItself;
+                    worst = i;
+                }
+            }
+
+            if (worst < 0)
+            {
+                break;
+            }
+
+            var twin = contents.Segments[worst];
+            Console.WriteLine(
+                $"  Doubled      {twin.StartSeconds,7:F2}-{twin.EndSeconds,-7:F2} "
+                + $"\"{(twin.Text.Length <= 44 ? twin.Text : twin.Text[..41] + "…")}\"");
+
+            droppedTail[worst] = true;
+            Repass();
+        }
+
+        bool CopiedNearby(int i, string own)
+        {
+            for (var n = Math.Max(0, i - 2); n <= Math.Min(contents.Segments.Count - 1, i + 2); n++)
+            {
+                if (n != i && TextLikeness.Fold(contents.Segments[n].Text).Contains(own, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        void Repass()
+        {
             var survivors = new List<TranscriptSegment>();
             var back = new List<int>();
 
