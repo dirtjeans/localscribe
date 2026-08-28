@@ -1061,6 +1061,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var pieces = WordLevelAttribution.Apply(timed, turns);
 
+            // Before the aligned-times table is keyed, because the mark rewrites the segment
+            // records and the table is keyed by value — marking afterwards would quietly hand
+            // every crosstalk paragraph a loudness estimate instead of its measured words.
+            pieces = CrosstalkMarks.Apply(pieces);
+
             // Here rather than after aligning. Aligning is not the last thing that moves a
             // boundary — dividing segments between speakers sets new ones from the words, and
             // the tidying that stops two segments claiming the same moment runs after that. A

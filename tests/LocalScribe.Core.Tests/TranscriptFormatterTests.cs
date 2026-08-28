@@ -23,6 +23,27 @@ public class TranscriptFormatterTests
     }
 
     /// <summary>
+    /// The crosstalk badge shows only on a paragraph that is wholly crosstalk, so a contested
+    /// segment must not be merged into clean speech: either the warning would vanish or it
+    /// would stretch over speech that was perfectly clear.
+    /// </summary>
+    [Fact]
+    public void CrosstalkKeepsToItsOwnParagraph()
+    {
+        var paragraphs = TranscriptFormatter.Paragraphs(
+        [
+            Segment("A clear sentence.", 0, 2, "A"),
+            Segment("Said over somebody.", 2.1, 4, "A") with { Overlapped = true },
+            Segment("Clear again.", 4.2, 6, "A"),
+        ]);
+
+        Assert.Equal(3, paragraphs.Count);
+        Assert.False(paragraphs[0].Overlapped);
+        Assert.True(paragraphs[1].Overlapped);
+        Assert.False(paragraphs[2].Overlapped);
+    }
+
+    /// <summary>
     /// Silence is the only signal in the data that corresponds to a change of thought, which is
     /// why the break is taken on it rather than on sentence count.
     /// </summary>

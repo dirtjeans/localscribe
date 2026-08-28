@@ -104,6 +104,16 @@ public static class TranscriptFormatter
             return true;
         }
 
+        // Crosstalk keeps to itself. The badge that warns about two voices at once shows only
+        // on a paragraph that is wholly crosstalk, so a contested line merged into five clean
+        // ones would either hide the warning or stretch it over speech that was perfectly
+        // clear — and the entire point of the mark is saying precisely where the labels are
+        // least trustworthy.
+        if (previous.Overlapped != next.Overlapped)
+        {
+            return true;
+        }
+
         // A pause, but only between sentences. Breaking mid-sentence puts one sentence under two
         // headings and reads as the transcript having lost something — which is how it was
         // reported: "Because Metabase plugs into every" ended one paragraph and "database a
