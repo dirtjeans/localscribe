@@ -206,6 +206,22 @@ internal static class Program
                 plan);
         }
 
+        var replay = ArgumentValue(args, "--replay");
+        if (replay is not null)
+        {
+            if (ArgumentValue(args, "--audio") is not { } replayAudio)
+            {
+                Console.Error.WriteLine("--replay needs --audio <wav> to align against.");
+                return 1;
+            }
+
+            return ReplayCommand.Run(
+                replay,
+                replayAudio,
+                ArgumentValue(args, "--alignment-models") ?? modelDirectory,
+                plan);
+        }
+
         var alignAudio = ArgumentValue(args, "--align");
         if (alignAudio is not null)
         {

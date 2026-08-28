@@ -336,10 +336,16 @@ public sealed class ForcedAligner : IDisposable
         // interpolates across the gap at the recording's own pace instead.
         anchors = CredibleAnchors.Prune(anchors, allTokens.Count, limit);
 
-        // Wide enough to swallow every drift ever measured with an order of magnitude to spare:
-        // fifteen seconds of letters either side of the spine, never fewer than 400 states.
+        // Wider than the worst lie the stamps have told. Fifteen seconds was "every drift ever
+        // measured with an order of magnitude to spare" until a recording arrived whose stamps
+        // ran seventeen and a half seconds late by its sixth minute — outside the band, so the
+        // truth was unrepresentable and the pass parked the tail as close as the edge allowed,
+        // which read as the marker falling a sentence behind. The corridor is here to bound the
+        // compute, not to inform the placement; the audio decides inside it, so the only cost
+        // of width is time, and doubling past the worst measurement is cheaper than meeting it
+        // again. Thirty-six seconds of letters either side, never fewer than 900 states.
         var halfBand = Math.Max(
-            400, (int)(allTokens.Count / Math.Max(1.0, limit) * 15) * 2);
+            900, (int)(allTokens.Count / Math.Max(1.0, limit) * 36) * 2);
 
         var placed = GlobalCtcAlignment.Align(
             scores,

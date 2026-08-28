@@ -420,6 +420,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return untimed();
         }
 
+        RecordAlignmentInput(segments);
+
         var placed = new List<TimedSegment>(segments.Count);
         var unheard = 0;
         var doubled = 0;
@@ -689,6 +691,33 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>Lines dropped because the transcriber wrote them twice.</summary>
     private int _doubledLines;
+
+    /// <summary>
+    /// Writes the aligner's exact input — the transcriber's stamps as the corridor will anchor
+    /// on them. The app's placements and the checker's diverge on the same audio, and the one
+    /// input the checker cannot reproduce is these stamps: a saved archive's bounds have been
+    /// through an alignment already. This makes the app's run repeatable outside the app.
+    /// </summary>
+    private static void RecordAlignmentInput(IReadOnlyList<TranscriptSegment> segments)
+    {
+        try
+        {
+            var text = new StringBuilder();
+
+            foreach (var segment in segments)
+            {
+                text.AppendLine(FormattableString.Invariant(
+                    $"{segment.StartSeconds:F2}\t{segment.EndSeconds:F2}\t{segment.Text}"));
+            }
+
+            File.WriteAllText(
+                Path.Combine(Path.GetTempPath(), "localscribe-input.txt"), text.ToString());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A diagnostic that cannot be written is not worth failing the transcript over.
+        }
+    }
 
     /// <summary>What "finished" should say, given what had to be left out along the way.</summary>
     private string DoneStatus()
