@@ -88,7 +88,18 @@
 
                 <Button x:Name="OpenFileButton" Click="OnOpenRecording">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                        <!-- Line art like every other toolbar glyph, so the pair reads as kin
+                             to the mic rather than to the coloured file icons: the document
+                             glyph carrying a play triangle — a file with sound in it. -->
+                        <Grid Width="16" Height="16" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                            <Polygon
+                                Points="0,0 5,3 0,6"
+                                Fill="{ThemeResource TextFillColorPrimaryBrush}"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Margin="1.5,3,0,0" />
+                        </Grid>
                         <TextBlock Text="Open a recording" />
                     </StackPanel>
                 </Button>
@@ -97,7 +108,21 @@
                      recording costs minutes of transcription, a saved transcript opens at once. -->
                 <Button x:Name="OpenTranscriptButton" Click="OnOpenTranscript">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                        <!-- Its sibling: the same document, carrying the transcript's speech
+                             bars instead of the play triangle. -->
+                        <Grid Width="16" Height="16" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE8A5;" FontSize="16" />
+                            <StackPanel
+                                Orientation="Horizontal"
+                                Spacing="1.2"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Margin="0,3,0,0">
+                                <Rectangle Width="1.5" Height="3" RadiusX="0.75" RadiusY="0.75" Fill="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                                <Rectangle Width="1.5" Height="6" RadiusX="0.75" RadiusY="0.75" Fill="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                                <Rectangle Width="1.5" Height="4" RadiusX="0.75" RadiusY="0.75" Fill="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
                         <TextBlock Text="Open a transcript" />
                     </StackPanel>
                 </Button>
