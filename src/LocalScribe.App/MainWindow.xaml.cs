@@ -49,6 +49,8 @@ public sealed partial class MainWindow : Window
         _viewModel.Player.Stopped += OnPlaybackStopped;
         _viewModel.Player.Failed += OnPlaybackFailed;
 
+        AppWindow.Closing += OnWindowClosing;
+
         Closed += (_, _) =>
         {
             _viewModel.Player.PositionChanged -= OnPlaybackPosition;
@@ -268,6 +270,7 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.IsBusy):
                     OpenFileButton.IsEnabled = !_viewModel.IsBusy;
+                    OpenTranscriptButton.IsEnabled = !_viewModel.IsBusy;
                     CancelButton.Visibility = _viewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
                     break;
                 case nameof(MainViewModel.IsRecording):
@@ -318,6 +321,7 @@ public sealed partial class MainWindow : Window
             StartIcon.Glyph = "";                  // stopwatch
             StartButton.IsEnabled = false;
             OpenFileButton.IsEnabled = false;
+            OpenTranscriptButton.IsEnabled = false;
             ProgressBarControl.IsIndeterminate = true;
 
             ShowCue(
@@ -351,6 +355,7 @@ public sealed partial class MainWindow : Window
             // The file picker stays open. Choosing a recording takes long enough that the load
             // finishes underneath it, and a run queued meanwhile simply waits.
             OpenFileButton.IsEnabled = true;
+            OpenTranscriptButton.IsEnabled = true;
 
             ProgressBarControl.IsIndeterminate = true;
             PulseStoryboard.Stop();
@@ -371,6 +376,7 @@ public sealed partial class MainWindow : Window
         StartLabel.Text = "Start listening";
         StartIcon.Glyph = "";                      // microphone
         OpenFileButton.IsEnabled = !_viewModel.IsRecording;
+        OpenTranscriptButton.IsEnabled = !_viewModel.IsRecording;
 
         if (_viewModel.IsRecording)
         {
@@ -1520,7 +1526,13 @@ public sealed partial class MainWindow : Window
         StatusText.Text = "Transcript copied.";
     }
 
-    private async void OnSave(object sender, RoutedEventArgs e)
+    private async void OnSave(object sender, RoutedEventArgs e) => await SaveViaPickerAsync();
+
+    /// <summary>
+    /// Offers the save dialog and reports whether anything was actually written — which is what
+    /// closing needs to know, since a cancelled picker means the user changed their mind.
+    /// </summary>
+    private async Task<bool> SaveViaPickerAsync()
     {
         var picker = new FileSavePicker { SuggestedFileName = _viewModel.SourceName };
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
@@ -1535,7 +1547,7 @@ public sealed partial class MainWindow : Window
         var file = await picker.PickSaveFileAsync();
         if (file is null)
         {
-            return;
+            return false;
         }
 
         var extension = Path.GetExtension(file.Name).ToLowerInvariant();
@@ -1546,13 +1558,13 @@ public sealed partial class MainWindow : Window
             {
                 await Task.Run(() => _viewModel.SaveArchive(file.Path));
                 StatusText.Text = $"Saved to {file.Path}, with the recording.";
+                return true;
             }
             catch (Exception exception)
             {
                 StatusText.Text = $"Could not save: {exception.Message}";
+                return false;
             }
-
-            return;
         }
 
         var format = extension switch
@@ -1565,7 +1577,78 @@ public sealed partial class MainWindow : Window
         await Windows.Storage.FileIO.WriteTextAsync(file, _viewModel.Export(format));
 
         StatusText.Text = $"Saved to {file.Path}";
+        return true;
     }
+
+    /// <summary>
+    /// Stops the window closing over unsaved work without asking.
+    /// <para>
+    /// The recording behind a transcript often exists nowhere but this window's memory — a live
+    /// recording never had a file, and a transcription is minutes of model time — so an
+    /// accidental close is the one click in the app that destroys something irreplaceable.
+    /// A transcript opened from a file and left alone closes silently; it is already safe.
+    /// </para>
+    /// </summary>
+    private void OnWindowClosing(AppWindow sender, AppWindowClosingEventArgs e)
+    {
+        if (_closeConfirmed || !_viewModel.HasUnsavedWork)
+        {
+            return;
+        }
+
+        // The event cannot wait on a dialog, so the close is refused and asked about; closing
+        // again is done here once the answer is known.
+        e.Cancel = true;
+
+        if (!_confirmingClose)
+        {
+            _confirmingClose = true;
+            _ = ConfirmCloseAsync();
+        }
+    }
+
+    private async Task ConfirmCloseAsync()
+    {
+        try
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = Content.XamlRoot,
+                Title = "Save this transcript?",
+                Content = "It exists only in this window until it is saved. Saving keeps the "
+                    + "words and the recording together in one file; discarding lets both go.",
+                PrimaryButtonText = "Save",
+                SecondaryButtonText = "Discard",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Primary,
+            };
+
+            var choice = await dialog.ShowAsync();
+
+            if (choice == ContentDialogResult.None)
+            {
+                return;
+            }
+
+            if (choice == ContentDialogResult.Primary && !await SaveViaPickerAsync())
+            {
+                // A cancelled picker or a failed save is not consent to lose the work.
+                return;
+            }
+
+            _closeConfirmed = true;
+            Close();
+        }
+        finally
+        {
+            _confirmingClose = false;
+        }
+    }
+
+    /// <summary>Whether losing the transcript on close has been explicitly agreed to.</summary>
+    private bool _closeConfirmed;
+
+    private bool _confirmingClose;
 
     private async void OnDiscard(object sender, RoutedEventArgs e)
     {
@@ -1588,24 +1671,9 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnOpenFile(object sender, RoutedEventArgs e)
+    private async void OnOpenRecording(object sender, RoutedEventArgs e)
     {
-        var picker = new FileOpenPicker();
-
-        // A picker created in an unpackaged app has no window of its own and must be told which
-        // window owns it, or the call fails at runtime rather than at compile time.
-        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-
-        foreach (var known in TranscriptArchive.Extensions)
-        {
-            picker.FileTypeFilter.Add(known);
-        }
-
-
-        foreach (var extension in AudioFileLoader.SupportedExtensions)
-        {
-            picker.FileTypeFilter.Add(extension);
-        }
+        var picker = PickerFor(AudioFileLoader.SupportedExtensions);
 
         var file = await picker.PickSingleFileAsync();
         if (file is null)
@@ -1613,9 +1681,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // A saved transcript is opened, not transcribed again: it already has its words, its
-        // timings and its speakers, and running the model over it would only spend minutes
-        // arriving somewhere worse.
+        // A saved transcript can arrive here too — dropped filters do not stop typing a name —
+        // and it is opened, not transcribed again: it already has its words, its timings and
+        // its speakers, and running the model over it would only spend minutes arriving
+        // somewhere worse.
         if (TranscriptArchive.IsArchive(file.Name))
         {
             OpenArchive(file.Path);
@@ -1623,6 +1692,35 @@ public sealed partial class MainWindow : Window
         }
 
         await _viewModel.TranscribeFileAsync(file.Path);
+    }
+
+    private async void OnOpenTranscript(object sender, RoutedEventArgs e)
+    {
+        var picker = PickerFor(TranscriptArchive.Extensions);
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null)
+        {
+            return;
+        }
+
+        OpenArchive(file.Path);
+    }
+
+    private FileOpenPicker PickerFor(IEnumerable<string> extensions)
+    {
+        var picker = new FileOpenPicker();
+
+        // A picker created in an unpackaged app has no window of its own and must be told which
+        // window owns it, or the call fails at runtime rather than at compile time.
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        foreach (var extension in extensions)
+        {
+            picker.FileTypeFilter.Add(extension);
+        }
+
+        return picker;
     }
 
     private async void OnToggleRecording(object sender, RoutedEventArgs e)

@@ -125,6 +125,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void SetTranscript(IReadOnlyList<TranscriptSegment> segments)
     {
+        // Anything that changes the transcript makes the copy on disk stale — a fresh
+        // transcription, a renamed speaker, a rerun cleanup all arrive here. Opening and
+        // saving mark it clean again themselves.
+        _savedToDisk = false;
+
         _segments = segments;
         Paragraphs = TranscriptFormatter.Paragraphs(segments);
         Transcript = TranscriptFormatter.ToPlainText(Paragraphs);
@@ -156,6 +161,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         TranscriptArchive.Save(path, audio, _segments, SourceName);
+        _savedToDisk = true;
     }
 
     /// <summary>Opens a saved transcript, audio and all.</summary>
@@ -183,10 +189,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         Status = $"Opened {SourceName}. {contents.Segments.Count} segment(s), "
             + $"{TimeSpan.FromSeconds(contents.Audio.DurationSeconds):mm\\:ss} of audio.";
+
+        // What was just loaded is exactly what is on disk. Editing it makes it unsaved again.
+        _savedToDisk = true;
     }
 
     /// <summary>True when there is something worth saving as an archive.</summary>
     public bool CanSaveArchive => _audio is not null && _segments.Count > 0;
+
+    /// <summary>
+    /// True when closing the window would lose something. A transcript that was opened from a
+    /// file and left alone is already safe; one that was transcribed, recorded, or edited here
+    /// exists nowhere else until it is saved.
+    /// </summary>
+    public bool HasUnsavedWork => CanSaveArchive && !_savedToDisk;
+
+    /// <summary>Whether the transcript as it stands matches a file on disk.</summary>
+    private bool _savedToDisk;
 
     /// <summary>
     /// When each word of a paragraph was said, so one can be clicked and heard.
