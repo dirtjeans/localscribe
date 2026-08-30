@@ -38,6 +38,15 @@ xattr -cr "$APP"
 
 codesign --force --deep --sign - "$APP"
 
+# A copy, not a symlink: a link would point Finder into a OneDrive-synced folder and let
+# every rebuild mutate the installed app while it runs.
+if [ "$1" = "--install" ]; then
+    rm -rf /Applications/LocalScribe.app
+    cp -R "$APP" /Applications/
+    echo
+    echo "Installed /Applications/LocalScribe.app"
+fi
+
 echo
 echo "Built $APP"
 echo "First launch downloads the models (about 2.8 GiB) into"

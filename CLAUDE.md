@@ -4,8 +4,9 @@ Offline transcription for Snapdragon X Windows laptops. Whisper on the Hexagon N
 language model for cleanup, nothing leaving the machine.
 
 **Read [docs/handoff.md](docs/handoff.md) first.** It says what has been verified, what has never
-run, and what is most likely to be broken. This file is the short version. A macOS port is
-planned in [docs/handoff-macos.md](docs/handoff-macos.md); if you are on a Mac, start there.
+run, and what is most likely to be broken. This file is the short version. The macOS port
+has run — [docs/handoff-macos.md](docs/handoff-macos.md) is its own handoff; on a Mac, start
+there. `LocalScribe.Desktop` is the Avalonia window and lives in the solution.
 
 ## The state that matters
 

@@ -6,7 +6,7 @@ laptop, on real recordings, and most of it has been broken and fixed at least on
 version says what is now proven, how it was proven, and what is still known to be imperfect —
 in that order, because the *how* is the part a newcomer needs most.
 
-A macOS port is planned; its own handoff is [handoff-macos.md](handoff-macos.md).
+The macOS port has run; its own handoff is [handoff-macos.md](handoff-macos.md).
 
 ## Where things stand
 
