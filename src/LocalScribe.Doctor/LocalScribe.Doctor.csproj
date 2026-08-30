@@ -11,6 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="../LocalScribe.Core/LocalScribe.Core.csproj" />
     <ProjectReference Include="../LocalScribe.Onnx/LocalScribe.Onnx.csproj" />
+    <ProjectReference Include="../LocalScribe.WhisperCpp/LocalScribe.WhisperCpp.csproj" />
   </ItemGroup>
 
   <ItemGroup>

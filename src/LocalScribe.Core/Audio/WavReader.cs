@@ -1,14 +1,13 @@
 using System.Buffers.Binary;
-using LocalScribe.Core.Audio;
 
-namespace LocalScribe.Doctor;
+namespace LocalScribe.Core.Audio;
 
 /// <summary>
 /// Reads uncompressed PCM WAV files.
 /// <para>
-/// Deliberately minimal and dependency-free. The app uses NAudio for this, but the doctor
-/// targets plain net8.0 so it still builds and runs on the CI machines that have no Windows
-/// audio stack, and pulling NAudio in here would end that.
+/// Deliberately minimal and dependency-free, which is why it lives in Core: the doctor and
+/// the macOS window both need a WAV reader on machines with no Windows audio stack, and the
+/// WinUI app's NAudio path stays a platform choice rather than a Core dependency.
 /// </para>
 /// <para>
 /// It handles what a transcription test actually encounters — 16- and 32-bit PCM, and 32-bit
@@ -16,7 +15,7 @@ namespace LocalScribe.Doctor;
 /// mis-parsed header produces noise, and noise transcribes to confident nonsense.
 /// </para>
 /// </summary>
-internal static class WavReader
+public static class WavReader
 {
     private const ushort FormatPcm = 1;
     private const ushort FormatFloat = 3;

@@ -1,3 +1,4 @@
+using LocalScribe.Core.Audio;
 using System.Globalization;
 using LocalScribe.Core.Alignment;
 using LocalScribe.Core.Hardware;

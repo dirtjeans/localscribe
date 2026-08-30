@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>LocalScribe</string>
+    <key>CFBundleDisplayName</key>
+    <string>LocalScribe</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.localscribe.desktop</string>
+    <key>CFBundleExecutable</key>
+    <string>LocalScribe.Desktop</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Without this, capture fails silently — the exact class of failure this project
+         hates. The words are shown to the user in the system permission dialog. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LocalScribe listens to the microphone to transcribe what is said. Nothing leaves this Mac.</string>
+
+    <!-- The bundle-native equivalent of tools/register-scrb.ps1: on macOS it is legitimate
+         for the bundle to declare the association, because the user installs the app and the
+         declaration ships with it. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>LocalScribe transcript</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>app.localscribe.scrb</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>app.localscribe.scrb</string>
+            <key>UTTypeDescription</key>
+            <string>LocalScribe transcript</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.zip-archive</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>scrb</string>
+                    <string>lscribe</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

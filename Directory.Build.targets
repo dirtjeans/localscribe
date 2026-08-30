@@ -1,0 +1,20 @@
+<Project>
+
+  <!--
+    Works around a packaging defect in Whisper.net.Runtime.CoreML (present in 1.8.1 and
+    still in 1.9.0): its libwhisper.dylib carries only the publisher's CI build paths as
+    LC_RPATH entries and no @loader_path, so its @rpath references to the ggml libraries
+    sitting right beside it can never resolve on any machine but the one that built it.
+    The loader then falls back to the plain CPU runtime — silently, which is this project's
+    least favourite failure. Adding @loader_path to the copy in the output directory fixes
+    resolution; the ad-hoc re-sign is required because changing load commands invalidates
+    the signature on arm64. The NuGet cache's copy is left untouched so package hash
+    verification keeps working. Idempotent: patched files are recognised and skipped.
+  -->
+  <Target Name="PatchWhisperCoreMlRpath"
+          AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) And Exists('$(OutDir)runtimes/coreml/macos-arm64/libwhisper.dylib')">
+    <Exec Command="if ! otool -l '$(OutDir)runtimes/coreml/macos-arm64/libwhisper.dylib' | grep -q '@loader_path'; then install_name_tool -add_rpath @loader_path '$(OutDir)runtimes/coreml/macos-arm64/libwhisper.dylib' &amp;&amp; codesign --force --sign - '$(OutDir)runtimes/coreml/macos-arm64/libwhisper.dylib'; fi" />
+  </Target>
+
+</Project>

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>LocalScribe.WhisperCpp</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LocalScribe.Core/LocalScribe.Core.csproj" />
+  </ItemGroup>
+
+  <!--
+    whisper.cpp through the whisper.net binding. On Apple silicon its Core ML path runs the
+    encoder on the Neural Engine and keeps the decoder on CPU/Metal, which is this app's
+    architecture invariant arrived at independently — the port keeps the invariant by adopting
+    the tool rather than reimplementing it. The base Runtime package carries the CPU and Metal
+    builds for every platform, so referencing both is safe off-macOS: library selection happens
+    at load time, and the Core ML variant simply never wins anywhere else.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Whisper.net" Version="1.8.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.8.1" />
+    <PackageReference Include="Whisper.net.Runtime.CoreML" Version="1.8.1" />
+  </ItemGroup>
+
+</Project>

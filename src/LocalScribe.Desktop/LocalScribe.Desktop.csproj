@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>LocalScribe.Desktop</RootNamespace>
+    <!-- The microphone callback crosses the native boundary as an unmanaged function pointer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Whisper.net.Runtime and its CoreML sibling both ship the same ggml-metal.metal
+         shader, and publish refuses the duplicate by default. Either copy is the file. -->
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
+  <!--
+    The view model and its portable companions are compiled from the WinUI project's own
+    files, not copied: MainViewModel deliberately holds no WinUI types, and one file with one
+    history beats two slowly-diverging twins. The platform types it needs — TranscriptPlayer,
+    MicrophoneCapture, AudioFileLoader — exist in both projects under the same names, each
+    built on its platform's audio stack.
+  -->
+  <ItemGroup>
+    <Compile Include="../LocalScribe.App/MainViewModel.cs" Link="Shared/MainViewModel.cs" />
+    <Compile Include="../LocalScribe.App/SessionDiagnostics.cs" Link="Shared/SessionDiagnostics.cs" />
+    <Compile Include="../LocalScribe.App/TranscriptFormat.cs" Link="Shared/TranscriptFormat.cs" />
+    <!-- The speaker models arrive as a .tar.bz2; the extractor lives with the doctor, which
+         needed it first, and carries the SharpZipLib dependency with it. -->
+    <Compile Include="../LocalScribe.Doctor/TarBz2Extractor.cs" Link="Shared/TarBz2Extractor.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+  </ItemGroup>
+
+  <!--
+    miniaudio, compiled once from the single C file beside it. Built on demand so a fresh
+    clone needs nothing but the Xcode command-line tools, and never rebuilt when present —
+    the wrapper changes rarely; delete the dylib to force a rebuild.
+  -->
+  <Target Name="BuildNativeAudio"
+          BeforeTargets="ResolveAssemblyReferences"
+          Condition="$([MSBuild]::IsOSPlatform('OSX')) And !Exists('native/liblocalscribe-audio.dylib')">
+    <Exec Command="clang -O2 -dynamiclib -arch arm64 -o native/liblocalscribe-audio.dylib native/localscribe_audio.c"
+          WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
+
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <None Include="native/liblocalscribe-audio.dylib"
+          Link="liblocalscribe-audio.dylib"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    Avalonia rather than MAUI or a native shell, for the reasons in docs/handoff-macos.md:
+    the view model was built without WinUI types, Avalonia is the framework closest to the
+    XAML the WinUI window already speaks, and it runs on Windows too — leaving open a future
+    where this window serves both platforms and the WinUI one retires. Unlike that WinUI
+    project, this one lives in the solution: Avalonia restores and compiles everywhere.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.20" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LocalScribe.Core/LocalScribe.Core.csproj" />
+    <ProjectReference Include="../LocalScribe.Onnx/LocalScribe.Onnx.csproj" />
+    <ProjectReference Include="../LocalScribe.WhisperCpp/LocalScribe.WhisperCpp.csproj" />
+  </ItemGroup>
+
+</Project>

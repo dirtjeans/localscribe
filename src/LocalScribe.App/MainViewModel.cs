@@ -73,10 +73,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _preparing;
     private bool _warming;
 
-    public MainViewModel(string? modelRoot = null)
+    public MainViewModel(
+        string? modelRoot = null,
+        Func<ExecutionPlan, string?, ITranscriber>? openTranscriber = null)
     {
         _modelRoot = modelRoot ?? Path.Combine(AppContext.BaseDirectory, "models");
+        _openTranscriber = openTranscriber;
     }
+
+    /// <summary>
+    /// How a transcriber is opened for a plan, given the resolved ONNX model directory (null
+    /// when none is installed). Injected so the macOS app can choose whisper.cpp; left null,
+    /// the ONNX engine loads exactly as it always has. This is the one seam the view model
+    /// offers a platform, and it is a constructor argument rather than a virtual because
+    /// everything else in here is deliberately platform-blind.
+    /// </summary>
+    private readonly Func<ExecutionPlan, string?, ITranscriber>? _openTranscriber;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -917,18 +929,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>How many distinct people the transcript is currently attributed to.</summary>
     public int SpeakerCount
     {
-        get;
+        get => _speakerCount;
         private set
         {
-            if (field == value)
+            if (_speakerCount == value)
             {
                 return;
             }
 
-            field = value;
+            _speakerCount = value;
             Raise(nameof(SpeakerCount));
         }
     }
+
+    // A named backing field rather than the `field` keyword, which the macOS build's compiler
+    // does not speak yet: this file is compiled into both apps, so it holds to the older of
+    // the two languages.
+    private int _speakerCount;
 
     private static int DistinctSpeakers(IReadOnlyList<TranscriptSegment> segments) =>
         segments
@@ -1956,9 +1973,38 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Player.Clear();
         SourceName = $"Recording {DateTime.Now:yyyy-MM-dd HH.mm}";
 
-        _microphone = new MicrophoneCapture();
-        _microphone.SamplesAvailable += OnSamplesAvailable;
-        _microphone.Start();
+        // Guarded, because this is where capture genuinely fails: a device in use, no input
+        // device at all, or — on macOS — microphone permission refused. Unguarded, the
+        // exception escaped through the click handler and took the process with it, which
+        // turns "the app needs a permission" into "the app crashed".
+        try
+        {
+            _microphone = new MicrophoneCapture();
+            _microphone.SamplesAvailable += OnSamplesAvailable;
+            _microphone.Start();
+        }
+        catch (Exception exception)
+        {
+            _microphone?.Dispose();
+            _microphone = null;
+
+            var session = _liveSession;
+            _liveSession = null;
+
+            if (session is not null)
+            {
+                await session.DisposeAsync();
+            }
+
+            _cancellation?.Dispose();
+            _cancellation = null;
+            _diagnostics = null;
+            _liveCapture = null;
+
+            IsPreparing = false;
+            Status = $"Could not start the microphone: {exception.Message}";
+            return;
+        }
 
         // Only now is anything the user says actually being captured, so this is the first
         // moment it is honest to say so.
@@ -1987,7 +2033,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private ITranscriber TranscriberFor(ExecutionPlan plan)
     {
-        var directory = ModelDirectoryFor(plan);
+        // With an injected engine the ONNX directory is advice, not a requirement — a Mac with
+        // only a whisper.cpp model on disk must not fail here for want of weights it will
+        // never open.
+        var directory = _openTranscriber is null
+            ? ModelDirectoryFor(plan)
+            : ModelLayout.Locate(
+                _modelRoot, _capabilities?.Family ?? SocFamily.Unknown,
+                plan.Encoder.Device, plan.WhisperModel);
+
         var key = $"{directory}|{plan.Encoder.Device}|{plan.Decoder.Device}|"
             + $"{plan.CpuBudget.IntraOpThreads}|{plan.StrictProviderCheck}";
 
@@ -2006,7 +2060,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _transcriber = null;
             _transcriberKey = null;
 
-            var opened = WhisperOnnxTranscriber.Load(directory, plan);
+            var opened = _openTranscriber is not null
+                ? _openTranscriber(plan, directory)
+                : WhisperOnnxTranscriber.Load(directory!, plan);
 
             _transcriber = opened;
             _transcriberKey = key;
@@ -2265,7 +2321,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var foundry = new FoundryLocalManager();
-            var progress = new Progress<InstallProgress>(p => Status = p.Message);
+
+            // The fraction reaches the progress bar when a stage reports one — the model
+            // download does — so a multi-hundred-megabyte fetch reads as movement rather than
+            // as a stuck status line.
+            var progress = new Progress<InstallProgress>(p =>
+            {
+                Status = p.Message;
+
+                if (p.Fraction is { } fraction)
+                {
+                    Progress = fraction;
+                }
+            });
 
             if (!await foundry.IsInstalledAsync())
             {

@@ -1,3 +1,4 @@
+using LocalScribe.Core.Audio;
 using System.Diagnostics;
 using System.Globalization;
 using LocalScribe.Core.Diarization;

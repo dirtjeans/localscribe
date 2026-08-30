@@ -95,6 +95,92 @@ public class TranscriptionEngineAdvisorTests
     }
 
     /// <summary>
+    /// DirectML is a Windows API. A Mac told to "add the DirectML package and rebuild" has been
+    /// sent shopping for something that does not exist, so off Windows the option is
+    /// unsupported, never an upgrade path.
+    /// </summary>
+    [Fact]
+    public void MacsAreNotSentShoppingForDirectMl()
+    {
+        var caps = Snapdragon() with
+        {
+            Family = SocFamily.NonQualcomm,
+            SocName = "Apple M2",
+            Platform = DevicePlatform.MacOS,
+        };
+
+        var advice = TranscriptionEngineAdvisor.Advise(caps);
+        var gpu = advice.All.Single(o => o.Device == ComputeDevice.Gpu);
+
+        Assert.Equal(EngineAvailability.Unsupported, gpu.Availability);
+        Assert.Empty(gpu.Requirements);
+
+        // What a bare Mac is sent to set up instead is whisper.cpp — one fetch command, not
+        // a package that does not exist.
+        Assert.Equal(ComputeDevice.Cpu, advice.Recommended.Device);
+        Assert.NotNull(advice.Better);
+        Assert.Contains(advice.Better!.Requirements, r => r.Contains("--fetch-models", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The Mac's best engine ranks the way the Hexagon does, for the same reason: the encoder
+    /// leaves the CPU. With its model on disk it is the recommendation, and nothing nags.
+    /// </summary>
+    [Fact]
+    public void AMacWithWhisperCppReadyIsSentToTheNeuralEngine()
+    {
+        var caps = Snapdragon() with
+        {
+            Family = SocFamily.NonQualcomm,
+            SocName = "Apple M2",
+            Platform = DevicePlatform.MacOS,
+            WhisperCppModelPresent = true,
+            WhisperCppCoreMlEncoderPresent = true,
+        };
+
+        var advice = TranscriptionEngineAdvisor.Advise(caps);
+
+        Assert.Equal(EngineAvailability.Ready, advice.Recommended.Availability);
+        Assert.Contains("Neural Engine", advice.Recommended.Name, StringComparison.Ordinal);
+        Assert.Null(advice.Better);
+    }
+
+    /// <summary>
+    /// A model without its Core ML bundle still runs — encoder on Metal — but the degraded
+    /// mode is named, because its only other symptom is a machine that feels busier than it
+    /// should, which is precisely the silent fallback this project refuses to leave silent.
+    /// </summary>
+    [Fact]
+    public void AMissingCoreMlBundleIsNamedNotHidden()
+    {
+        var caps = Snapdragon() with
+        {
+            Family = SocFamily.NonQualcomm,
+            SocName = "Apple M2",
+            Platform = DevicePlatform.MacOS,
+            WhisperCppModelPresent = true,
+            WhisperCppCoreMlEncoderPresent = false,
+        };
+
+        var advice = TranscriptionEngineAdvisor.Advise(caps);
+
+        Assert.Equal(EngineAvailability.Ready, advice.Recommended.Availability);
+        Assert.Contains("Metal", advice.Recommended.Rationale, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The Neural Engine option is the Mac's translation of the Hexagon option, and offering
+    /// it off a Mac would be DirectML-on-a-Mac in the other direction.
+    /// </summary>
+    [Fact]
+    public void TheNeuralEngineIsNotOfferedOffMacs()
+    {
+        var advice = TranscriptionEngineAdvisor.Advise(Snapdragon());
+
+        Assert.DoesNotContain(advice.All, o => o.Name.Contains("Neural Engine", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// There is always an answer. A machine with nothing installed still gets a recommendation
     /// it can act on today.
     /// </summary>

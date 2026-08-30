@@ -30,7 +30,8 @@ internal static class TranscribeCommand
         string modelDirectory,
         DeviceCapabilities capabilities,
         ExecutionPlan plan,
-        string? explicitModelDirectory)
+        string? explicitModelDirectory,
+        string? engine = null)
     {
         if (!File.Exists(audioPath))
         {
@@ -38,16 +39,48 @@ internal static class TranscribeCommand
             return 1;
         }
 
-        var directory = explicitModelDirectory
-            ?? Core.Models.ModelLayout.Locate(
-                modelDirectory, capabilities.Family, plan.Encoder.Device, plan.WhisperModel);
+        // whisper.cpp models are one GGML file, not the encoder/decoder/vocab layout, so the
+        // engines resolve their weights differently and the choice has to come first.
+        var whisperCppDirectory = explicitModelDirectory
+            ?? Path.Combine(modelDirectory, Core.Models.WhisperCppModelSource.DirectoryName);
+        var ggmlModel = Directory.Exists(whisperCppDirectory)
+            ? Directory.EnumerateFiles(whisperCppDirectory, "ggml-*.bin").OrderBy(f => f).FirstOrDefault()
+            : null;
 
-        if (directory is null)
+        // Unasked, the engine is chosen the way the planner chooses hardware: the best one
+        // actually present. On a Mac that is whisper.cpp whenever its model is on disk —
+        // which keeps this command running what the advisor above just recommended.
+        var useWhisperCpp = engine is null
+            ? OperatingSystem.IsMacOS() && ggmlModel is not null
+            : string.Equals(engine, "whispercpp", StringComparison.OrdinalIgnoreCase);
+
+        string? directory;
+
+        if (useWhisperCpp)
         {
-            Console.Error.WriteLine(
-                $"No Whisper weights under {modelDirectory}. Run --fetch-models for a portable "
-                + "set, or pass --model-dir to point at one.");
-            return 1;
+            directory = whisperCppDirectory;
+
+            if (ggmlModel is null)
+            {
+                Console.Error.WriteLine(
+                    $"No ggml-*.bin under {directory}. whisper.cpp models keep their published "
+                    + "names, e.g. ggml-large-v3-turbo.bin from ggerganov/whisper.cpp.");
+                return 1;
+            }
+        }
+        else
+        {
+            directory = explicitModelDirectory
+                ?? Core.Models.ModelLayout.Locate(
+                    modelDirectory, capabilities.Family, plan.Encoder.Device, plan.WhisperModel);
+
+            if (directory is null)
+            {
+                Console.Error.WriteLine(
+                    $"No Whisper weights under {modelDirectory}. Run --fetch-models for a portable "
+                    + "set, or pass --model-dir to point at one.");
+                return 1;
+            }
         }
 
         Heading("Transcribe");
@@ -78,11 +111,13 @@ internal static class TranscribeCommand
         }
 
         var loading = Stopwatch.StartNew();
-        WhisperOnnxTranscriber transcriber;
+        ITranscriber transcriber;
 
         try
         {
-            transcriber = WhisperOnnxTranscriber.Load(directory, plan);
+            transcriber = useWhisperCpp
+                ? WhisperCpp.WhisperCppTranscriber.Load(ggmlModel!, plan)
+                : WhisperOnnxTranscriber.Load(directory, plan);
         }
         catch (Exception exception)
         {
@@ -97,7 +132,12 @@ internal static class TranscribeCommand
         loading.Stop();
         using var owned = transcriber;
 
-        Console.WriteLine($"  Signature  {transcriber.Signature.Describe()}");
+        // The signature line exists to expose an export whose contract differs from what was
+        // expected. A GGML file carries no such contract to check, so the engine description
+        // stands in for it there.
+        Console.WriteLine(transcriber is WhisperOnnxTranscriber onnx
+            ? $"  Signature  {onnx.Signature.Describe()}"
+            : $"  Engine     {transcriber.Description}");
         Console.WriteLine($"  Loaded in  {loading.Elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
@@ -140,7 +180,13 @@ internal static class TranscribeCommand
         var speed = audio.DurationSeconds / Math.Max(0.001, decoding.Elapsed.TotalSeconds);
         Console.WriteLine($"  Decoded {audio.DurationSeconds:F1}s of audio in "
             + $"{decoding.Elapsed.TotalSeconds:F1}s ({speed:F1}x real time)");
-        Console.WriteLine($"  Encoder ran on {plan.Encoder.Device}, decoder on {plan.Decoder.Device}");
+
+        // The plan's device answer belongs to the ONNX engine; repeating it for whisper.cpp
+        // would report CPU work that never happened. The engine description names the loaded
+        // runtime, which is the honest equivalent.
+        Console.WriteLine(useWhisperCpp
+            ? $"  Ran as {transcriber.Description}"
+            : $"  Encoder ran on {plan.Encoder.Device}, decoder on {plan.Decoder.Device}");
 
         return transcript.FullText.Length == 0 ? 1 : 0;
     }

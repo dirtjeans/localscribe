@@ -51,29 +51,61 @@ internal static class Program
                 + "cannot load at all. Rebuild with -r win-arm64.");
         }
 
+        if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64 && OperatingSystem.IsMacOS())
+        {
+            // The same trap as x64-under-emulation on Windows, wearing a different coat: under
+            // Rosetta the Apple Neural Engine is unreachable and the symptoms look like a
+            // missing framework rather than a wrong build.
+            Warn(
+                "This process is not running as arm64. Under Rosetta the Apple Neural Engine "
+                + "cannot be reached at all. Rebuild with -r osx-arm64.");
+        }
+
         Heading("Acceleration");
 
-        Check("QNN execution provider", capabilities.QnnProviderPresent,
-            "Install the Microsoft.ML.OnnxRuntime.QNN package and build for win-arm64.");
-        Check("Hexagon NPU runtime driver", capabilities.HexagonDriverPresent,
-            "Install the Hexagon NPU Runtime Driver from Qualcomm Software Center. This is a "
-            + "separate download from the driver Windows ships with, and is the usual reason "
-            + "the NPU sits idle.");
-        Check($"Whisper assets for {DeviceProbe.AssetFolderFor(capabilities.Family)}",
-            capabilities.WhisperQnnAssetsPresent,
-            $"Place encoder.onnx, decoder.onnx and vocab.json under "
-            + $"{Path.Combine(modelDirectory, DeviceProbe.AssetFolderFor(capabilities.Family))}. "
-            + "Precompiled QNN binaries are chipset-specific; see docs/setup-snapdragon.md.");
-        Check("DirectML (Adreno GPU)", capabilities.DirectMlPresent,
-            "Optional. Used as the fallback when the NPU is unavailable.");
+        if (OperatingSystem.IsMacOS())
+        {
+            // The Qualcomm checklist would be three permanent failures here, each with a remedy
+            // that cannot be followed. What is worth knowing on a Mac is whether the Core ML
+            // provider loaded — the only accelerator ONNX Runtime can reach on this platform.
+            Check("Core ML execution provider",
+                capabilities.OnnxProviders.Contains("CoreMLExecutionProvider"),
+                "This build of ONNX Runtime is missing the Core ML provider; the stock "
+                + "osx-arm64 package carries it, so check the package and the RuntimeIdentifier.");
+            Check($"Whisper assets for {DeviceProbe.AssetFolderFor(capabilities.Family)}",
+                capabilities.WhisperQnnAssetsPresent,
+                $"Place encoder.onnx, decoder.onnx and vocab.json under "
+                + $"{Path.Combine(modelDirectory, DeviceProbe.AssetFolderFor(capabilities.Family))}. "
+                + "Run 'localscribe-doctor --fetch-models' to download a portable set.");
+        }
+        else
+        {
+            Check("QNN execution provider", capabilities.QnnProviderPresent,
+                "Install the Microsoft.ML.OnnxRuntime.QNN package and build for win-arm64.");
+            Check("Hexagon NPU runtime driver", capabilities.HexagonDriverPresent,
+                "Install the Hexagon NPU Runtime Driver from Qualcomm Software Center. This is a "
+                + "separate download from the driver Windows ships with, and is the usual reason "
+                + "the NPU sits idle.");
+            Check($"Whisper assets for {DeviceProbe.AssetFolderFor(capabilities.Family)}",
+                capabilities.WhisperQnnAssetsPresent,
+                $"Place encoder.onnx, decoder.onnx and vocab.json under "
+                + $"{Path.Combine(modelDirectory, DeviceProbe.AssetFolderFor(capabilities.Family))}. "
+                + "Precompiled QNN binaries are chipset-specific; see docs/setup-snapdragon.md.");
+            Check("DirectML (Adreno GPU)", capabilities.DirectMlPresent,
+                "Optional. Used as the fallback when the NPU is unavailable.");
+        }
         Check(
             languageModel is null
                 ? "Local language model"
                 : $"Local language model ({languageModel.Description})",
             capabilities.LocalLanguageModelPresent,
-            "Optional; enables punctuation repair, glossary correction and summaries. Start "
-            + $"one of: {string.Join(", ", LocalLanguageModel.BackendNames)}. GenieX is "
-            + "preferred on Snapdragon; see docs/setup-snapdragon.md.");
+            OperatingSystem.IsMacOS()
+                ? "Optional; enables punctuation repair, glossary correction and summaries. "
+                  + "Foundry Local ships for Apple silicon: 'brew tap microsoft/foundrylocal && "
+                  + "brew install foundrylocal', then 'foundry service start'."
+                : "Optional; enables punctuation repair, glossary correction and summaries. Start "
+                  + $"one of: {string.Join(", ", LocalLanguageModel.BackendNames)}. GenieX is "
+                  + "preferred on Snapdragon; see docs/setup-snapdragon.md.");
 
         if (capabilities.OnnxProviders.Count > 0)
         {
@@ -240,7 +272,8 @@ internal static class Program
                     modelDirectory,
                     capabilities,
                     plan,
-                    ArgumentValue(args, "--model-dir"))
+                    ArgumentValue(args, "--model-dir"),
+                    ArgumentValue(args, "--engine"))
                 .ConfigureAwait(false);
         }
 
@@ -301,6 +334,8 @@ internal static class Program
         Console.WriteLine("  --speaker-models <f>  Compare embedding models on a saved .scrb transcript.");
         Console.WriteLine("  --candidates <d>   With --speaker-models: directory of model folders to try.");
         Console.WriteLine("  --model-dir <d>  Model directory for --transcribe, overriding the layout.");
+        Console.WriteLine("  --engine <e>     Transcription engine for --transcribe: onnx (default) or");
+        Console.WriteLine("                   whispercpp, which reads ggml-*.bin from <models>/whisper-cpp.");
         Console.WriteLine("  --strict         Refuse to let a requested provider quietly fall back to the CPU.");
         Console.WriteLine("  --live           Plan for live transcription rather than a batch pass.");
         Console.WriteLine("  --max            Plan for maximum speed rather than a considerate CPU share.");

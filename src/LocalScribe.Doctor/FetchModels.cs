@@ -95,8 +95,72 @@ internal static class FetchModels
 
         await FetchDiarizationAsync(modelRoot).ConfigureAwait(false);
 
+        if (OperatingSystem.IsMacOS())
+        {
+            await FetchWhisperCppAsync(modelRoot, fetcher, force).ConfigureAwait(false);
+        }
+
         ReportNpuGap(capabilities);
         return 0;
+    }
+
+    /// <summary>
+    /// Fetches the whisper.cpp model that the macOS transcription path runs.
+    /// <para>
+    /// macOS only, because it exists to reach the Apple Neural Engine: whisper.cpp's Core ML
+    /// build runs the encoder there and keeps the decoder on CPU/Metal, which is this app's
+    /// architecture invariant adopted rather than reimplemented. Like the aligner, it is a
+    /// large download, so it says what it costs before spending it — and like the aligner, a
+    /// failure is reported and tolerated, because the ONNX CPU path still transcribes.
+    /// </para>
+    /// </summary>
+    private static async Task FetchWhisperCppAsync(string modelRoot, ModelFetcher fetcher, bool force)
+    {
+        var directory = Path.Combine(modelRoot, WhisperCppModelSource.DirectoryName);
+        var size = WhisperCppModelSource.DefaultSize;
+
+        Console.WriteLine();
+        Console.WriteLine($"Fetching whisper.cpp {size} into {directory}");
+        Console.WriteLine(
+            $"About {Mib(WhisperCppModelSource.ApproximateBytes)}: the model, plus the Core ML "
+            + "encoder that lets it run on the Apple Neural Engine instead of the CPU.");
+        Console.WriteLine();
+
+        var progress = new ConsoleProgress();
+
+        try
+        {
+            var results = await fetcher
+                .FetchAsync(directory, WhisperCppModelSource.Files(size, coreMl: true), progress, force)
+                .ConfigureAwait(false);
+
+            progress.Finish();
+
+            Console.WriteLine();
+            foreach (var result in results)
+            {
+                var note = result.Outcome switch
+                {
+                    FetchOutcome.Downloaded => $"downloaded, {Mib(result.Bytes)}",
+                    FetchOutcome.AlreadyPresent => $"already present, {Mib(result.Bytes)}",
+                    _ => "not published for this size, skipped",
+                };
+                Console.WriteLine($"  {result.FileName,-40} {note}");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine(WhisperCppModelSource.UnpackCoreMlEncoder(directory, size)
+                ? "The Neural Engine encoder is in place. Transcribe with --engine whispercpp."
+                : "No Core ML encoder bundle; the encoder will run on Metal instead of the "
+                  + "Neural Engine. Transcription still works with --engine whispercpp.");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException or InvalidDataException)
+        {
+            progress.Finish();
+            Console.Error.WriteLine();
+            Console.Error.WriteLine($"The whisper.cpp model could not be fetched: {exception.Message}");
+            Console.Error.WriteLine("Nothing was left half-written; run the command again to retry.");
+        }
     }
 
     /// <summary>

@@ -26,10 +26,14 @@ public static class DeviceProbe
         var providers = OnnxSessionFactory.AvailableProviders();
         var processorName = ReadProcessorName();
         var family = ClassifySoc(processorName);
+        var (whisperCppModel, whisperCppCoreMl) = WhisperCppAssets(modelDirectory);
 
         return new DeviceCapabilities
         {
             SocName = processorName,
+            Platform = OperatingSystem.IsWindows() ? DevicePlatform.Windows
+                : OperatingSystem.IsMacOS() ? DevicePlatform.MacOS
+                : DevicePlatform.Linux,
             Family = family,
             PerformanceCoreCount = Environment.ProcessorCount,
             TotalCoreCount = Environment.ProcessorCount,
@@ -39,6 +43,8 @@ public static class DeviceProbe
             HexagonDriverPresent = family is not SocFamily.NonQualcomm && HasHexagonRuntime(),
             WhisperQnnAssetsPresent = HasWhisperAssets(modelDirectory, family),
             DirectMlPresent = providers.Contains("DmlExecutionProvider") || providers.Contains("DML"),
+            WhisperCppModelPresent = whisperCppModel,
+            WhisperCppCoreMlEncoderPresent = whisperCppCoreMl,
             LocalLanguageModelPresent = false, // Filled in asynchronously by the caller; see LocalLanguageModel.
             OnBattery = IsOnBattery(),
         };
@@ -86,6 +92,30 @@ public static class DeviceProbe
 
     /// <summary>The directory name model assets for a given family are expected under.</summary>
     public static string AssetFolderFor(SocFamily family) => ModelLayout.ChipsetFolder(family);
+
+    /// <summary>
+    /// Whether whisper.cpp weights are on disk, and whether the Core ML encoder bundle is
+    /// beside them. Observed on every platform — files present is files present — and left to
+    /// the advisor to interpret, since only Apple silicon can use the bundle.
+    /// </summary>
+    private static (bool Model, bool CoreMl) WhisperCppAssets(string? modelDirectory)
+    {
+        if (modelDirectory is null)
+        {
+            return (false, false);
+        }
+
+        var directory = Path.Combine(modelDirectory, WhisperCppModelSource.DirectoryName);
+
+        if (!Directory.Exists(directory))
+        {
+            return (false, false);
+        }
+
+        return (
+            Directory.EnumerateFiles(directory, "ggml-*.bin").Any(),
+            Directory.EnumerateDirectories(directory, "*-encoder.mlmodelc").Any());
+    }
 
     private static bool HasWhisperAssets(string? modelDirectory, SocFamily family) =>
         ModelLayout.HasChipsetModels(modelDirectory, family);
@@ -142,6 +172,19 @@ public static class DeviceProbe
             return Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER") ?? "unknown";
         }
 
+        if (OperatingSystem.IsMacOS())
+        {
+            // The environment reports only the architecture; the marketing name ("Apple M2")
+            // lives in sysctl, and it is what ClassifySoc needs to file Apple silicon under
+            // NonQualcomm rather than Unknown.
+            var name = RunAndCapture("/usr/sbin/sysctl", "-n machdep.cpu.brand_string");
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                return name.Trim();
+            }
+        }
+
         if (OperatingSystem.IsLinux() && File.Exists("/proc/cpuinfo"))
         {
             foreach (var line in File.ReadLines("/proc/cpuinfo"))
@@ -162,6 +205,14 @@ public static class DeviceProbe
     /// </summary>
     private static bool IsOnBattery()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            // pmset names the active power source; "Battery Power" appears only when
+            // discharging, which is the same line the planner draws on Windows.
+            return RunAndCapture("/usr/bin/pmset", "-g batt")
+                .Contains("Battery Power", StringComparison.OrdinalIgnoreCase);
+        }
+
         if (!OperatingSystem.IsWindows())
         {
             return false;

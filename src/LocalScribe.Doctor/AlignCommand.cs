@@ -1,3 +1,4 @@
+using LocalScribe.Core.Audio;
 using System.Diagnostics;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Onnx;

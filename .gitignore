@@ -21,3 +21,11 @@ publish/
 
 # Test audio. Small, but binary, and easily re-fetched or regenerated.
 samples/
+
+# The macOS app bundle and its publish staging.
+/build/
+
+# Compiled on demand from the C file beside it; see LocalScribe.Desktop.csproj.
+src/LocalScribe.Desktop/native/*.dylib
+
+.DS_Store

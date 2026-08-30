@@ -15,6 +15,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.Onnx", "src\Loc
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.Doctor", "src\LocalScribe.Doctor\LocalScribe.Doctor.csproj", "{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.WhisperCpp", "src\LocalScribe.WhisperCpp\LocalScribe.WhisperCpp.csproj", "{D37C2F5C-A3C1-4BB3-B06D-91B92C6D71CE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LocalScribe.Desktop", "src\LocalScribe.Desktop\LocalScribe.Desktop.csproj", "{0FF32431-4DE1-4A2F-847E-7D9C0185EAC6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -37,6 +41,14 @@ Global
 		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D37C2F5C-A3C1-4BB3-B06D-91B92C6D71CE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D37C2F5C-A3C1-4BB3-B06D-91B92C6D71CE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D37C2F5C-A3C1-4BB3-B06D-91B92C6D71CE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D37C2F5C-A3C1-4BB3-B06D-91B92C6D71CE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0FF32431-4DE1-4A2F-847E-7D9C0185EAC6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0FF32431-4DE1-4A2F-847E-7D9C0185EAC6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0FF32431-4DE1-4A2F-847E-7D9C0185EAC6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0FF32431-4DE1-4A2F-847E-7D9C0185EAC6}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -46,5 +58,7 @@ Global
 		{5425209E-33C5-4056-885E-1CD1DA1D7232} = {D04DCCF5-8524-43D0-8FB3-FBA4F74CE0C6}
 		{CDC887CC-11BB-4127-905F-1A12A1AC85A8} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
 		{C6880A97-F15C-4EFF-8BFA-478C7E84BA93} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
+		{D37C2F5C-A3C1-4BB3-B06D-91B92C6D71CE} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
+		{0FF32431-4DE1-4A2F-847E-7D9C0185EAC6} = {1556029B-38F2-465B-A051-3AE3D1E6A3EC}
 	EndGlobalSection
 EndGlobal

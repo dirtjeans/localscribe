@@ -40,8 +40,18 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime.QNN" Version="1.22.0" />
   </ItemGroup>
 
+  <!--
+    The non-QNN branch floats ahead of the QNN pin on purpose. Nothing here loads a context
+    binary, so the 1.22.0 compatibility reason above does not apply — and 1.22.0's macOS build
+    aborts in its native teardown at process exit (mutex lock failed in libc++), which 1.29
+    fixes. The two branches never meet in one process: a build is either win-arm64 with QNN or
+    everything-else without it. Any bump here is judged the project's way: the doctor's
+    diarize turn diff and align stride check before and after, because the diarization tuning
+    is frozen and a runtime that moves a boundary by a hundredth of a second is a tuning
+    change.
+  -->
   <ItemGroup Condition="'$(UseQnnRuntime)' != 'true'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.29.0" />
   </ItemGroup>
 
 </Project>

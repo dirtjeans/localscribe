@@ -24,6 +24,24 @@ public enum SocFamily
 }
 
 /// <summary>
+/// The operating system the probe ran on. Recorded as data rather than asked ambiently,
+/// because the remedy for an absent capability differs by platform even when the observation
+/// is identical: DirectML missing is an installable package on Windows and a fact of life
+/// everywhere else — and keeping it in the snapshot lets the pure policy classes be tested
+/// for every platform from any platform.
+/// </summary>
+public enum DevicePlatform
+{
+    /// <summary>Windows — the platform the app first shipped on, and the default so that
+    /// capability snapshots built before this field existed keep their old meaning.</summary>
+    Windows = 0,
+
+    MacOS,
+
+    Linux,
+}
+
+/// <summary>
 /// A snapshot of what the current machine can actually do, as observed at startup.
 /// <para>
 /// Every field is something we <em>measured</em>, not something we assumed. The planner
@@ -35,6 +53,9 @@ public sealed record DeviceCapabilities
 {
     /// <summary>Human-readable processor name, straight from the OS.</summary>
     public string SocName { get; init; } = "unknown";
+
+    /// <summary>Which operating system this snapshot was taken on.</summary>
+    public DevicePlatform Platform { get; init; }
 
     public SocFamily Family { get; init; } = SocFamily.Unknown;
 
@@ -74,6 +95,16 @@ public sealed record DeviceCapabilities
 
     /// <summary>True when DirectML is available, which reaches the Adreno GPU.</summary>
     public bool DirectMlPresent { get; init; }
+
+    /// <summary>True when a whisper.cpp GGML model is on disk under the model root.</summary>
+    public bool WhisperCppModelPresent { get; init; }
+
+    /// <summary>
+    /// True when the unpacked Core ML encoder bundle sits beside the GGML model. Present, the
+    /// encoder runs on the Apple Neural Engine; absent, whisper.cpp still runs with the
+    /// encoder on Metal — slower, but a degraded mode rather than a failure.
+    /// </summary>
+    public bool WhisperCppCoreMlEncoderPresent { get; init; }
 
     /// <summary>
     /// True when some local text-generation service is reachable for the cleanup stage.
