@@ -50,8 +50,46 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
 
         _waveform.PeakSource = buckets => _viewModel.WaveformPeaks(buckets);
-        _waveform.SeekRequested += seconds => _viewModel.Player.PlayFrom(seconds);
+
+        // Scrubbing moves the marker and the words under it live, with the sound held; on
+        // release the sound resumes exactly where the drag ended, but only if it was playing
+        // — a scrub while stopped is navigation, not a request for audio. A plain tap keeps
+        // its old meaning: play from here.
+        _waveform.TapSeek += StartPlayback;
+        _waveform.ScrubStarted += () =>
+        {
+            _scrubWasPlaying = _viewModel.Player.IsPlaying;
+
+            if (_scrubWasPlaying)
+            {
+                _viewModel.Player.Stop();
+            }
+
+            _followPlayback = true;
+        };
+        _waveform.Scrubbed += seconds => PaintMarker(seconds);
+        _waveform.ScrubEnded += seconds =>
+        {
+            if (_scrubWasPlaying)
+            {
+                StartPlayback(seconds);
+            }
+            else
+            {
+                PaintMarker(seconds);
+            }
+        };
         WaveformHost.Content = _waveform;
+
+        // Scrolls that arrive outside the window we granted our own BringIntoView are the
+        // user's, and the marker stops steering until they ask for playback again.
+        TranscriptScroll.ScrollChanged += (_, _) =>
+        {
+            if (DateTime.UtcNow > _autoScrollUntil && _viewModel.Player.IsPlaying)
+            {
+                _followPlayback = false;
+            }
+        };
 
         RefreshControls();
 
@@ -162,10 +200,16 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The engine the advisor recommends is the engine the window runs: whisper.cpp whenever
-    /// its model is on disk, the ONNX layout otherwise.
+    /// The engine the advisor recommends is the engine the window runs — wrapped so that an
+    /// engine failure mid-recording restarts it and retries the window it failed on, rather
+    /// than costing the transcript. One hiccup is invisible but counted; a window that fails
+    /// a fresh engine too still fails honestly.
     /// </summary>
-    private static ITranscriber OpenEngine(ExecutionPlan plan, string? onnxDirectory)
+    private static ITranscriber OpenEngine(ExecutionPlan plan, string? onnxDirectory) =>
+        new ResilientTranscriber(() => OpenRawEngine(plan, onnxDirectory));
+
+    /// <summary>whisper.cpp whenever its model is on disk, the ONNX layout otherwise.</summary>
+    private static ITranscriber OpenRawEngine(ExecutionPlan plan, string? onnxDirectory)
     {
         var directory = Path.Combine(FindModelRoot(), WhisperCppModelSource.DirectoryName);
 
@@ -254,8 +298,23 @@ public sealed partial class MainWindow : Window
         }
         else if (_viewModel.Player.HasAudio)
         {
-            _viewModel.Player.PlayFrom(0);
+            StartPlayback(0);
         }
+    }
+
+    /// <summary>
+    /// Whether the transcript follows the marker. True until the user scrolls away during
+    /// playback — reading back is a decision, and yanking the view away from it made the
+    /// transcript unreadable while anything played. Asking to hear something re-engages it.
+    /// </summary>
+    private bool _followPlayback = true;
+    private bool _scrubWasPlaying;
+    private DateTime _autoScrollUntil = DateTime.MinValue;
+
+    private void StartPlayback(double seconds)
+    {
+        _followPlayback = true;
+        _viewModel.Player.PlayFrom(seconds);
     }
 
     private async void OnSaveClicked(object? sender, RoutedEventArgs e) => await SaveAsync();
@@ -345,23 +404,20 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Runs the speakers again with a count. The count is the one thing a person always knows
-    /// and the algorithm never does; empty means infer it.
+    /// Runs the speakers again with a count from the stepper. The count is the one thing a
+    /// person always knows and the algorithm never does — which is why it gets a control
+    /// built for small honest numbers rather than a text box.
     /// </summary>
-    private async void OnSpeakersClicked(object? sender, RoutedEventArgs e)
+    private async void OnSpeakersCountClicked(object? sender, RoutedEventArgs e)
     {
-        var answer = await InputDialog.AskAsync(
-            this,
-            "Find speakers",
-            "How many people are talking? Leave empty to work it out.");
+        SpeakersButton.Flyout?.Hide();
+        await _viewModel.FindSpeakersAsync((int?)SpeakerCountBox.Value);
+    }
 
-        if (answer is null)
-        {
-            return;
-        }
-
-        await _viewModel.FindSpeakersAsync(
-            int.TryParse(answer, out var count) && count > 0 ? count : null);
+    private async void OnSpeakersAutoClicked(object? sender, RoutedEventArgs e)
+    {
+        SpeakersButton.Flyout?.Hide();
+        await _viewModel.FindSpeakersAsync(null);
     }
 
     /* ---- the close gate ---------------------------------------------------------------- */
@@ -453,6 +509,14 @@ public sealed partial class MainWindow : Window
                     1 => "1 speaker",
                     var n => $"{n} speakers",
                 };
+
+                // The stepper opens showing the current answer, so "one more than it found"
+                // is a single click.
+                if (_viewModel.SpeakerCount > 0)
+                {
+                    SpeakerCountBox.Value = _viewModel.SpeakerCount;
+                }
+
                 break;
         }
 
@@ -461,21 +525,96 @@ public sealed partial class MainWindow : Window
 
     private void RefreshControls()
     {
-        CleanupOffer.IsVisible = _initialised && !_provisioningFoundry && _viewModel.CleanupModel is null;
+        // The glow means "models are thinking", not "a file is being read": decoding the
+        // audio is disk work, and the player receiving the samples is the moment it ends —
+        // model stages start immediately after. Preparing to record is model loading too.
+        UpdateGlow((_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing);
+        Reveal(CleanupOffer, _initialised && !_provisioningFoundry && _viewModel.CleanupModel is null);
         OpenButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsRecording;
         RecordButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsPreparing;
-        RecordButton.Content = _viewModel.IsRecording ? "Stop recording" : "Record";
+        RecordLabel.Text = _viewModel.IsRecording ? "Stop" : "Record";
+        RecordIcon.Data = (Geometry)this.FindResource(_viewModel.IsRecording ? "IconStop" : "IconMic")!;
+        RecordingDot.IsVisible = _viewModel.IsRecording;
         PlayButton.IsEnabled = _viewModel.Player.HasAudio && !_viewModel.IsRecording;
         SaveButton.IsEnabled = _viewModel.CanSaveArchive;
         ExportButton.IsEnabled = _viewModel.HasTranscript;
         SpeakersButton.IsEnabled = _viewModel.CanFindSpeakers && !_viewModel.IsBusy;
         DiscardButton.IsEnabled = _viewModel.HasTranscript;
 
-        WaveformHost.IsVisible = _viewModel.Player.HasAudio;
+        Reveal(WaveformHost, _viewModel.Player.HasAudio);
 
         if (_viewModel.Player.HasAudio)
         {
             _waveform.SetAudio(_viewModel.Player.DurationSeconds);
+        }
+    }
+
+    /* ---- the working glow -------------------------------------------------------------- */
+
+    /// <summary>
+    /// The sweep itself: one conic gradient, rotated a few degrees per frame while any model
+    /// stage runs. Driven by a timer rather than a style animation because the angle lives on
+    /// the brush, not the control — and stopped when idle, so a resting window costs nothing.
+    /// </summary>
+    private readonly ConicGradientBrush _glowBrush = new()
+    {
+        GradientStops =
+        {
+            new GradientStop(Color.FromArgb(160, 244, 63, 94), 0.00),
+            new GradientStop(Color.FromArgb(160, 168, 85, 247), 0.25),
+            new GradientStop(Color.FromArgb(160, 59, 130, 246), 0.50),
+            new GradientStop(Color.FromArgb(160, 236, 72, 153), 0.75),
+            new GradientStop(Color.FromArgb(160, 244, 63, 94), 1.00),
+        },
+    };
+
+    private DispatcherTimer? _glowTimer;
+
+    private void UpdateGlow(bool working)
+    {
+        if (working && _glowTimer is null)
+        {
+            // One brush feeds both rings, so the halo's bloom and the crisp edge sweep as a
+            // single light source rather than two rotating separately.
+            AiGlow.BorderBrush = _glowBrush;
+            AiGlowHalo.BorderBrush = _glowBrush;
+            AiGlowHalo.Classes.Add("breathing");
+            AiGlowLayer.Opacity = 1;
+
+            _glowTimer = new DispatcherTimer(
+                TimeSpan.FromMilliseconds(33),
+                DispatcherPriority.Render,
+                (_, _) => _glowBrush.Angle = (_glowBrush.Angle + 2.5) % 360);
+            _glowTimer.Start();
+        }
+        else if (!working && _glowTimer is not null)
+        {
+            _glowTimer.Stop();
+            _glowTimer = null;
+            AiGlowHalo.Classes.Remove("breathing");
+            AiGlowLayer.Opacity = 0;
+        }
+    }
+
+    /// <summary>
+    /// Shows or hides a panel with a fade instead of a pop. IsVisible cannot animate, so the
+    /// fade rides on Opacity: shown at zero, then eased to one a frame later — the "reveal"
+    /// style carries the transition.
+    /// </summary>
+    private static void Reveal(Control control, bool visible)
+    {
+        if (control.IsVisible == visible)
+        {
+            return;
+        }
+
+        control.Classes.Add("reveal");
+        control.IsVisible = visible;
+
+        if (visible)
+        {
+            control.Opacity = 0;
+            Dispatcher.UIThread.Post(() => control.Opacity = 1, DispatcherPriority.Background);
         }
     }
 
@@ -523,10 +662,17 @@ public sealed partial class MainWindow : Window
             var border = new Border
             {
                 Child = lines,
-                Padding = new Avalonia.Thickness(12, 6),
-                CornerRadius = new Avalonia.CornerRadius(6),
+                Padding = new Avalonia.Thickness(12, 7),
+                CornerRadius = new Avalonia.CornerRadius(8),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
+                Classes = { "paragraph" },
             };
+
+            // The press compression rides on a class because Border has no :pressed of its
+            // own; capture-lost clears it so a drag off the card never leaves it squeezed.
+            border.PointerPressed += (_, _) => border.Classes.Add("pressed");
+            border.PointerReleased += (_, _) => border.Classes.Remove("pressed");
+            border.PointerCaptureLost += (_, _) => border.Classes.Remove("pressed");
 
             _paragraphBorders.Add(border);
             ParagraphsPanel.Children.Add(border);
@@ -602,7 +748,7 @@ public sealed partial class MainWindow : Window
             // starts at the paragraph, which is the best time anybody has.
             block.Text = paragraph.Text;
             var start = paragraph.StartSeconds;
-            block.PointerPressed += (_, _) => _viewModel.Player.PlayFrom(start);
+            block.PointerPressed += (_, _) => StartPlayback(start);
             _paragraphWordRuns.Add([]);
             return block;
         }
@@ -641,7 +787,7 @@ public sealed partial class MainWindow : Window
 
             if (word is not null)
             {
-                _viewModel.Player.PlayFrom(word.Word.StartSeconds);
+                StartPlayback(word.Word.StartSeconds);
             }
         };
 
@@ -675,7 +821,8 @@ public sealed partial class MainWindow : Window
     {
         PaintMarker(double.NegativeInfinity);
         RefreshControls();
-        PlayButton.Content = "Play";
+        PlayLabel.Text = "Play";
+        PlayIcon.Data = (Geometry)this.FindResource("IconPlay")!;
     });
 
     /// <summary>Every run this window has ever lit, so a clear can never be missed.</summary>
@@ -728,14 +875,25 @@ public sealed partial class MainWindow : Window
 
         foreach (var stale in _highlightedRuns)
         {
-            stale.Background = null;
+            // A run can carry a search highlight under the marker; clearing the marker gives
+            // the search colour back rather than wiping both.
+            stale.Background = _searchRuns.Contains(stale) ? SearchBrush : null;
         }
 
         _highlightedRuns.Clear();
 
         for (var i = 0; i < _paragraphBorders.Count; i++)
         {
-            _paragraphBorders[i].Background = i == currentParagraph ? MarkerBrush : null;
+            if (i == currentParagraph)
+            {
+                _paragraphBorders[i].Background = MarkerBrush;
+            }
+            else
+            {
+                // Cleared rather than set to null: a local null would beat the hover style,
+                // and a card the pointer is resting on would stop saying it is clickable.
+                _paragraphBorders[i].ClearValue(Border.BackgroundProperty);
+            }
         }
 
         if (lit is not null)
@@ -746,11 +904,183 @@ public sealed partial class MainWindow : Window
 
         if (currentParagraph >= 0)
         {
-            PlayButton.Content = "Stop playback";
-            _paragraphBorders[currentParagraph].BringIntoView();
+            // Only while sound is actually coming out: a scrub with playback stopped moves
+            // the marker too, and must not dress the play button as a stop button.
+            if (_viewModel.Player.IsPlaying)
+            {
+                PlayLabel.Text = "Stop";
+                PlayIcon.Data = (Geometry)this.FindResource("IconStop")!;
+            }
+
+            if (_followPlayback)
+            {
+                // The grace window is how the ScrollChanged handler tells our scroll from
+                // the user's: BringIntoView reports asynchronously, on the same event.
+                _autoScrollUntil = DateTime.UtcNow.AddMilliseconds(400);
+                _paragraphBorders[currentParagraph].BringIntoView();
+            }
         }
 
         _waveform.SetPosition(seconds);
+    }
+
+    /* ---- search ------------------------------------------------------------------------ */
+
+    private static readonly IBrush SearchBrush = new SolidColorBrush(Color.FromArgb(70, 235, 180, 60));
+    private static readonly IBrush CurrentSearchBrush = new SolidColorBrush(Color.FromArgb(150, 235, 180, 60));
+
+    private readonly HashSet<Run> _searchRuns = [];
+    private readonly List<(int Paragraph, IReadOnlyList<WordRun> Runs)> _searchMatches = [];
+    private int _searchIndex = -1;
+
+    protected override void OnKeyDown(Avalonia.Input.KeyEventArgs e)
+    {
+        if (e.Key == Avalonia.Input.Key.F
+            && e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Meta))
+        {
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+            e.Handled = true;
+            return;
+        }
+
+        base.OnKeyDown(e);
+    }
+
+    private void OnSearchChanged(object? sender, TextChangedEventArgs e) => RunSearch();
+
+    private void OnSearchKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Avalonia.Input.Key.Enter:
+                StepSearch(e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift) ? -1 : +1);
+                e.Handled = true;
+                break;
+
+            case Avalonia.Input.Key.Escape:
+                SearchBox.Text = string.Empty;
+                TranscriptScroll.Focus();
+                e.Handled = true;
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Finds every occurrence and lights the words carrying it. Matching is done against the
+    /// same display text the runs were built from, so a hit maps straight onto the words —
+    /// and a phrase spanning several words lights all of them.
+    /// </summary>
+    private void RunSearch()
+    {
+        foreach (var run in _searchRuns)
+        {
+            run.Background = null;
+        }
+
+        _searchRuns.Clear();
+        _searchMatches.Clear();
+        _searchIndex = -1;
+
+        var needle = SearchBox.Text?.Trim();
+
+        if (string.IsNullOrEmpty(needle))
+        {
+            StatusText.Text = _viewModel.Status;
+            return;
+        }
+
+        for (var p = 0; p < _paragraphWordRuns.Count; p++)
+        {
+            var runs = _paragraphWordRuns[p];
+
+            if (runs.Count == 0)
+            {
+                continue;
+            }
+
+            var text = ParagraphDisplayText(runs);
+
+            for (var at = text.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+                 at >= 0;
+                 at = text.IndexOf(needle, at + 1, StringComparison.OrdinalIgnoreCase))
+            {
+                var end = at + needle.Length;
+                var hit = runs.Where(r => r.CharEnd > at && r.CharStart < end).ToList();
+
+                if (hit.Count > 0)
+                {
+                    _searchMatches.Add((p, hit));
+                }
+            }
+        }
+
+        foreach (var (_, runs) in _searchMatches)
+        {
+            foreach (var run in runs)
+            {
+                run.Run.Background = SearchBrush;
+                _searchRuns.Add(run.Run);
+            }
+        }
+
+        StatusText.Text = _searchMatches.Count switch
+        {
+            0 => $"No match for “{needle}”.",
+            1 => "1 match — Enter to jump to it.",
+            var n => $"{n} matches — Enter to step through them.",
+        };
+
+        if (_searchMatches.Count > 0)
+        {
+            StepSearch(+1);
+        }
+    }
+
+    private static string ParagraphDisplayText(IReadOnlyList<WordRun> runs)
+    {
+        var text = new System.Text.StringBuilder(runs[^1].CharEnd);
+
+        foreach (var run in runs)
+        {
+            if (text.Length > 0)
+            {
+                text.Append(' ');
+            }
+
+            text.Append(run.Word.Text);
+        }
+
+        return text.ToString();
+    }
+
+    private void StepSearch(int direction)
+    {
+        if (_searchMatches.Count == 0)
+        {
+            return;
+        }
+
+        if (_searchIndex >= 0)
+        {
+            foreach (var run in _searchMatches[_searchIndex].Runs)
+            {
+                run.Run.Background = SearchBrush;
+            }
+        }
+
+        _searchIndex = ((_searchIndex + direction) % _searchMatches.Count + _searchMatches.Count)
+            % _searchMatches.Count;
+
+        var (paragraph, runs) = _searchMatches[_searchIndex];
+
+        foreach (var run in runs)
+        {
+            run.Run.Background = CurrentSearchBrush;
+        }
+
+        _paragraphBorders[paragraph].BringIntoView();
+        StatusText.Text = $"Match {_searchIndex + 1} of {_searchMatches.Count}.";
     }
 
     /// <summary>

@@ -1084,6 +1084,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // every crosstalk paragraph a loudness estimate instead of its measured words.
             pieces = CrosstalkMarks.Apply(pieces, _overlaps);
 
+            // Renumbering rewrites the records too, so it obeys the same law: before the
+            // table is keyed. Cluster order is not speaking order, and a transcript that
+            // opens with "Speaker 2" reads as a bug even when the separation is right.
+            var relabelled = SpeakerLabels.RenumberByAppearance([.. pieces.Select(p => p.Segment)]);
+            pieces = [.. pieces.Select((p, i) => p with { Segment = relabelled[i] })];
+
             // Here rather than after aligning. Aligning is not the last thing that moves a
             // boundary — dividing segments between speakers sets new ones from the words, and
             // the tidying that stops two segments claiming the same moment runs after that. A
@@ -1107,8 +1113,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var attributed = SpeakerDiarizer.Attribute([.. timed.Select(t => t.Segment)], turns);
 
         // No measured words on this path, so the bounds-based mark is the honest one.
-        return SpeakerAttribution.MarkOverlaps(
-            SpeakerAttribution.KeepSentencesWhole(attributed), _overlaps);
+        return SpeakerLabels.RenumberByAppearance(SpeakerAttribution.MarkOverlaps(
+            SpeakerAttribution.KeepSentencesWhole(attributed), _overlaps));
     }
 
     /// <summary>Says what cleanup left undone, or takes the notice away when it did not.</summary>
@@ -1204,6 +1210,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             attributed = await AttributeSpeakersAsync(_segmentsBeforeSpeakers, audio, speakers);
+        }
+        catch (OperationCanceledException)
+        {
+            Status = "Stopped.";
+            return;
+        }
+        catch (Exception exception)
+        {
+            // Escaping here would take the whole app down with it — this runs from a click.
+            Status = $"Could not work out the speakers: {exception.Message}";
+            LogError(exception);
+            return;
         }
         finally
         {
@@ -1886,6 +1904,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             Status = DoneStatus();
         }
+        catch (OperationCanceledException exception)
+            when (_cancellation?.IsCancellationRequested != true)
+        {
+            // A cancellation nobody asked for is an engine failure wearing a costume —
+            // HttpClient reports a timeout this way, and so can a binding tearing down.
+            // Calling it "Cancelled." blamed the user for something they did not do and
+            // threw away the evidence; the error file keeps the stack.
+            Status = "Failed: the engine stopped mid-run without being asked to. "
+                + $"Details in {Path.GetFileName(ErrorLogPath)}.";
+            LogError(exception);
+        }
         catch (OperationCanceledException)
         {
             Status = "Cancelled.";
@@ -1895,12 +1924,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Surfacing the message beats a silent failure: most problems here are a missing
             // model file or an export whose signature does not match, and both say so plainly.
             Status = $"Failed: {exception.Message}";
+            LogError(exception);
         }
         finally
         {
             IsBusy = false;
             _cancellation?.Dispose();
             _cancellation = null;
+        }
+    }
+
+    /// <summary>Where failures keep their stacks; the status line only has room for a verdict.</summary>
+    public static string ErrorLogPath { get; } =
+        Path.Combine(Path.GetTempPath(), "localscribe-errors.txt");
+
+    private static void LogError(Exception exception)
+    {
+        try
+        {
+            File.AppendAllText(
+                ErrorLogPath,
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {exception}{Environment.NewLine}{Environment.NewLine}");
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException)
+        {
+            // A diagnostic that cannot be written is not worth failing anything over.
         }
     }
 

@@ -79,8 +79,43 @@ def build() -> Image.Image:
     return image
 
 
+def iconset(master: Image.Image, name: str) -> None:
+    """The sizes iconutil wants, as a .iconset directory ready for `iconutil -c icns`.
+
+    The drawing is the Windows tile, unchanged — kinship across platforms is the point — but
+    inset to 82% of the canvas, because macOS icons live inside a transparent margin and a
+    full-bleed tile reads as oversized next to every other icon in the Dock.
+    """
+    import os
+
+    directory = f"{name}.iconset"
+    os.makedirs(directory, exist_ok=True)
+
+    inset = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    content = round(S * 0.82)
+    offset = (S - content) // 2
+    inset.paste(master.resize((content, content), Image.LANCZOS), (offset, offset))
+
+    # Each frame from the master, never from each other — the same discipline as the .ico.
+    for points in [16, 32, 128, 256, 512]:
+        for scale in [1, 2]:
+            pixels = points * scale
+            suffix = "@2x" if scale == 2 else ""
+            inset.resize((pixels, pixels), Image.LANCZOS).save(
+                f"{directory}/icon_{points}x{points}{suffix}.png"
+            )
+
+    print(f"wrote {directory}; run: iconutil -c icns {directory}")
+
+
 def main() -> None:
+    import sys
+
     master = build()
+
+    if "--iconset" in sys.argv:
+        iconset(master, "localscribe")
+        return
 
     out_png = "localscribe.png"
     master.resize((512, 512), Image.LANCZOS).save(out_png)

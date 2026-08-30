@@ -239,12 +239,16 @@ public sealed class TranscriptRefiner
             return (await _model.CompleteAsync(systemPrompt, userPrompt, maxTokens, cancellationToken)
                 .ConfigureAwait(false)).Trim();
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception exception)
         {
+            // The token check above is what lets this branch see an HttpClient timeout:
+            // HttpClient reports one as a cancellation nobody asked for, and rethrowing it
+            // let a single slow completion take the whole finished transcript with it —
+            // reported to the user as "Cancelled.", which blamed them for a model's pace.
             Failed++;
             LastError ??= exception.Message;
             return null;

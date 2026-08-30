@@ -20,6 +20,8 @@
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleIconFile</key>
+    <string>LocalScribe</string>
 
     <!-- Without this, capture fails silently — the exact class of failure this project
          hates. The words are shown to the user in the system permission dialog. -->
@@ -36,6 +38,8 @@
             <string>LocalScribe transcript</string>
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
+            <key>CFBundleTypeIconFile</key>
+            <string>scrb</string>
             <key>LSItemContentTypes</key>
             <array>
                 <string>app.localscribe.scrb</string>

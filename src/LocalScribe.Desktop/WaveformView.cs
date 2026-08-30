@@ -6,9 +6,10 @@ using Avalonia.Media;
 namespace LocalScribe.Desktop;
 
 /// <summary>
-/// The recording as peaks, with the playback position drawn over it. Click or drag to seek:
-/// the drag is live — each move restarts playback at the pointer — because that is what makes
-/// "drag the waveform and watch the words follow" true rather than approximately true.
+/// The recording as peaks, with the playback position drawn over it. A tap plays from that
+/// spot; a drag scrubs — the marker and the words follow the pointer live, with the sound
+/// held until release, which is what makes "drag the waveform and watch the words follow"
+/// feel navigable rather than like a stuttering restart per pixel.
 /// </summary>
 internal sealed class WaveformView : Control
 {
@@ -20,8 +21,20 @@ internal sealed class WaveformView : Control
     private static readonly IBrush PeakBrush = new SolidColorBrush(Color.FromArgb(120, 120, 144, 180));
     private static readonly IPen CursorPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 64, 128, 255)), 2);
 
-    /// <summary>Raised when the user asks to hear from a time, by click or drag.</summary>
-    public event Action<double>? SeekRequested;
+    /// <summary>A press-and-release without movement: play from here.</summary>
+    public event Action<double>? TapSeek;
+
+    /// <summary>A drag has begun; the owner decides what pauses while it lasts.</summary>
+    public event Action? ScrubStarted;
+
+    /// <summary>The pointer, mid-drag. Raised per move — the transcript follows live.</summary>
+    public event Action<double>? Scrubbed;
+
+    /// <summary>The drag ended here; the owner decides whether sound resumes.</summary>
+    public event Action<double>? ScrubEnded;
+
+    private Point _pressedAt;
+    private bool _scrubbing;
 
     /// <summary>Hands the view its audio. Peaks are recomputed on resize by asking again.</summary>
     public Func<int, float[]>? PeakSource { get; set; }
@@ -76,25 +89,58 @@ internal sealed class WaveformView : Control
         }
     }
 
+    /// <summary>
+    /// A press is ambiguous until the pointer moves: held still it is a tap (play from
+    /// here), moved it is a scrub. Four pixels tells them apart — small enough that a scrub
+    /// feels immediate, large enough that a click with an unsteady hand stays a click.
+    /// </summary>
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         _dragging = true;
-        Seek(e);
+        _scrubbing = false;
+        _pressedAt = e.GetPosition(this);
         e.Pointer.Capture(this);
     }
 
     protected override void OnPointerMoved(PointerEventArgs e)
     {
-        if (_dragging)
+        if (!_dragging)
         {
-            Seek(e);
+            return;
+        }
+
+        if (!_scrubbing && Math.Abs(e.GetPosition(this).X - _pressedAt.X) > 4)
+        {
+            _scrubbing = true;
+            ScrubStarted?.Invoke();
+        }
+
+        if (_scrubbing)
+        {
+            Scrubbed?.Invoke(TimeAt(e));
         }
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
-        _dragging = false;
         e.Pointer.Capture(null);
+
+        if (!_dragging)
+        {
+            return;
+        }
+
+        _dragging = false;
+
+        if (_scrubbing)
+        {
+            _scrubbing = false;
+            ScrubEnded?.Invoke(TimeAt(e));
+        }
+        else
+        {
+            TapSeek?.Invoke(TimeAt(e));
+        }
     }
 
     protected override void OnSizeChanged(SizeChangedEventArgs e)
@@ -104,14 +150,13 @@ internal sealed class WaveformView : Control
         InvalidateVisual();
     }
 
-    private void Seek(PointerEventArgs e)
+    private double TimeAt(PointerEventArgs e)
     {
         if (_durationSeconds <= 0 || Bounds.Width <= 0)
         {
-            return;
+            return 0;
         }
 
-        var fraction = Math.Clamp(e.GetPosition(this).X / Bounds.Width, 0, 1);
-        SeekRequested?.Invoke(fraction * _durationSeconds);
+        return Math.Clamp(e.GetPosition(this).X / Bounds.Width, 0, 1) * _durationSeconds;
     }
 }

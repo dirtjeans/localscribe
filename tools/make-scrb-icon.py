@@ -106,8 +106,33 @@ def build() -> Image.Image:
     return image
 
 
+def iconset(master: Image.Image, name: str) -> None:
+    """The sizes iconutil wants; see make-icon.py for the reasoning. The page keeps its own
+    proportions — documents already sit inside whitespace, so no extra inset is added."""
+    import os
+
+    directory = f"{name}.iconset"
+    os.makedirs(directory, exist_ok=True)
+
+    for points in [16, 32, 128, 256, 512]:
+        for scale in [1, 2]:
+            pixels = points * scale
+            suffix = "@2x" if scale == 2 else ""
+            master.resize((pixels, pixels), Image.LANCZOS).save(
+                f"{directory}/icon_{points}x{points}{suffix}.png"
+            )
+
+    print(f"wrote {directory}; run: iconutil -c icns {directory}")
+
+
 def main() -> None:
+    import sys
+
     master = build()
+
+    if "--iconset" in sys.argv:
+        iconset(master, "scrb")
+        return
 
     out_png = "scrb.png"
     master.resize((512, 512), Image.LANCZOS).save(out_png)

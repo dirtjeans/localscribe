@@ -20,6 +20,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp -R "$PUBLISH/". "$APP/Contents/MacOS/"
 cp tools/macos/Info.plist "$APP/Contents/"
 
+# The same drawings as the Windows .ico files, produced by the same masters:
+# tools/make-icon.py --iconset and tools/make-scrb-icon.py --iconset, then iconutil.
+cp tools/macos/LocalScribe.icns tools/macos/scrb.icns "$APP/Contents/Resources/"
+
 # The whisper.net Core ML packaging defect (see Directory.Build.targets) has to be fixed in
 # whatever copy actually ships, so the patch is repeated here against the published dylib.
 COREML="$APP/Contents/MacOS/runtimes/coreml/macos-arm64/libwhisper.dylib"
