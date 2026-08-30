@@ -1,5 +1,6 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarization;
+using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Transcription;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -79,13 +80,33 @@ public sealed class SpeakerDiarizer : IDisposable
     }
 
     /// <summary>Opens both models from a directory holding segmentation.onnx and embedding.onnx.</summary>
-    public static SpeakerDiarizer Load(string modelDirectory)
+    /// <param name="plan">
+    /// Supplies the CPU thread budget, or null to let ONNX Runtime take every core — which is
+    /// what these sessions always did, and on Windows still do until a --diarize turn diff on
+    /// the reference recordings proves the cap moves no boundary. Thread count can reorder
+    /// float summation, and the tuning is frozen: a boundary moving a hundredth of a second is
+    /// a tuning change whatever it was called. On the Mac the diff has been run; see
+    /// docs/handoff-macos.md.
+    /// </param>
+    public static SpeakerDiarizer Load(string modelDirectory, ExecutionPlan? plan = null)
     {
-        var segmentation = new InferenceSession(Require(modelDirectory, "segmentation.onnx"));
+        using var options = plan is null
+            ? null
+            : new SessionOptions
+            {
+                IntraOpNumThreads = plan.CpuBudget.IntraOpThreads,
+                InterOpNumThreads = plan.CpuBudget.InterOpThreads,
+            };
+
+        var segmentation = options is null
+            ? new InferenceSession(Require(modelDirectory, "segmentation.onnx"))
+            : new InferenceSession(Require(modelDirectory, "segmentation.onnx"), options);
 
         try
         {
-            var embedding = new InferenceSession(Require(modelDirectory, "embedding.onnx"));
+            var embedding = options is null
+                ? new InferenceSession(Require(modelDirectory, "embedding.onnx"))
+                : new InferenceSession(Require(modelDirectory, "embedding.onnx"), options);
             return new SpeakerDiarizer(segmentation, embedding);
         }
         catch

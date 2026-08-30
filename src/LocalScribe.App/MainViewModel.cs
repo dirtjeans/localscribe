@@ -870,7 +870,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             return await Task.Run(() =>
             {
-                using var diarizer = SpeakerDiarizer.Load(directory);
+                // The thread budget is passed only where a --diarize turn diff has proven it moves
+                // no boundary — macOS so far. Windows keeps its historical all-cores sessions
+                // until the laptop runs the same measurement; the tuning is frozen and thread
+                // count can reorder float summation.
+                using var diarizer = SpeakerDiarizer.Load(
+                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
 
                 // Speakers are followed through the audio rather than told apart by their
                 // voices, whether or not a count was given. Two local speakers in one window
@@ -1153,7 +1158,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var stages = new SharedBar(this);
 
-            var refinement = await CleanAsync(
+            var refinement = await CleanWhenAwakeAsync(
                 refiner, new Transcript(_rawSegments), stages, cancellationToken).ConfigureAwait(true);
 
             await AssembleAsync(
@@ -1352,7 +1357,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             split = await Task.Run(() =>
             {
-                using var diarizer = SpeakerDiarizer.Load(directory);
+                // The thread budget is passed only where a --diarize turn diff has proven it moves
+                // no boundary — macOS so far. Windows keeps its historical all-cores sessions
+                // until the laptop runs the same measurement; the tuning is frozen and thread
+                // count can reorder float summation.
+                using var diarizer = SpeakerDiarizer.Load(
+                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
 
                 if (diarizer.EmbedSpan(audio, example.StartSeconds, example.EndSeconds)
                     is not { } exampleVoice)
@@ -1470,9 +1480,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var stages = new SharedBar(this);
         var transcript = new Transcript(spoken);
 
+        // Cleanup waits for warm weights inside its own lane, so the diarizer and the scan —
+        // which need no language model — never wait behind a cold Foundry.
         var cleaning = refiner is null
             ? Task.FromResult<RefinementResult?>(null)
-            : CleanAsync(refiner, transcript, stages, cancellationToken);
+            : CleanWhenAwakeAsync(refiner, transcript, stages, cancellationToken);
 
         var listening = audio is null
             ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
@@ -1542,6 +1554,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         RecordSpans(finished);
 
         ReportCleanup(refiner);
+    }
+
+    /// <summary>
+    /// The cleanup stage, behind the wake: waits (cancellably) for the background weight load
+    /// that startup began, then cleans. A wake that failed is not a reason to skip trying —
+    /// the refiner degrades per window and reports what it could not do.
+    /// </summary>
+    private async Task<RefinementResult?> CleanWhenAwakeAsync(
+        TranscriptRefiner refiner,
+        Transcript transcript,
+        SharedBar stages,
+        CancellationToken cancellationToken)
+    {
+        await EnsureCleanupAwakeAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
+
+        return await CleanAsync(refiner, transcript, stages, cancellationToken).ConfigureAwait(true);
     }
 
     private async Task<RefinementResult?> CleanAsync(
@@ -1779,6 +1807,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var capabilities = await probing;
         _languageModel = await resolving;
+        _cleanupAwake = false;
+        _cleanupWake = null;
 
         capabilities = capabilities with { LocalLanguageModelPresent = _languageModel is not null };
 
@@ -1792,6 +1822,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Status = _plan.Warnings.Count == 0
             ? "Ready."
             : $"Ready, with {_plan.Warnings.Count} warning(s). Run localscribe-doctor for detail.";
+
+        // Fire-and-forget on purpose: the weights load while the user opens a file or the
+        // first transcription runs. Only the cleanup stage ever waits on this task.
+        _ = EnsureCleanupAwakeAsync();
 
         if (_waitingFor is { Length: > 0 } held)
         {
@@ -2413,6 +2447,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             Status = "Connecting to the cleanup model…";
             _languageModel = await LocalLanguageModel.ResolveAsync();
+            _cleanupAwake = false;
+            _cleanupWake = null;
 
             if (_languageModel is null)
             {
@@ -2447,6 +2483,83 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private TranscriptRefiner? BuildRefiner() =>
         _languageModel is null ? null : new TranscriptRefiner(_languageModel);
+
+    /// <summary>
+    /// True once the cleanup backend has answered a completion this session.
+    /// </summary>
+    private bool _cleanupAwake;
+
+    /// <summary>The wake in flight, so every path waits on one load rather than starting its own.</summary>
+    private Task? _cleanupWake;
+
+    /// <summary>
+    /// Starts waking the cleanup backend if nothing has, and returns the task to wait on.
+    /// <para>
+    /// Called fire-and-forget at startup so the weights load while the user opens a file or
+    /// the first transcription runs — only the cleanup stage actually waits for them, in its
+    /// own parallel lane. Deliberately not cancellable: the load benefits the whole session,
+    /// and a cancelled transcription abandoning it would just move the wait to the next one.
+    /// </para>
+    /// </summary>
+    private Task EnsureCleanupAwakeAsync()
+    {
+        if (_cleanupAwake || _languageModel is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        // A failed wake is retried by whoever asks next; the backend may simply need longer.
+        if (_cleanupWake is { IsCompleted: false } or { IsCompletedSuccessfully: true })
+        {
+            return _cleanupWake;
+        }
+
+        _cleanupWake = WakeCleanupAsync();
+        return _cleanupWake;
+    }
+
+    /// <summary>
+    /// First contact with the cleanup backend loads its weights — Foundry Local keeps the
+    /// model cold until asked, and the load can take a minute or more. Left unnarrated, that
+    /// minute is a cleanup bar parked at 0% and, before the refiner learned better, a timeout
+    /// dressed as a cancellation. One tiny completion pays the cost, said out loud — except
+    /// while recording, whose own status ("Listening — go ahead") must not be stomped by a
+    /// background chore.
+    /// </summary>
+    private async Task WakeCleanupAsync()
+    {
+        if (_cleanupAwake || _languageModel is not { } model)
+        {
+            return;
+        }
+
+        Narrate($"Waking the cleanup model ({model.Description}) — the first load takes a while…");
+
+        try
+        {
+            await model.CompleteAsync(
+                    "Answer with the single word OK.", "OK?", maxTokens: 8, CancellationToken.None)
+                .ConfigureAwait(true);
+
+            _cleanupAwake = true;
+            Narrate("Cleanup model awake.");
+        }
+        catch (Exception exception)
+        {
+            // Not fatal: cleanup already degrades per window. But say so, because "the
+            // punctuation never improved" otherwise looks like the recording's fault.
+            Narrate($"The cleanup model is not answering yet: {exception.Message}");
+            LogError(exception);
+        }
+
+        void Narrate(string message)
+        {
+            if (!IsRecording && !IsPreparing)
+            {
+                Status = message;
+            }
+        }
+    }
 
     /// <summary>Cancels whatever is running.</summary>
     public void Cancel() => _cancellation?.Cancel();
