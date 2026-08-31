@@ -290,43 +290,6 @@
             </Grid>
 
             <!--
-                The working glow: three colours, each owning a full third of the border,
-                turning together while the models are busy. No gradient can do this — a linear
-                gradient bands across the box and mirrors on opposite edges, and WinUI has no
-                conic brush — so it is built the honest way: a disc of three 120-degree wedges
-                spun behind the transcript, with an opaque cover leaving only the rim showing.
-                The wedges and the clip are sized in code because they must outgrow the cell's
-                diagonal; the cover exists only while the glow does, so the idle window is
-                untouched.
-            -->
-            <Grid
-                x:Name="AiGlowLayer"
-                Grid.Row="1"
-                IsHitTestVisible="False"
-                Visibility="Collapsed"
-                SizeChanged="OnGlowLayerSizeChanged">
-                <!-- A real conic gradient, rendered once into a bitmap because XAML cannot
-                     draw one: each colour centred on its third of the circle, blending
-                     smoothly into the next. Rotating the bitmap is the whole animation. -->
-                <Image
-                    x:Name="GlowDisc"
-                    Stretch="Fill"
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    RenderTransformOrigin="0.5,0.5">
-                    <Image.RenderTransform>
-                        <RotateTransform x:Name="GlowSpin" />
-                    </Image.RenderTransform>
-                </Image>
-
-                <Border
-                    x:Name="GlowCover"
-                    Background="{ThemeResource ApplicationPageBackgroundThemeBrush}"
-                    CornerRadius="8"
-                    Margin="3" />
-            </Grid>
-
-            <!--
                 One item per paragraph rather than one long block of text. Paragraphs are what
                 make a transcript readable, and giving each its own item is also what lets a
                 click land on a time: the timestamp beside it is the position in the recording,
@@ -415,6 +378,63 @@
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
+
+            <!--
+                The working glow, ported from the Mac window: a slow colour sweep around the
+                transcript while the models are busy, so "is it doing anything?" has an answer
+                that costs no reading. Two rings because WinUI has no blur to make a halo of:
+                a soft wide one that breathes and a crisp one that carries the sweep. WinUI
+                also has no conic gradient, so the sweep is a linear gradient rotated by the
+                same fifteen-frames-a-second timer the Mac settled on after the ornament was
+                caught competing with the work it announced.
+            -->
+            <Border
+                x:Name="AiGlowHalo"
+                Grid.Row="1"
+                BorderThickness="5"
+                CornerRadius="10"
+                IsHitTestVisible="False"
+                Opacity="0"
+                Visibility="Collapsed">
+                <Border.BorderBrush>
+                    <LinearGradientBrush x:Name="GlowHaloBrush" StartPoint="0,0" EndPoint="1,1">
+                        <!-- Two full cycles, two stops per colour, different colours on the
+                             two ends: a linear gradient clamps past its endpoints, so whoever
+                             holds an end also owns a solid corner of the ring. One colour on
+                             both ends owned two. -->
+                        <GradientStop Color="#2563EB" Offset="0" />
+                        <GradientStop Color="#8B5CF6" Offset="0.2" />
+                        <GradientStop Color="#F2456A" Offset="0.4" />
+                        <GradientStop Color="#2563EB" Offset="0.6" />
+                        <GradientStop Color="#8B5CF6" Offset="0.8" />
+                        <GradientStop Color="#F2456A" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+            </Border>
+
+            <Border
+                x:Name="AiGlowRing"
+                Grid.Row="1"
+                BorderThickness="2"
+                CornerRadius="8"
+                IsHitTestVisible="False"
+                Opacity="0.9"
+                Visibility="Collapsed">
+                <Border.BorderBrush>
+                    <LinearGradientBrush x:Name="GlowRingBrush" StartPoint="0,0" EndPoint="1,1">
+                        <!-- Two full cycles, two stops per colour, different colours on the
+                             two ends: a linear gradient clamps past its endpoints, so whoever
+                             holds an end also owns a solid corner of the ring. One colour on
+                             both ends owned two. -->
+                        <GradientStop Color="#2563EB" Offset="0" />
+                        <GradientStop Color="#8B5CF6" Offset="0.2" />
+                        <GradientStop Color="#F2456A" Offset="0.4" />
+                        <GradientStop Color="#2563EB" Offset="0.6" />
+                        <GradientStop Color="#8B5CF6" Offset="0.8" />
+                        <GradientStop Color="#F2456A" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+            </Border>
 
             <StackPanel
                 x:Name="EmptyState"

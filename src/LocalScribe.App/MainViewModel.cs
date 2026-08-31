@@ -339,6 +339,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    /// <summary>True once any segment on screen carries measured word times.</summary>
+    public bool HasMeasuredWords
+    {
+        get
+        {
+            lock (_alignedGate)
+            {
+                return _alignedFor.Count > 0;
+            }
+        }
+    }
+
     /// <summary>The words of a segment, with where each begins in its text.</summary>
     private static List<WordTimings.Word> Split(string text)
     {

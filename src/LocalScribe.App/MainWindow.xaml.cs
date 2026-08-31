@@ -732,6 +732,16 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // The streaming text is clickable before the words are timed, and a click then follows
+        // the transcriber's drifting stamps — on a long recording that lands up to a minute
+        // away, or past the end of the audio entirely, which reads as the click doing nothing.
+        // Say so; the transcript announces itself when the real times arrive.
+        if (_viewModel.IsBusy && !_viewModel.HasMeasuredWords)
+        {
+            StatusText.Text = "The words aren't timed yet, so clicks only land roughly — "
+                + "the transcript will say when it is ready to use.";
+        }
+
         Seek(paragraph.StartSeconds, play: true);
     }
 
@@ -1313,16 +1323,16 @@ public sealed partial class MainWindow : Window
     {
         var working = (_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing;
 
-        if (working && AiGlowLayer.Visibility != Visibility.Visible)
+        if (working && _glowTimer is null && AiGlowRing.Visibility != Visibility.Visible)
         {
-            AiGlowLayer.Visibility = Visibility.Visible;
-            BuildGlowDisc();
+            AiGlowRing.Visibility = Visibility.Visible;
+            AiGlowHalo.Visibility = Visibility.Visible;
 
-            // A person who has turned animations off system-wide gets the still ring: the
-            // information without the motion they opted out of.
+            // A person who has turned animations off system-wide gets a still ring: the
+            // information (something is working) without the motion they opted out of.
             if (!new Windows.UI.ViewManagement.UISettings().AnimationsEnabled)
             {
-                AiGlowLayer.Opacity = 0.9;
+                AiGlowHalo.Opacity = 0.4;
                 return;
             }
 
@@ -1332,99 +1342,40 @@ public sealed partial class MainWindow : Window
             _glowTimer.Tick += (_, _) => TurnGlow();
             _glowTimer.Start();
         }
-        else if (!working && AiGlowLayer.Visibility == Visibility.Visible)
+        else if (!working && AiGlowRing.Visibility == Visibility.Visible)
         {
             _glowTimer?.Stop();
             _glowTimer = null;
 
-            AiGlowLayer.Visibility = Visibility.Collapsed;
+            AiGlowRing.Visibility = Visibility.Collapsed;
+            AiGlowHalo.Visibility = Visibility.Collapsed;
+            AiGlowHalo.Opacity = 0;
         }
     }
 
-    /// <summary>One step: the disc turns, the whole ring breathes gently.</summary>
+    /// <summary>One step of the sweep: the gradient turns, the halo breathes.</summary>
     private void TurnGlow()
     {
         _glowTicks++;
-        GlowSpin.Angle = (_glowTicks * 5) % 360;
-        AiGlowLayer.Opacity = 0.82 + (0.18 * Math.Sin(_glowTicks * 0.066 * Math.PI / 2));
-    }
 
-    private void OnGlowLayerSizeChanged(object sender, SizeChangedEventArgs e) => BuildGlowDisc();
+        // No conic gradient in WinUI, so the sweep is a linear gradient whose axis rotates.
+        // The axis runs a little past the box so the clamped ends — solid runs of the two
+        // end colours — stay in the corners instead of swallowing whole edges.
+        var radians = _glowTicks * 5 * Math.PI / 180;
+        var dx = Math.Cos(radians) * 0.62;
+        var dy = Math.Sin(radians) * 0.62;
 
-    /// <summary>
-    /// Sizes the disc past the cell's diagonal so rotation never uncovers a corner, and clips
-    /// the layer to the cell so it never paints outside one. The disc keeps its square shape —
-    /// a conic gradient survives uniform scaling and nothing else.
-    /// </summary>
-    private void BuildGlowDisc()
-    {
-        var width = AiGlowLayer.ActualWidth;
-        var height = AiGlowLayer.ActualHeight;
+        var start = new Windows.Foundation.Point(0.5 - dx, 0.5 - dy);
+        var end = new Windows.Foundation.Point(0.5 + dx, 0.5 + dy);
 
-        if (width < 1 || height < 1)
-        {
-            return;
-        }
+        GlowRingBrush.StartPoint = start;
+        GlowRingBrush.EndPoint = end;
+        GlowHaloBrush.StartPoint = start;
+        GlowHaloBrush.EndPoint = end;
 
-        AiGlowLayer.Clip = new RectangleGeometry
-        {
-            Rect = new Windows.Foundation.Rect(0, 0, width, height),
-        };
-
-        var side = Math.Sqrt((width * width) + (height * height)) + 16;
-
-        GlowDisc.Width = side;
-        GlowDisc.Height = side;
-        GlowDisc.Source ??= ConicDisc();
-    }
-
-    /// <summary>
-    /// The conic gradient XAML cannot draw, computed pixel by pixel: blue, purple and red each
-    /// centred on a third of the circle, blending smoothly into the next — the same drawing
-    /// the Mac window gets from its conic brush. Hard-edged wedges were tried first and spun
-    /// like a beach ball; the glow lives in the blend.
-    /// </summary>
-    private static Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap ConicDisc()
-    {
-        const int side = 512;
-        const double centre = side / 2.0;
-
-        (byte R, byte G, byte B)[] colours =
-        [
-            (0x25, 0x63, 0xEB),
-            (0x8B, 0x5C, 0xF6),
-            (0xF2, 0x45, 0x6A),
-        ];
-
-        var pixels = new byte[side * side * 4];
-
-        for (var y = 0; y < side; y++)
-        {
-            for (var x = 0; x < side; x++)
-            {
-                var turn = (Math.Atan2(y - centre, x - centre) + Math.PI) / (2 * Math.PI);
-                var position = turn * colours.Length;
-                var index = (int)position % colours.Length;
-                var next = (index + 1) % colours.Length;
-                var blend = position - Math.Floor(position);
-
-                var at = ((y * side) + x) * 4;
-                pixels[at] = (byte)(colours[index].B + ((colours[next].B - colours[index].B) * blend));
-                pixels[at + 1] = (byte)(colours[index].G + ((colours[next].G - colours[index].G) * blend));
-                pixels[at + 2] = (byte)(colours[index].R + ((colours[next].R - colours[index].R) * blend));
-                pixels[at + 3] = 255;
-            }
-        }
-
-        var bitmap = new Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap(side, side);
-
-        using (var stream = System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions
-            .AsStream(bitmap.PixelBuffer))
-        {
-            stream.Write(pixels, 0, pixels.Length);
-        }
-
-        return bitmap;
+        // A four-second breath, out of phase with the sweep so the two read as independent
+        // life rather than one mechanism.
+        AiGlowHalo.Opacity = 0.32 + (0.18 * Math.Sin(_glowTicks * 0.066 * Math.PI / 2));
     }
 
     private DispatcherTimer? _glowTimer;
