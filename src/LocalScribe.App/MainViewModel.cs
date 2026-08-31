@@ -929,6 +929,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// <summary>Lines dropped because the transcriber wrote them twice.</summary>
     private int _doubledLines;
 
+    /// <summary>The last cleaned transcript as assembly received it, for targeted retries.</summary>
+    private IReadOnlyList<TranscriptSegment>? _cleanedBase;
+
+    /// <summary>The kept-raw instances inside <see cref="_cleanedBase"/>, by reference.</summary>
+    private List<TranscriptSegment> _retryTargets = [];
+
     /// <summary>
     /// Writes the aligner's exact input — the transcriber's stamps as the corridor will anchor
     /// on them. The app's placements and the checker's diverge on the same audio, and the one
@@ -1370,12 +1376,58 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var stages = new SharedBar(this);
 
-            var refinement = await CleanWhenAwakeAsync(
-                refiner, new Transcript(_rawSegments), stages, cancellationToken).ConfigureAwait(true);
+            // Only the passages that failed, when the last run recorded which ones those
+            // were: re-cleaning eight windows because one timed out spent minutes to redo
+            // work that was already right. The failed instances sit verbatim in the last
+            // cleaned list, so each consecutive run of them is one small transcript to
+            // re-clean and splice back.
+            if (_cleanedBase is { Count: > 0 } baseline && _retryTargets is { Count: > 0 } targets)
+            {
+                var wanted = new HashSet<TranscriptSegment>(
+                    targets, ReferenceEqualityComparer.Instance);
 
-            await AssembleAsync(
-                refinement?.CleanedSegments ?? _rawSegments, refiner, stages, cancellationToken)
-                .ConfigureAwait(true);
+                var repaired = new List<TranscriptSegment>(baseline.Count);
+                var at = 0;
+
+                while (at < baseline.Count)
+                {
+                    if (!wanted.Contains(baseline[at]))
+                    {
+                        repaired.Add(baseline[at]);
+                        at++;
+                        continue;
+                    }
+
+                    var run = new List<TranscriptSegment>();
+
+                    while (at < baseline.Count && wanted.Contains(baseline[at]))
+                    {
+                        run.Add(baseline[at]);
+                        at++;
+                    }
+
+                    var part = await refiner.RefineAsync(
+                        new Transcript(run),
+                        Glossary,
+                        RefinementOutputs.Default,
+                        new Progress<double>(stages.Cleanup),
+                        cancellationToken: cancellationToken).ConfigureAwait(true);
+
+                    repaired.AddRange(part.CleanedSegments ?? run);
+                }
+
+                await AssembleAsync(repaired, refiner, stages, cancellationToken)
+                    .ConfigureAwait(true);
+            }
+            else
+            {
+                var refinement = await CleanWhenAwakeAsync(
+                    refiner, new Transcript(_rawSegments), stages, cancellationToken).ConfigureAwait(true);
+
+                await AssembleAsync(
+                    refinement?.CleanedSegments ?? _rawSegments, refiner, stages, cancellationToken)
+                    .ConfigureAwait(true);
+            }
 
             Status = CleanupNotice is null
                 ? "Cleaned up."
@@ -1809,6 +1861,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // land in two different segments — the transcriber breaks where a sentence ends, which
         // is exactly between them — and cleanup can rewrite the text after the stitcher has
         // finished with it. This is the last point before the reader.
+        // Remembered before trimming, because the retry re-cleans against this exact list:
+        // the kept-raw instances the refiner recorded are found in it by reference.
+        _cleanedBase = cleaned;
+        _retryTargets = refiner?.KeptRaw.ToList() ?? [];
+
         cleaned = RepeatedPhrase.TrimAcross(cleaned);
 
         // A segment with no letters or digits in it was never speech — the transcriber pads

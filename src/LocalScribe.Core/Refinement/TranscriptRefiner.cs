@@ -93,6 +93,8 @@ public sealed class TranscriptRefiner
             return new RefinementResult(rawText, transcript.Segments);
         }
 
+        _keptRaw.Clear();
+
         var wantsCleanup = outputs.HasFlag(RefinementOutputs.Punctuation)
             || outputs.HasFlag(RefinementOutputs.Glossary);
 
@@ -217,6 +219,11 @@ public sealed class TranscriptRefiner
         }
 
         Rejected++;
+
+        // Remembered by instance, because these exact records pass through into the cleaned
+        // result — which is what lets a retry find them there and re-clean only these.
+        _keptRaw.AddRange(window);
+
         return window;
     }
 
@@ -257,6 +264,16 @@ public sealed class TranscriptRefiner
 
     /// <summary>Calls to the model that failed outright, rather than answering badly.</summary>
     public int Failed { get; private set; }
+
+    private readonly List<TranscriptSegment> _keptRaw = [];
+
+    /// <summary>
+    /// The segments of every window kept raw, as the exact instances the cleaned result
+    /// carries. A retry that re-cleans only these costs one window's model time instead of
+    /// the whole transcript's — the difference between seconds and minutes when one window
+    /// timed out under load.
+    /// </summary>
+    public IReadOnlyList<TranscriptSegment> KeptRaw => _keptRaw;
 
     /// <summary>What the first failure said, for a status line that can name the problem.</summary>
     public string? LastError { get; private set; }
