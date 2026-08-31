@@ -39,6 +39,10 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         _dispatcher = DispatcherQueue.GetForCurrentThread();
 
+        // The exe embeds the icon for Explorer and the taskbar, but an unpackaged window does
+        // not read it for its own frame and shows the stock icon until told otherwise.
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "localscribe.ico"));
+
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
         // Words are drawn with a colour taken from the theme when the row is built, so a theme
