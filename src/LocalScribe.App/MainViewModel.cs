@@ -1728,7 +1728,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private async Task FinishTranscriptAsync(
         IReadOnlyList<TranscriptSegment> spoken,
         PcmAudio? audio,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        double progressFloor = 0)
     {
         var refiner = BuildRefiner();
 
@@ -1741,7 +1742,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        var stages = new SharedBar(this);
+        var stages = new SharedBar(this, progressFloor);
         var transcript = new Transcript(spoken);
 
         // Cleanup waits for warm weights inside its own lane, so the diarizer and the scan —
@@ -1926,12 +1927,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             RefinementOutputs.Default,
             new Progress<double>(stages.Cleanup),
 
-            // Shown as it lands, window by window, so the transcript is visibly gaining
-            // punctuation rather than sitting there until the last one returns. Safe to write
-            // over the top of: speaker labels are attached after both stages finish, so there is
-            // nothing here yet for a redraw to lose.
-            new Progress<IReadOnlyList<TranscriptSegment>>(SetTranscript),
-            cancellationToken).ConfigureAwait(true);
+            // Not shown as it lands any more. Streaming the half-cleaned text over the
+            // screen was safe when nothing on it could be lost; now the progressive preview
+            // has the head timed and clickable, and each cleanup window's publish wiped that
+            // back to grey — reported as clickable text reverting, timed to the exact moment
+            // the finish stages began. The cleaned text arrives once, at final assembly,
+            // timed and whole.
+            cleanedSoFar: null,
+            cancellationToken: cancellationToken).ConfigureAwait(true);
 
     /// <summary>
     /// One progress bar shared by two stages running at once.
@@ -1946,7 +1949,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// cleanup model still gets a bar that means something.
     /// </para>
     /// </summary>
-    private sealed class SharedBar(MainViewModel owner)
+    private sealed class SharedBar(MainViewModel owner, double floor = 0)
     {
         private readonly object _gate = new();
 
@@ -2046,7 +2049,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             }
 
-            owner.Progress = fraction;
+            // Mapped above the floor the earlier phase already earned: the bar once jumped
+            // from full back to nearly empty when the finish stages began, which read as the
+            // run going backwards — and was the landmark users learned to dread.
+            owner.Progress = floor + (fraction * (1 - floor));
             owner.Status = $"{what}… {(int)(fraction * 100)}%";
         }
     }
@@ -2249,6 +2255,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
+    /// Transcription's share of the one continuous progress bar on a file run; the finish
+    /// stages own the rest. Roughly proportional on the reference recordings, and the exact
+    /// split matters less than the bar never running backwards.
+    /// </summary>
+    private const double TranscriptionShare = 0.6;
+
+    /// <summary>
     /// A file opened before there was anything to transcribe it with, kept until there is.
     /// <para>
     /// One, not a queue: opening a second file before the first has started means the second is
@@ -2349,7 +2362,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             var progress = new Progress<TranscriptionProgress>(update =>
             {
-                Progress = update.Fraction;
+                Progress = update.Fraction * TranscriptionShare;
 
                 Status = $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
 
@@ -2383,7 +2396,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // and put every word on an estimate.
             ReleaseTranscriberIfCheap();
 
-            await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
+            await FinishTranscriptAsync(
+                transcript.Segments, audio, _cancellation.Token, TranscriptionShare);
 
             Status = DoneStatus();
         }
