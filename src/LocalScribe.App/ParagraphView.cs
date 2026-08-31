@@ -44,6 +44,15 @@ public sealed class ParagraphView
         Overlapped = paragraph.Overlapped;
     }
 
+    /// <summary>
+    /// Whether this view already shows exactly this paragraph — same speaker, same segment
+    /// records. A view that does is reused across a rebuild, and the list never touches its
+    /// container, which is what keeps a streaming transcript from blinking.
+    /// </summary>
+    public bool Shows(TranscriptParagraph paragraph) =>
+        _paragraph.Speaker == paragraph.Speaker
+        && _paragraph.Segments.SequenceEqual(paragraph.Segments);
+
     public string Text { get; }
 
     public string Speaker { get; }

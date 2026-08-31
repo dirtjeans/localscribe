@@ -450,13 +450,6 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void ShowParagraphs()
     {
-        // The word ranges belong to the paragraphs that are going away. Keeping them would hold
-        // every paragraph of every transcript opened this session alive in a dictionary.
-        _spokenWords.Clear();
-        _realised.Clear();
-        _lit = null;
-        _markedWord = -1;
-
         var following = _viewModel.IsRecording || _viewModel.IsBusy;
         var scroller = TranscriptScroller();
 
@@ -466,7 +459,36 @@ public sealed partial class MainWindow : Window
 
         var offset = scroller?.VerticalOffset ?? 0;
 
-        _paragraphs = _viewModel.Paragraphs.Select(p => new ParagraphView(p)).ToList();
+        // Views are reused wherever the paragraph did not change, so a streaming update only
+        // rebuilds the rows it actually altered — the growing tail, and a head row the moment
+        // its timing arrives. Replacing the whole list rebuilt every visible container and
+        // read as the transcript blinking once a window.
+        var fresh = _viewModel.Paragraphs;
+        var views = new List<ParagraphView>(fresh.Count);
+
+        for (var i = 0; i < fresh.Count; i++)
+        {
+            views.Add(i < _paragraphs.Count && _paragraphs[i].Shows(fresh[i])
+                ? _paragraphs[i]
+                : new ParagraphView(fresh[i]));
+        }
+
+        var alive = new HashSet<ParagraphView>(views);
+
+        foreach (var stale in _spokenWords.Keys.Where(view => !alive.Contains(view)).ToList())
+        {
+            _spokenWords.Remove(stale);
+        }
+
+        _realised.RemoveWhere(view => !alive.Contains(view));
+
+        if (_lit is not null && !alive.Contains(_lit))
+        {
+            _lit = null;
+            _markedWord = -1;
+        }
+
+        _paragraphs = views;
         ApplySearch();
 
         if (following && _paragraphs.Count > 0)
@@ -1595,13 +1617,39 @@ public sealed partial class MainWindow : Window
         args.Handled = true;
     }
 
+    /// <summary>Everything the list shows outside a search, updated in place, never swapped.</summary>
+    private readonly System.Collections.ObjectModel.ObservableCollection<ParagraphView> _shown = [];
+
     private void ApplySearch()
     {
         var query = SearchBox.Text.Trim();
 
         if (query.Length == 0)
         {
-            TranscriptList.ItemsSource = _paragraphs;
+            // The collection is edited to match rather than reassigned: reassigning the
+            // ItemsSource rebuilds every container on screen, which reads as a blink.
+            for (var i = 0; i < _paragraphs.Count; i++)
+            {
+                if (i >= _shown.Count)
+                {
+                    _shown.Add(_paragraphs[i]);
+                }
+                else if (!ReferenceEquals(_shown[i], _paragraphs[i]))
+                {
+                    _shown[i] = _paragraphs[i];
+                }
+            }
+
+            while (_shown.Count > _paragraphs.Count)
+            {
+                _shown.RemoveAt(_shown.Count - 1);
+            }
+
+            if (!ReferenceEquals(TranscriptList.ItemsSource, _shown))
+            {
+                TranscriptList.ItemsSource = _shown;
+            }
+
             SearchCount.Text = string.Empty;
             UpdateEmptyState(_paragraphs.Count);
             QueueHighlightRefresh();
