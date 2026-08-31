@@ -379,6 +379,53 @@
                 </ListView.ItemTemplate>
             </ListView>
 
+            <!--
+                The working glow, ported from the Mac window: a slow colour sweep around the
+                transcript while the models are busy, so "is it doing anything?" has an answer
+                that costs no reading. Two rings because WinUI has no blur to make a halo of:
+                a soft wide one that breathes and a crisp one that carries the sweep. WinUI
+                also has no conic gradient, so the sweep is a linear gradient rotated by the
+                same fifteen-frames-a-second timer the Mac settled on after the ornament was
+                caught competing with the work it announced.
+            -->
+            <Border
+                x:Name="AiGlowHalo"
+                Grid.Row="1"
+                BorderThickness="5"
+                CornerRadius="10"
+                IsHitTestVisible="False"
+                Opacity="0"
+                Visibility="Collapsed">
+                <Border.BorderBrush>
+                    <LinearGradientBrush x:Name="GlowHaloBrush" StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#56CCF2" Offset="0" />
+                        <GradientStop Color="#8B7CF2" Offset="0.3" />
+                        <GradientStop Color="#F2566E" Offset="0.55" />
+                        <GradientStop Color="#3A91C8" Offset="0.78" />
+                        <GradientStop Color="#56CCF2" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+            </Border>
+
+            <Border
+                x:Name="AiGlowRing"
+                Grid.Row="1"
+                BorderThickness="2"
+                CornerRadius="8"
+                IsHitTestVisible="False"
+                Opacity="0.9"
+                Visibility="Collapsed">
+                <Border.BorderBrush>
+                    <LinearGradientBrush x:Name="GlowRingBrush" StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#56CCF2" Offset="0" />
+                        <GradientStop Color="#8B7CF2" Offset="0.3" />
+                        <GradientStop Color="#F2566E" Offset="0.55" />
+                        <GradientStop Color="#3A91C8" Offset="0.78" />
+                        <GradientStop Color="#56CCF2" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.BorderBrush>
+            </Border>
+
             <StackPanel
                 x:Name="EmptyState"
                 Grid.Row="1"

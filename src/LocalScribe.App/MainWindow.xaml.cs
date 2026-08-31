@@ -267,16 +267,23 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.Progress):
                     ProgressBarControl.Value = _viewModel.Progress;
+
+                    // Re-judged on progress too, because the state the glow watches has no
+                    // notification of its own: the player receives its audio a moment after
+                    // IsBusy turns on, and the next progress report is the first sign of it.
+                    UpdateGlow();
                     break;
                 case nameof(MainViewModel.IsBusy):
                     OpenFileButton.IsEnabled = !_viewModel.IsBusy;
                     OpenTranscriptButton.IsEnabled = !_viewModel.IsBusy;
                     CancelButton.Visibility = _viewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
+                    UpdateGlow();
                     break;
                 case nameof(MainViewModel.IsRecording):
                 case nameof(MainViewModel.IsPreparing):
                 case nameof(MainViewModel.IsWarmingUp):
                     UpdateRecordButton();
+                    UpdateGlow();
                     break;
             }
         });
@@ -1291,6 +1298,72 @@ public sealed partial class MainWindow : Window
             }
         }
     }
+
+    /// <summary>
+    /// Starts or stops the working glow, from the same rule the Mac window uses: models busy
+    /// over loaded audio, or the microphone being prepared. Recording itself gets no glow —
+    /// the red banner owns that state, and two ornaments saying different things is worse
+    /// than one.
+    /// </summary>
+    private void UpdateGlow()
+    {
+        var working = (_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing;
+
+        if (working && _glowTimer is null && AiGlowRing.Visibility != Visibility.Visible)
+        {
+            AiGlowRing.Visibility = Visibility.Visible;
+            AiGlowHalo.Visibility = Visibility.Visible;
+
+            // A person who has turned animations off system-wide gets a still ring: the
+            // information (something is working) without the motion they opted out of.
+            if (!new Windows.UI.ViewManagement.UISettings().AnimationsEnabled)
+            {
+                AiGlowHalo.Opacity = 0.4;
+                return;
+            }
+
+            // Fifteen frames a second, the cadence the Mac settled on: at thirty the ornament
+            // was measurably competing with the work it announced.
+            _glowTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(66) };
+            _glowTimer.Tick += (_, _) => TurnGlow();
+            _glowTimer.Start();
+        }
+        else if (!working && AiGlowRing.Visibility == Visibility.Visible)
+        {
+            _glowTimer?.Stop();
+            _glowTimer = null;
+
+            AiGlowRing.Visibility = Visibility.Collapsed;
+            AiGlowHalo.Visibility = Visibility.Collapsed;
+            AiGlowHalo.Opacity = 0;
+        }
+    }
+
+    /// <summary>One step of the sweep: the gradient turns, the halo breathes.</summary>
+    private void TurnGlow()
+    {
+        _glowTicks++;
+
+        // No conic gradient in WinUI, so the sweep is a linear gradient whose axis rotates.
+        var radians = _glowTicks * 5 * Math.PI / 180;
+        var dx = Math.Cos(radians) / 2;
+        var dy = Math.Sin(radians) / 2;
+
+        var start = new Windows.Foundation.Point(0.5 - dx, 0.5 - dy);
+        var end = new Windows.Foundation.Point(0.5 + dx, 0.5 + dy);
+
+        GlowRingBrush.StartPoint = start;
+        GlowRingBrush.EndPoint = end;
+        GlowHaloBrush.StartPoint = start;
+        GlowHaloBrush.EndPoint = end;
+
+        // A four-second breath, out of phase with the sweep so the two read as independent
+        // life rather than one mechanism.
+        AiGlowHalo.Opacity = 0.32 + (0.18 * Math.Sin(_glowTicks * 0.066 * Math.PI / 2));
+    }
+
+    private DispatcherTimer? _glowTimer;
+    private long _glowTicks;
 
     /// <summary>The paragraph currently carrying the spoken-word marker, and which word.</summary>
     private ParagraphView? _lit;
