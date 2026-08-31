@@ -26,6 +26,27 @@ public sealed class AlignmentScores
 {
     private readonly float[] _scores;
 
+    private AlignmentScores(float[] scores, int frames, int alphabet, double frameSeconds)
+    {
+        _scores = scores;
+        Frames = frames;
+        Alphabet = alphabet;
+        FrameSeconds = frameSeconds;
+    }
+
+    /// <summary>
+    /// The first so-many frames of this grid, as a grid of their own, sharing the same memory.
+    /// <para>
+    /// This is what lets words be placed against a scan that is still running: the scan fills
+    /// the grid front to back, so everything before its frontier is final while everything
+    /// after is still zeros — and a prefix view never reads past the frontier it was cut at.
+    /// </para>
+    /// </summary>
+    public AlignmentScores Prefix(int frames) =>
+        frames >= Frames
+            ? this
+            : new AlignmentScores(_scores, Math.Max(1, frames), Alphabet, FrameSeconds);
+
     /// <param name="frames">How many frames the whole recording comes to.</param>
     /// <param name="alphabet">How many tokens the model knows.</param>
     /// <param name="frameSeconds">How much audio one frame covers.</param>

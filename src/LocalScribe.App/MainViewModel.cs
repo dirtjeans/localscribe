@@ -339,6 +339,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    /// <summary>Whether this segment's words carry measured times, for drawing the boundary.</summary>
+    public bool IsTimed(TranscriptSegment segment)
+    {
+        lock (_alignedGate)
+        {
+            return _alignedFor.ContainsKey(segment);
+        }
+    }
+
     /// <summary>True once any segment on screen carries measured word times.</summary>
     public bool HasMeasuredWords
     {
@@ -399,6 +408,136 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// it is six hundred megabytes and there is nothing to keep it resident for.
     /// </para>
     /// </summary>
+    /// <summary>The growing scan grid; rows before <see cref="_scanFrontierSeconds"/> are final.</summary>
+    private AlignmentScores? _scanPartial;
+
+    private double _scanFrontierSeconds;
+
+    private readonly object _frontierGate = new();
+
+    /// <summary>The raw transcript as it streams in, for the progressive pass to time.</summary>
+    private IReadOnlyList<TranscriptSegment> _rawSoFar = [];
+
+    /// <summary>
+    /// How far into the recording clicks already work, or zero when they do not yet. The status
+    /// line reads this, and the window uses per-segment timing to draw the same boundary.
+    /// </summary>
+    public double UsableThroughSeconds { get; private set; }
+
+    /// <summary>
+    /// The streamed windows carry honest coarse anchors — window k genuinely covers its thirty
+    /// seconds — but the scan's frontier is the hard edge. Text is only timed once its stamps
+    /// end this far short of it, so speech spilling a little past its window still has its
+    /// frames scanned.
+    /// </summary>
+    private const double ProgressiveMarginSeconds = 45;
+
+    /// <summary>
+    /// Times the head of the transcript while the scan is still working on the tail.
+    /// <para>
+    /// The scan fills its grid front to back and the streamed windows arrive front to back, so
+    /// every stride of scan progress makes another stretch of transcript alignable. Each pass
+    /// re-times the whole eligible prefix — a pass is a sub-second Viterbi walk, so re-running
+    /// beats bookkeeping — and publishes a transcript whose head carries measured times while
+    /// its tail is still raw. The full preview replaces all of this the moment the scan ends.
+    /// </para>
+    /// </summary>
+    private async Task RunProgressiveTimingAsync(CancellationToken cancellationToken)
+    {
+        var timedThrough = 0.0;
+        var frontierUsed = 0.0;
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested && _scores is null)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(8), cancellationToken).ConfigureAwait(true);
+
+                AlignmentScores? grid;
+                double frontier;
+
+                lock (_frontierGate)
+                {
+                    grid = _scanPartial;
+                    frontier = _scanFrontierSeconds;
+                }
+
+                if (_aligner is not { } aligner || grid is null || frontier < frontierUsed + 30)
+                {
+                    continue;
+                }
+
+                var raws = _rawSoFar;
+                var eligible = raws
+                    .TakeWhile(segment => segment.EndSeconds <= frontier - ProgressiveMarginSeconds)
+                    .ToList();
+
+                if (eligible.Count == 0 || eligible[^1].EndSeconds <= timedThrough)
+                {
+                    frontierUsed = frontier;
+                    continue;
+                }
+
+                var prefix = grid.Prefix(grid.FrameAt(frontier));
+
+                var placed = await Task.Run(
+                    () => aligner.AlignAll(prefix, eligible, cancellationToken), cancellationToken)
+                    .ConfigureAwait(true);
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (_scores is not null)
+                {
+                    // The scan finished while this pass ran; the full preview owns it now.
+                    break;
+                }
+
+                var timed = new List<TranscriptSegment>(eligible.Count);
+
+                lock (_alignedGate)
+                {
+                    _alignedFor.Clear();
+
+                    for (var i = 0; i < eligible.Count; i++)
+                    {
+                        if (placed[i] is not { Count: > 0 } words
+                            || words.Where(w => w.EndSeconds > w.StartSeconds).ToList()
+                                is not { Count: > 0 } sounded)
+                        {
+                            timed.Add(eligible[i]);
+                            continue;
+                        }
+
+                        var moved = eligible[i] with
+                        {
+                            StartSeconds = sounded[0].StartSeconds,
+                            EndSeconds = Math.Max(sounded[^1].EndSeconds, sounded[0].StartSeconds),
+                        };
+
+                        _alignedFor[moved] = words;
+                        timed.Add(moved);
+                    }
+                }
+
+                SetTranscript([.. timed, .. raws.Skip(eligible.Count)]);
+
+                timedThrough = timed[^1].EndSeconds;
+                frontierUsed = frontier;
+                UsableThroughSeconds = timedThrough;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The run was cancelled or superseded; whoever did that owns the transcript now.
+        }
+        catch (Exception exception)
+        {
+            // Progressive timing is a convenience over the streamed text; losing it costs
+            // nothing the final pass does not restore.
+            LogError(exception);
+        }
+    }
+
     private async Task ScanForWordsAsync(
         PcmAudio audio,
         IProgress<double>? progress,
@@ -419,11 +558,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 try
                 {
-                    _scores = aligner.Scan(audio, progress, cancellationToken);
+                    // Handed over before the scan rather than after, so the progressive pass
+                    // can place words against the growing grid. Placing needs no model — it
+                    // is a Viterbi walk over scores already written — so it never contends
+                    // with the scan for the session.
                     _aligner = aligner;
+
+                    _scores = aligner.Scan(audio, progress, cancellationToken, (grid, seconds) =>
+                    {
+                        lock (_frontierGate)
+                        {
+                            _scanPartial = grid;
+                            _scanFrontierSeconds = seconds;
+                        }
+                    });
                 }
                 catch
                 {
+                    _aligner = null;
                     aligner.Dispose();
                     throw;
                 }
@@ -1601,6 +1753,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             SetTranscript([.. timed.Select(t => t.Segment)]);
+            UsableThroughSeconds = 0;
             stages.PreviewReady();
         }
         catch (OperationCanceledException)
@@ -1806,6 +1959,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 {
                     what = "You can use the transcript now — click a line to hear it, "
                         + $"search to find one. {what} in the background";
+                }
+                else if (owner.UsableThroughSeconds > 0)
+                {
+                    what = $"Clickable through {TranscriptFormatter.Clock(owner.UsableThroughSeconds)} "
+                        + $"— the grey lines follow as timing reaches them. {what}";
                 }
             }
 
@@ -2063,6 +2221,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         IsBusy = true;
         Progress = 0;
         SetTranscript([]);
+        _rawSoFar = [];
+        UsableThroughSeconds = 0;
+
+        lock (_frontierGate)
+        {
+            _scanPartial = null;
+            _scanFrontierSeconds = 0;
+        }
+
         _cancellation = new CancellationTokenSource();
 
         try
@@ -2084,6 +2251,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // usually already done. Measured on a 63-second file: the scan alone was 41
             // seconds, transcription 12, and running them in sequence spent both.
             _scanInFlight = ScanForWordsAsync(audio, progress: null, _cancellation.Token);
+
+            // Beside the scan, the lane that makes its progress usable: the head of the
+            // transcript gains real word times while the tail is still being scanned.
+            _ = RunProgressiveTimingAsync(_cancellation.Token);
 
             Status = IsModelReady ? "Preparing…" : "Loading the model…";
             var transcriber = await Task.Run(() => TranscriberFor(_plan), _cancellation.Token);
@@ -2108,7 +2279,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         update.ChunksCompleted * AudioChunker.WindowSeconds,
                         (update.ChunksCompleted + 1) * AudioChunker.WindowSeconds));
 
-                    SetTranscript(streamed.ToList());
+                    // The progressive pass times a prefix of exactly this list, so the raw
+                    // tail must be these segments, not a rebuilt approximation — and the
+                    // timed head it has already published must survive this update, or the
+                    // transcript would visibly un-time itself once a window.
+                    var raws = streamed.ToList();
+                    _rawSoFar = raws;
+
+                    var kept = UsableThroughSeconds;
+
+                    if (kept > 0 && _segments.Count > 0)
+                    {
+                        SetTranscript([
+                            .. _segments.TakeWhile(s => s.EndSeconds <= kept),
+                            .. raws.SkipWhile(s => s.StartSeconds < kept)]);
+                    }
+                    else
+                    {
+                        SetTranscript(raws);
+                    }
                 }
             });
 

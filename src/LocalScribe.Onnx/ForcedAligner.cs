@@ -89,10 +89,16 @@ public sealed class ForcedAligner : IDisposable
     /// </para>
     /// </summary>
     /// <returns>The whole recording's scores, or null when it cannot be scored at all.</returns>
+    /// <param name="onFrontier">
+    /// Called after each window lands, with the grid and how many seconds of it are now final.
+    /// The grid fills front to back, so a caller may align against a <see cref="AlignmentScores.Prefix"/>
+    /// cut at or before the reported frontier while the scan keeps writing beyond it.
+    /// </param>
     public AlignmentScores? Scan(
         PcmAudio audio,
         IProgress<double>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<AlignmentScores, double>? onFrontier = null)
     {
         ArgumentNullException.ThrowIfNull(audio);
 
@@ -177,6 +183,7 @@ public sealed class ForcedAligner : IDisposable
             }
 
             progress?.Report(until / (double)frames);
+            onFrontier?.Invoke(scores, scores.SecondsAt(Math.Min(frames, at + rows)));
         }
 
         return scores;

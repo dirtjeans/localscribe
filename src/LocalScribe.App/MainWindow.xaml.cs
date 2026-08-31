@@ -732,7 +732,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (ClicksMustWait())
+        if (ClicksMustWait(paragraph))
         {
             return;
         }
@@ -855,21 +855,22 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Whether clicking the transcript should wait, said out loud when it should.
+    /// Whether clicking this paragraph should wait, said out loud when it should.
     /// <para>
-    /// Before the words are timed, a click follows the transcriber's drifting stamps — up to
-    /// a minute away on a long recording, or past the end of the audio entirely, which reads
-    /// as the click doing nothing. There is no point playing the wrong moment: the streamed
-    /// text is for reading and scrolling, and clicking starts working the instant the times
-    /// arrive, announced in this same status line.
+    /// Before a stretch is timed, a click there follows the transcriber's drifting stamps —
+    /// up to a minute away on a long recording, or past the end of the audio entirely, which
+    /// reads as the click doing nothing. The grey ink already says which stretches wait; this
+    /// says it to whoever clicks anyway.
     /// </para>
     /// </summary>
-    private bool ClicksMustWait()
+    private bool ClicksMustWait(ParagraphView paragraph)
     {
-        if (_viewModel.IsBusy && !_viewModel.HasMeasuredWords)
+        if (_viewModel.IsBusy
+            && paragraph.Segments.Count > 0
+            && !_viewModel.IsTimed(paragraph.Segments[0]))
         {
-            StatusText.Text = "The words aren't timed yet — read and scroll meanwhile; "
-                + "clicking starts working the moment they are.";
+            StatusText.Text = "That part isn't timed yet — the grey lines gain their "
+                + "clicks as timing reaches them.";
             return true;
         }
 
@@ -1014,40 +1015,58 @@ public sealed partial class MainWindow : Window
 
         var spans = new List<SpokenWord>(words.Count);
         var offset = 0;
+        var wordAt = 0;
 
-        for (var i = 0; i < words.Count; i++)
+        // Words are built a segment at a time so the clickable boundary is visible: during a
+        // run, a segment whose words have been measured draws in ink and takes clicks, and one
+        // still waiting for the scan draws grey and takes none. The same rule the status line
+        // states — "clickable through, grey lines follow" — drawn where the reader is looking.
+        foreach (var segment in paragraph.Segments)
         {
-            var at = words[i].StartSeconds;
+            var own = _viewModel.WordsIn([segment]);
+            var timed = !_viewModel.IsBusy || _viewModel.IsTimed(segment);
 
-            var link = new Hyperlink
+            for (var i = 0; i < own.Count; i++)
             {
-                UnderlineStyle = UnderlineStyle.None,
-                Foreground = TextBrush(body),
-            };
+                var at = own[i].StartSeconds;
 
-            link.Inlines.Add(new Run { Text = words[i].Text });
-
-            // A little before the word, not exactly on it. Seeking to the instant a word begins
-            // starts playback inside its first consonant, which sounds like a miss however
-            // accurate the timing was — the ear needs a moment of run-up to hear a word whole.
-            link.Click += (_, _) =>
-            {
-                if (!ClicksMustWait())
+                if (timed)
                 {
-                    Seek(Math.Max(0, at - RunUpSeconds), play: true);
+                    var link = new Hyperlink
+                    {
+                        UnderlineStyle = UnderlineStyle.None,
+                        Foreground = TextBrush(body),
+                    };
+
+                    link.Inlines.Add(new Run { Text = own[i].Text });
+
+                    // A little before the word, not exactly on it. Seeking to the instant a
+                    // word begins starts playback inside its first consonant, which sounds
+                    // like a miss however accurate the timing was — the ear needs a moment of
+                    // run-up to hear a word whole.
+                    link.Click += (_, _) => Seek(Math.Max(0, at - RunUpSeconds), play: true);
+
+                    body.Inlines.Add(link);
                 }
-            };
+                else
+                {
+                    body.Inlines.Add(new Run
+                    {
+                        Text = own[i].Text,
+                        Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                    });
+                }
 
-            body.Inlines.Add(link);
+                spans.Add(new SpokenWord(
+                    own[i].StartSeconds, own[i].EndSeconds, offset, own[i].Text.Length, own[i].Text));
+                offset += own[i].Text.Length;
+                wordAt++;
 
-            spans.Add(new SpokenWord(
-                words[i].StartSeconds, words[i].EndSeconds, offset, words[i].Text.Length, words[i].Text));
-            offset += words[i].Text.Length;
-
-            if (i + 1 < words.Count)
-            {
-                body.Inlines.Add(new Run { Text = " " });
-                offset++;
+                if (wordAt < words.Count)
+                {
+                    body.Inlines.Add(new Run { Text = " " });
+                    offset++;
+                }
             }
         }
 
