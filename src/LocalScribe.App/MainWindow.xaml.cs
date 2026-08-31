@@ -732,14 +732,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // The streaming text is clickable before the words are timed, and a click then follows
-        // the transcriber's drifting stamps — on a long recording that lands up to a minute
-        // away, or past the end of the audio entirely, which reads as the click doing nothing.
-        // Say so; the transcript announces itself when the real times arrive.
-        if (_viewModel.IsBusy && !_viewModel.HasMeasuredWords)
+        if (ClicksMustWait())
         {
-            StatusText.Text = "The words aren't timed yet, so clicks only land roughly — "
-                + "the transcript will say when it is ready to use.";
+            return;
         }
 
         Seek(paragraph.StartSeconds, play: true);
@@ -857,6 +852,28 @@ public sealed partial class MainWindow : Window
         {
             StatusText.Text = $"Could not open that transcript: {exception.Message}";
         }
+    }
+
+    /// <summary>
+    /// Whether clicking the transcript should wait, said out loud when it should.
+    /// <para>
+    /// Before the words are timed, a click follows the transcriber's drifting stamps — up to
+    /// a minute away on a long recording, or past the end of the audio entirely, which reads
+    /// as the click doing nothing. There is no point playing the wrong moment: the streamed
+    /// text is for reading and scrolling, and clicking starts working the instant the times
+    /// arrive, announced in this same status line.
+    /// </para>
+    /// </summary>
+    private bool ClicksMustWait()
+    {
+        if (_viewModel.IsBusy && !_viewModel.HasMeasuredWords)
+        {
+            StatusText.Text = "The words aren't timed yet — read and scroll meanwhile; "
+                + "clicking starts working the moment they are.";
+            return true;
+        }
+
+        return false;
     }
 
     private void OnParagraphClick(object sender, ItemClickEventArgs e)
@@ -1013,7 +1030,13 @@ public sealed partial class MainWindow : Window
             // A little before the word, not exactly on it. Seeking to the instant a word begins
             // starts playback inside its first consonant, which sounds like a miss however
             // accurate the timing was — the ear needs a moment of run-up to hear a word whole.
-            link.Click += (_, _) => Seek(Math.Max(0, at - RunUpSeconds), play: true);
+            link.Click += (_, _) =>
+            {
+                if (!ClicksMustWait())
+                {
+                    Seek(Math.Max(0, at - RunUpSeconds), play: true);
+                }
+            };
 
             body.Inlines.Add(link);
 
