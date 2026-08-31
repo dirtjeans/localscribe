@@ -1313,16 +1313,16 @@ public sealed partial class MainWindow : Window
     {
         var working = (_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing;
 
-        if (working && _glowTimer is null && AiGlowRing.Visibility != Visibility.Visible)
+        if (working && AiGlowLayer.Visibility != Visibility.Visible)
         {
-            AiGlowRing.Visibility = Visibility.Visible;
-            AiGlowHalo.Visibility = Visibility.Visible;
+            AiGlowLayer.Visibility = Visibility.Visible;
+            BuildGlowDisc();
 
-            // A person who has turned animations off system-wide gets a still ring: the
-            // information (something is working) without the motion they opted out of.
+            // A person who has turned animations off system-wide gets the still ring: the
+            // information without the motion they opted out of.
             if (!new Windows.UI.ViewManagement.UISettings().AnimationsEnabled)
             {
-                AiGlowHalo.Opacity = 0.4;
+                AiGlowLayer.Opacity = 0.9;
                 return;
             }
 
@@ -1332,40 +1332,102 @@ public sealed partial class MainWindow : Window
             _glowTimer.Tick += (_, _) => TurnGlow();
             _glowTimer.Start();
         }
-        else if (!working && AiGlowRing.Visibility == Visibility.Visible)
+        else if (!working && AiGlowLayer.Visibility == Visibility.Visible)
         {
             _glowTimer?.Stop();
             _glowTimer = null;
 
-            AiGlowRing.Visibility = Visibility.Collapsed;
-            AiGlowHalo.Visibility = Visibility.Collapsed;
-            AiGlowHalo.Opacity = 0;
+            AiGlowLayer.Visibility = Visibility.Collapsed;
         }
     }
 
-    /// <summary>One step of the sweep: the gradient turns, the halo breathes.</summary>
+    /// <summary>One step: the disc turns, the whole ring breathes gently.</summary>
     private void TurnGlow()
     {
         _glowTicks++;
+        GlowSpin.Angle = (_glowTicks * 5) % 360;
+        AiGlowLayer.Opacity = 0.82 + (0.18 * Math.Sin(_glowTicks * 0.066 * Math.PI / 2));
+    }
 
-        // No conic gradient in WinUI, so the sweep is a linear gradient whose axis rotates.
-        // The axis runs a little past the box so the clamped ends — solid runs of the two
-        // end colours — stay in the corners instead of swallowing whole edges.
-        var radians = _glowTicks * 5 * Math.PI / 180;
-        var dx = Math.Cos(radians) * 0.62;
-        var dy = Math.Sin(radians) * 0.62;
+    private void OnGlowLayerSizeChanged(object sender, SizeChangedEventArgs e) => BuildGlowDisc();
 
-        var start = new Windows.Foundation.Point(0.5 - dx, 0.5 - dy);
-        var end = new Windows.Foundation.Point(0.5 + dx, 0.5 + dy);
+    /// <summary>
+    /// The disc: three 120-degree wedges, one per colour, each owning a full third of the rim.
+    /// Sized past the cell's diagonal so rotation never uncovers a corner, and clipped to the
+    /// cell so it never paints outside one. Rebuilt on resize because the wedges are geometry,
+    /// not layout.
+    /// </summary>
+    private void BuildGlowDisc()
+    {
+        var width = AiGlowLayer.ActualWidth;
+        var height = AiGlowLayer.ActualHeight;
 
-        GlowRingBrush.StartPoint = start;
-        GlowRingBrush.EndPoint = end;
-        GlowHaloBrush.StartPoint = start;
-        GlowHaloBrush.EndPoint = end;
+        if (width < 1 || height < 1)
+        {
+            return;
+        }
 
-        // A four-second breath, out of phase with the sweep so the two read as independent
-        // life rather than one mechanism.
-        AiGlowHalo.Opacity = 0.32 + (0.18 * Math.Sin(_glowTicks * 0.066 * Math.PI / 2));
+        AiGlowLayer.Clip = new RectangleGeometry
+        {
+            Rect = new Windows.Foundation.Rect(0, 0, width, height),
+        };
+
+        var cx = width / 2;
+        var cy = height / 2;
+        var radius = (Math.Sqrt((width * width) + (height * height)) / 2) + 8;
+
+        GlowSpin.CenterX = cx;
+        GlowSpin.CenterY = cy;
+
+        GlowDisc.Children.Clear();
+
+        Windows.UI.Color[] colours =
+        [
+            Windows.UI.Color.FromArgb(255, 0x25, 0x63, 0xEB),
+            Windows.UI.Color.FromArgb(255, 0x8B, 0x5C, 0xF6),
+            Windows.UI.Color.FromArgb(255, 0xF2, 0x45, 0x6A),
+        ];
+
+        for (var i = 0; i < colours.Length; i++)
+        {
+            GlowDisc.Children.Add(
+                Wedge(cx, cy, radius, i * 120, (i + 1) * 120, colours[i]));
+        }
+    }
+
+    /// <summary>A pie slice from one angle to another, filled with one colour.</summary>
+    private static Microsoft.UI.Xaml.Shapes.Path Wedge(
+        double cx, double cy, double radius, double fromDegrees, double toDegrees, Windows.UI.Color colour)
+    {
+        Windows.Foundation.Point At(double degrees)
+        {
+            var r = degrees * Math.PI / 180;
+            return new Windows.Foundation.Point(cx + (radius * Math.Cos(r)), cy + (radius * Math.Sin(r)));
+        }
+
+        var figure = new PathFigure
+        {
+            StartPoint = new Windows.Foundation.Point(cx, cy),
+            IsClosed = true,
+        };
+
+        figure.Segments.Add(new LineSegment { Point = At(fromDegrees) });
+        figure.Segments.Add(new ArcSegment
+        {
+            Point = At(toDegrees),
+            Size = new Windows.Foundation.Size(radius, radius),
+            SweepDirection = SweepDirection.Clockwise,
+            IsLargeArc = false,
+        });
+
+        var geometry = new PathGeometry();
+        geometry.Figures.Add(figure);
+
+        return new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Data = geometry,
+            Fill = new SolidColorBrush(colour),
+        };
     }
 
     private DispatcherTimer? _glowTimer;
