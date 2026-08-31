@@ -305,11 +305,19 @@
                 IsHitTestVisible="False"
                 Visibility="Collapsed"
                 SizeChanged="OnGlowLayerSizeChanged">
-                <Canvas x:Name="GlowDisc">
-                    <Canvas.RenderTransform>
+                <!-- A real conic gradient, rendered once into a bitmap because XAML cannot
+                     draw one: each colour centred on its third of the circle, blending
+                     smoothly into the next. Rotating the bitmap is the whole animation. -->
+                <Image
+                    x:Name="GlowDisc"
+                    Stretch="Fill"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    RenderTransformOrigin="0.5,0.5">
+                    <Image.RenderTransform>
                         <RotateTransform x:Name="GlowSpin" />
-                    </Canvas.RenderTransform>
-                </Canvas>
+                    </Image.RenderTransform>
+                </Image>
 
                 <Border
                     x:Name="GlowCover"

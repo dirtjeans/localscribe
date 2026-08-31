@@ -1352,10 +1352,9 @@ public sealed partial class MainWindow : Window
     private void OnGlowLayerSizeChanged(object sender, SizeChangedEventArgs e) => BuildGlowDisc();
 
     /// <summary>
-    /// The disc: three 120-degree wedges, one per colour, each owning a full third of the rim.
-    /// Sized past the cell's diagonal so rotation never uncovers a corner, and clipped to the
-    /// cell so it never paints outside one. Rebuilt on resize because the wedges are geometry,
-    /// not layout.
+    /// Sizes the disc past the cell's diagonal so rotation never uncovers a corner, and clips
+    /// the layer to the cell so it never paints outside one. The disc keeps its square shape —
+    /// a conic gradient survives uniform scaling and nothing else.
     /// </summary>
     private void BuildGlowDisc()
     {
@@ -1372,62 +1371,60 @@ public sealed partial class MainWindow : Window
             Rect = new Windows.Foundation.Rect(0, 0, width, height),
         };
 
-        var cx = width / 2;
-        var cy = height / 2;
-        var radius = (Math.Sqrt((width * width) + (height * height)) / 2) + 8;
+        var side = Math.Sqrt((width * width) + (height * height)) + 16;
 
-        GlowSpin.CenterX = cx;
-        GlowSpin.CenterY = cy;
-
-        GlowDisc.Children.Clear();
-
-        Windows.UI.Color[] colours =
-        [
-            Windows.UI.Color.FromArgb(255, 0x25, 0x63, 0xEB),
-            Windows.UI.Color.FromArgb(255, 0x8B, 0x5C, 0xF6),
-            Windows.UI.Color.FromArgb(255, 0xF2, 0x45, 0x6A),
-        ];
-
-        for (var i = 0; i < colours.Length; i++)
-        {
-            GlowDisc.Children.Add(
-                Wedge(cx, cy, radius, i * 120, (i + 1) * 120, colours[i]));
-        }
+        GlowDisc.Width = side;
+        GlowDisc.Height = side;
+        GlowDisc.Source ??= ConicDisc();
     }
 
-    /// <summary>A pie slice from one angle to another, filled with one colour.</summary>
-    private static Microsoft.UI.Xaml.Shapes.Path Wedge(
-        double cx, double cy, double radius, double fromDegrees, double toDegrees, Windows.UI.Color colour)
+    /// <summary>
+    /// The conic gradient XAML cannot draw, computed pixel by pixel: blue, purple and red each
+    /// centred on a third of the circle, blending smoothly into the next — the same drawing
+    /// the Mac window gets from its conic brush. Hard-edged wedges were tried first and spun
+    /// like a beach ball; the glow lives in the blend.
+    /// </summary>
+    private static Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap ConicDisc()
     {
-        Windows.Foundation.Point At(double degrees)
+        const int side = 512;
+        const double centre = side / 2.0;
+
+        (byte R, byte G, byte B)[] colours =
+        [
+            (0x25, 0x63, 0xEB),
+            (0x8B, 0x5C, 0xF6),
+            (0xF2, 0x45, 0x6A),
+        ];
+
+        var pixels = new byte[side * side * 4];
+
+        for (var y = 0; y < side; y++)
         {
-            var r = degrees * Math.PI / 180;
-            return new Windows.Foundation.Point(cx + (radius * Math.Cos(r)), cy + (radius * Math.Sin(r)));
+            for (var x = 0; x < side; x++)
+            {
+                var turn = (Math.Atan2(y - centre, x - centre) + Math.PI) / (2 * Math.PI);
+                var position = turn * colours.Length;
+                var index = (int)position % colours.Length;
+                var next = (index + 1) % colours.Length;
+                var blend = position - Math.Floor(position);
+
+                var at = ((y * side) + x) * 4;
+                pixels[at] = (byte)(colours[index].B + ((colours[next].B - colours[index].B) * blend));
+                pixels[at + 1] = (byte)(colours[index].G + ((colours[next].G - colours[index].G) * blend));
+                pixels[at + 2] = (byte)(colours[index].R + ((colours[next].R - colours[index].R) * blend));
+                pixels[at + 3] = 255;
+            }
         }
 
-        var figure = new PathFigure
-        {
-            StartPoint = new Windows.Foundation.Point(cx, cy),
-            IsClosed = true,
-        };
+        var bitmap = new Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap(side, side);
 
-        figure.Segments.Add(new LineSegment { Point = At(fromDegrees) });
-        figure.Segments.Add(new ArcSegment
+        using (var stream = System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions
+            .AsStream(bitmap.PixelBuffer))
         {
-            Point = At(toDegrees),
-            Size = new Windows.Foundation.Size(radius, radius),
-            SweepDirection = SweepDirection.Clockwise,
-            IsLargeArc = false,
-        });
+            stream.Write(pixels, 0, pixels.Length);
+        }
 
-        var geometry = new PathGeometry();
-        geometry.Figures.Add(figure);
-
-        return new Microsoft.UI.Xaml.Shapes.Path
-        {
-            Data = geometry,
-            Fill = new SolidColorBrush(colour),
-        };
+        return bitmap;
     }
 
     private DispatcherTimer? _glowTimer;
