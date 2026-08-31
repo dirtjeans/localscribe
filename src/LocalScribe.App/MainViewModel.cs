@@ -788,6 +788,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _scores = null;
     }
 
+    /// <summary>
+    /// A scan started beside transcription, waiting for the finish stages to collect it.
+    /// Nulled where it is consumed; a failed transcription leaves it to finish on its own —
+    /// ScanForWordsAsync reports its own failures, and the next run's scan forgets its state.
+    /// </summary>
+    private Task? _scanInFlight;
+
     /// <summary>The alignment model, held only between the scan and the placing.</summary>
     private ForcedAligner? _aligner;
 
@@ -875,7 +882,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // until the laptop runs the same measurement; the tuning is frozen and thread
                 // count can reorder float summation.
                 using var diarizer = SpeakerDiarizer.Load(
-                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
+                    directory, _plan);
 
                 // Speakers are followed through the audio rather than told apart by their
                 // voices, whether or not a count was given. Two local speakers in one window
@@ -1362,7 +1369,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // until the laptop runs the same measurement; the tuning is frozen and thread
                 // count can reorder float summation.
                 using var diarizer = SpeakerDiarizer.Load(
-                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
+                    directory, _plan);
 
                 if (diarizer.EmbedSpan(audio, example.StartSeconds, example.EndSeconds)
                     is not { } exampleVoice)
@@ -1492,9 +1499,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // A third stage beside the other two, and this time one that can genuinely run there. It
         // reads the audio and writes nothing the others touch.
-        var scanning = audio is null
-            ? Task.CompletedTask
-            : ScanForWordsAsync(audio, new Progress<double>(stages.Words), cancellationToken);
+        // A scan already started beside transcription is collected rather than restarted;
+        // the recording path, which has no audio until the microphone stops, starts one here.
+        var scanning = _scanInFlight
+            ?? (audio is null
+                ? Task.CompletedTask
+                : ScanForWordsAsync(audio, new Progress<double>(stages.Words), cancellationToken));
+
+        _scanInFlight = null;
 
         await Task.WhenAll(cleaning, listening, scanning);
 
@@ -1810,6 +1822,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _cleanupAwake = false;
         _cleanupWake = null;
 
+        if (_languageModel is null)
+        {
+            await TryResumeCleanupBackendAsync().ConfigureAwait(true);
+        }
+
         capabilities = capabilities with { LocalLanguageModelPresent = _languageModel is not null };
 
         _capabilities = capabilities;
@@ -1831,6 +1848,45 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             _waitingFor = null;
             await TranscribeFileAsync(held).ConfigureAwait(true);
+        }
+    }
+
+    /// <summary>
+    /// Starts an already-installed Foundry Local, in case its service simply is not running —
+    /// which it is not after every reboot, and the banner used to ask for a click each launch
+    /// just to start it. Resuming a tool the user already set up is not an install: nothing
+    /// is downloaded, nothing is added, and if the service starts but no model answers, the
+    /// banner stays and its button still owns the download.
+    /// </summary>
+    private async Task TryResumeCleanupBackendAsync()
+    {
+        try
+        {
+            var foundry = new FoundryLocalManager();
+
+            if (!await foundry.IsInstalledAsync())
+            {
+                return;
+            }
+
+            Status = "Starting Foundry Local…";
+
+            var started = await foundry.StartServiceAsync();
+
+            if (!started.Succeeded)
+            {
+                Status = started.Message;
+                return;
+            }
+
+            _languageModel = await LocalLanguageModel.ResolveAsync();
+            _cleanupAwake = false;
+            _cleanupWake = null;
+        }
+        catch (Exception exception)
+        {
+            // Optional convenience; failing it quietly leaves exactly the launch we had before.
+            LogError(exception);
         }
     }
 
@@ -1901,6 +1957,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // these samples, not to the file, which is why the decoded audio is what is kept.
             Player.Load(audio);
 
+            // The scan is the pipeline's long pole and needs only the audio, while the
+            // transcriber's heavy half runs on the accelerator with the CPU near idle — so
+            // the two overlap from here, and the finish stages collect a scan that is
+            // usually already done. Measured on a 63-second file: the scan alone was 41
+            // seconds, transcription 12, and running them in sequence spent both.
+            _scanInFlight = ScanForWordsAsync(audio, progress: null, _cancellation.Token);
+
             Status = IsModelReady ? "Preparing…" : "Loading the model…";
             var transcriber = await Task.Run(() => TranscriberFor(_plan), _cancellation.Token);
             var pipeline = new TranscriptionPipeline(transcriber, BuildRefiner());
@@ -1962,6 +2025,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         finally
         {
+            // Cancelled before disposal so a scan left in flight by a failed run stops now,
+            // rather than finishing later and writing another recording's scores over the
+            // state a new operation is building. After a successful run the scan has already
+            // been collected and the cancel touches nothing.
+            _cancellation?.Cancel();
+            _scanInFlight = null;
+
             IsBusy = false;
             _cancellation?.Dispose();
             _cancellation = null;

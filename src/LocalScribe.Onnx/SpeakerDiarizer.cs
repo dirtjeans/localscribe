@@ -82,11 +82,11 @@ public sealed class SpeakerDiarizer : IDisposable
     /// <summary>Opens both models from a directory holding segmentation.onnx and embedding.onnx.</summary>
     /// <param name="plan">
     /// Supplies the CPU thread budget, or null to let ONNX Runtime take every core — which is
-    /// what these sessions always did, and on Windows still do until a --diarize turn diff on
-    /// the reference recordings proves the cap moves no boundary. Thread count can reorder
-    /// float summation, and the tuning is frozen: a boundary moving a hundredth of a second is
-    /// a tuning change whatever it was called. On the Mac the diff has been run; see
-    /// docs/handoff-macos.md.
+    /// what these sessions always did. Thread count can reorder float summation and the tuning
+    /// is frozen, so each platform adopted the cap only after a --diarize turn diff on its
+    /// reference recording came back byte-identical: macOS first (docs/handoff-macos.md), then
+    /// Windows on the Snapdragon against the podcast fixture. A future platform passes null
+    /// until it has run the same measurement.
     /// </param>
     public static SpeakerDiarizer Load(string modelDirectory, ExecutionPlan? plan = null)
     {

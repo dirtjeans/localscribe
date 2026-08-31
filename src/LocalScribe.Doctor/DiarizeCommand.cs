@@ -55,8 +55,8 @@ internal static class DiarizeCommand
         try
         {
             using var diarizer = SpeakerDiarizer.Load(
-            modelDirectory,
-            OperatingSystem.IsMacOS() ? AcceleratorPlanner.Plan(DeviceProbe.Probe()) : null);
+                modelDirectory,
+                AcceleratorPlanner.Plan(DeviceProbe.Probe()));
             voices = diarizer.Describe(audio);
         }
         catch (Exception exception)
@@ -183,8 +183,8 @@ internal static class DiarizeCommand
         try
         {
             using var diarizer = SpeakerDiarizer.Load(
-            modelDirectory,
-            OperatingSystem.IsMacOS() ? AcceleratorPlanner.Plan(DeviceProbe.Probe()) : null);
+                modelDirectory,
+                AcceleratorPlanner.Plan(DeviceProbe.Probe()));
 
             // Two ways to turn the segmentation model's per-window numbering into people:
             // compare what the voices sound like, or follow them through the audio consecutive
@@ -287,7 +287,7 @@ internal static class DiarizeCommand
 
         using var diarizer = SpeakerDiarizer.Load(
             modelDirectory,
-            OperatingSystem.IsMacOS() ? AcceleratorPlanner.Plan(DeviceProbe.Probe()) : null);
+            AcceleratorPlanner.Plan(DeviceProbe.Probe()));
 
         var vectors = parsed
             .Select(span => diarizer.EmbedSpan(audio, span.Start, span.End))

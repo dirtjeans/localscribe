@@ -1,6 +1,8 @@
+<!-- Name feeds the macOS menu bar, which otherwise introduces us as "Avalonia Application". -->
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="LocalScribe.Desktop.App"
+             Name="LocalScribe"
              RequestedThemeVariant="Default">
   <Application.Styles>
     <FluentTheme />

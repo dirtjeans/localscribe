@@ -33,7 +33,7 @@ public sealed partial class FoundryLocalManager
     public async Task<bool> IsInstalledAsync(CancellationToken cancellationToken = default)
     {
         var result = await _runner
-            .RunAsync("foundry", "--version", TimeSpan.FromSeconds(30), cancellationToken)
+            .RunAsync(FoundryCli.Path, "--version", TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
         return result.Succeeded;
@@ -107,7 +107,7 @@ public sealed partial class FoundryLocalManager
         progress?.Report(new InstallProgress("foundry", "Starting the Foundry Local service…"));
 
         var result = await _runner
-            .RunAsync("foundry", "service start", TimeSpan.FromMinutes(5), cancellationToken)
+            .RunAsync(FoundryCli.Path, "service start", TimeSpan.FromMinutes(5), cancellationToken)
             .ConfigureAwait(false);
 
         return result.Succeeded
@@ -130,7 +130,7 @@ public sealed partial class FoundryLocalManager
         progress?.Report(new InstallProgress("foundry-model", $"Downloading {alias}. This may take a while…"));
 
         var result = await _runner.RunAsync(
-            "foundry",
+            FoundryCli.Path,
             $"model download {alias}",
             TimeSpan.FromMinutes(60),
             cancellationToken).ConfigureAwait(false);
@@ -151,7 +151,7 @@ public sealed partial class FoundryLocalManager
     public async Task<Uri?> DiscoverEndpointAsync(CancellationToken cancellationToken = default)
     {
         var result = await _runner
-            .RunAsync("foundry", "service status", TimeSpan.FromSeconds(30), cancellationToken)
+            .RunAsync(FoundryCli.Path, "service status", TimeSpan.FromSeconds(30), cancellationToken)
             .ConfigureAwait(false);
 
         return result.Succeeded ? ParseEndpoint(result.StandardOutput) : null;

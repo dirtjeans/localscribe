@@ -73,6 +73,14 @@ The Windows instruments carried over unchanged, and they were the acceptance har
   the crosstalk marks obey; never touches a label once a user has renamed anyone.
 - The microphone start is guarded in the shared view model — on macOS that is where a denied
   permission surfaces, and unguarded it took the process down from a click.
+- **The aligner scan overlaps transcription.** The scan needs only the audio, and the
+  transcriber's heavy half runs off-CPU on both platforms — yet the scan used to wait for the
+  transcript. Measured on a 63-second file: 41 s of scan and 12 s of transcription, formerly
+  spent in sequence. Verified on the Snapdragon since: 294 s → 271 s wall on the reference
+  podcast, with the two runs' span dumps identical in every word time — smaller than the Mac's
+  win because there the scan was the long pole, while the NPU's transcription dominates the
+  Snapdragon run and the scan already overlapped the finish stages; starting it earlier trims
+  the tail that used to outlast diarization.
 
 ## Invariants, as they landed
 
@@ -86,9 +94,10 @@ download themselves with the cost announced, but Foundry Local waits for its but
 
 ## Still open, ranked by likelihood of mattering
 
-1. **The Windows build has not compiled the shared-file edits.** They are additive and
-   C# 12-clean, but the WinUI app could not be built from the Mac. First session on the
-   laptop: `dotnet build`, then normalize the line-ending churn this sync left behind.
+1. ~~The Windows build has not compiled the shared-file edits.~~ Done: solution, WinUI app and
+   all 605 tests pass on the laptop; the scan overlap measured 294 s → 271 s there with
+   identical spans, and the diarizer cap's turn diff came back byte-identical on the podcast
+   fixture, so Windows adopted the cap too.
 2. **Notarization is undecided.** The bundle is ad-hoc signed — fine for this machine,
    warning-laden for anyone else's. Decide when there is a second Mac in the picture.
 3. **Finder's open-with does not reach the window.** macOS delivers opened documents as Apple

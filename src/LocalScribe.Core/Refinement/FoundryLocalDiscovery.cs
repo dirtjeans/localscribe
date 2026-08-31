@@ -86,7 +86,7 @@ public static partial class FoundryLocalDiscovery
     {
         try
         {
-            using var process = Process.Start(new ProcessStartInfo("foundry", "service status")
+            using var process = Process.Start(new ProcessStartInfo(Provisioning.FoundryCli.Path, "service status")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

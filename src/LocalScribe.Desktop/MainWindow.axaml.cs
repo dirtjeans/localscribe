@@ -495,6 +495,23 @@ public sealed partial class MainWindow : Window
                 break;
 
             case nameof(MainViewModel.Paragraphs):
+                // While a transcription streams, each window replaces the whole transcript —
+                // and the full rebuild prices every paragraph's words against the audio, which
+                // grows quadratic over a long file and is what made the app feel like the hog
+                // it was announcing. Streaming gets cheap plain-text cards; the full word-run
+                // rebuild happens once, when the work settles.
+                if (_viewModel.IsBusy)
+                {
+                    RebuildParagraphsLight();
+                }
+                else
+                {
+                    RebuildParagraphs();
+                }
+
+                break;
+
+            case nameof(MainViewModel.IsBusy) when !_viewModel.IsBusy && _lightParagraphs:
                 RebuildParagraphs();
                 break;
 
@@ -529,7 +546,10 @@ public sealed partial class MainWindow : Window
         // audio is disk work, and the player receiving the samples is the moment it ends —
         // model stages start immediately after. Preparing to record is model loading too.
         UpdateGlow((_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing);
-        Reveal(CleanupOffer, _initialised && !_provisioningFoundry && _viewModel.CleanupModel is null);
+        // The offer waits its turn: advertising setup mid-transcription reads as "something
+        // is wrong right now", which is not what an absent optional model means.
+        Reveal(CleanupOffer, _initialised && !_provisioningFoundry && !_viewModel.IsBusy
+            && !_viewModel.IsRecording && _viewModel.CleanupModel is null);
         OpenButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsRecording;
         RecordButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsPreparing;
         RecordLabel.Text = _viewModel.IsRecording ? "Stop" : "Record";
@@ -581,10 +601,12 @@ public sealed partial class MainWindow : Window
             AiGlowHalo.Classes.Add("breathing");
             AiGlowLayer.Opacity = 1;
 
+            // Fifteen frames a second, because each step repaints a blurred ring: at thirty
+            // the ornament was measurably competing with the work it announced.
             _glowTimer = new DispatcherTimer(
-                TimeSpan.FromMilliseconds(33),
+                TimeSpan.FromMilliseconds(66),
                 DispatcherPriority.Render,
-                (_, _) => _glowBrush.Angle = (_glowBrush.Angle + 2.5) % 360);
+                (_, _) => _glowBrush.Angle = (_glowBrush.Angle + 5) % 360);
             _glowTimer.Start();
         }
         else if (!working && _glowTimer is not null)
@@ -628,8 +650,40 @@ public sealed partial class MainWindow : Window
 
     private readonly List<IReadOnlyList<WordRun>> _paragraphWordRuns = [];
 
+    /// <summary>True while the panel holds the streaming placeholder rather than word runs.</summary>
+    private bool _lightParagraphs;
+
+    /// <summary>
+    /// The streaming shape of the transcript: plain text, no word runs, no timings priced.
+    /// Clicking and the marker want the full build, and get it the moment the run finishes.
+    /// </summary>
+    private void RebuildParagraphsLight()
+    {
+        _lightParagraphs = true;
+        _shownParagraphs = [];
+        _paragraphBorders.Clear();
+        _paragraphWordRuns.Clear();
+        _highlightedRuns.Clear();
+        _searchRuns.Clear();
+        _searchMatches.Clear();
+        ParagraphsPanel.Children.Clear();
+
+        foreach (var paragraph in _viewModel.Paragraphs)
+        {
+            ParagraphsPanel.Children.Add(new TextBlock
+            {
+                Text = paragraph.Text,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 15,
+                LineHeight = 24,
+                Margin = new Avalonia.Thickness(12, 7),
+            });
+        }
+    }
+
     private void RebuildParagraphs()
     {
+        _lightParagraphs = false;
         _shownParagraphs = _viewModel.Paragraphs;
         _paragraphBorders.Clear();
         _paragraphWordRuns.Clear();
