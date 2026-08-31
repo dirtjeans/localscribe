@@ -187,6 +187,15 @@ its presence would break `dotnet build` for every other contributor. Build it by
 
 ## Known blemishes, honestly
 
+- The transcript force-scrolls while transcription streams, yanking a reader who has scrolled
+  up into the timed head. The streaming updates rebuild the list each window; the fix is to
+  preserve scroll position across rebuilds (or stop following the tail once the user scrolls).
+- Early clicks during a run are unpredictable, with odd pauses. Three suspects, unmeasured:
+  playback buffer underruns while the scan and transcription saturate the machine; the
+  progressive passes re-timing the head every few strides so the same word can land slightly
+  differently twice; and row rebuilds landing mid-click. Measure before fixing — the clock
+  diagnostic already distinguishes underruns from timing shifts.
+
 - The "vendor-neutral zero-trust certification" phrase repeats in the podcast transcript and
   survives the twin trial: the copy is embedded mid-segment, below the trial's
   whole-segment granularity. Cost: a bounded three-word timing wobble, the file's worst.
