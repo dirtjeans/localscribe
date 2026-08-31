@@ -7,6 +7,44 @@ using Xunit;
 namespace LocalScribe.Core.Tests;
 
 /// <summary>A transcriber that returns scripted results, so the orchestration can be tested alone.</summary>
+public class StreamedStampTests
+{
+    /// <summary>
+    /// Streamed text must carry the window's real time range. Windows overlap, so counting
+    /// windows and multiplying by the window length overstates position by the overlap per
+    /// window — ninety seconds by the end of a twenty-one minute recording, which pushed
+    /// every streamed anchor out of the aligner's reach while a run was in progress.
+    /// </summary>
+    [Xunit.Fact]
+    public async System.Threading.Tasks.Task ProgressCarriesTheWindowsRealRange()
+    {
+        var audio = new LocalScribe.Core.Audio.PcmAudio(
+            new float[16000 * 70], 16000);
+
+        var reports = new System.Collections.Generic.List<TranscriptionProgress>();
+        var progress = new System.Progress<TranscriptionProgress>(reports.Add);
+        var transcriber = new FakeTranscriber((_, i) => [new TranscriptSegment($"w{i}", 0, 1)]);
+
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(audio, progress);
+
+        // Progress<T> posts through the thread pool; wait for the reports to land.
+        for (var waited = 0; waited < 50 && reports.Count < 2; waited++)
+        {
+            await System.Threading.Tasks.Task.Delay(20);
+        }
+
+        var spoken = reports.Where(r => r.LatestText.Length > 0).ToList();
+
+        Xunit.Assert.True(spoken.Count >= 2);
+
+        // The second window begins at the stride (window minus overlap), not at the window
+        // length — 28 seconds with the defaults, not 30.
+        Xunit.Assert.True(spoken[1].LatestStartSeconds < LocalScribe.Core.Audio.AudioChunker.WindowSeconds);
+        Xunit.Assert.True(spoken[1].LatestStartSeconds > 0);
+        Xunit.Assert.True(spoken[1].LatestEndSeconds <= audio.DurationSeconds + 0.01);
+    }
+}
+
 internal sealed class FakeTranscriber : ITranscriber
 {
     private readonly Func<AudioChunk, int, IReadOnlyList<TranscriptSegment>> _respond;

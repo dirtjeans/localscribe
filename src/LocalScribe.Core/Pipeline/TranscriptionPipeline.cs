@@ -22,11 +22,20 @@ public enum TranscriptionPhase
 /// Which stage this is. A run has more than one, and they take comparable amounts of time, so a
 /// bar that reaches the end and then sits there for a minute is worse than no bar at all.
 /// </param>
+/// <param name="LatestStartSeconds">Where the finished window's audio actually begins.</param>
+/// <param name="LatestEndSeconds">
+/// Where it ends. Carried so a live view can stamp streamed text with the truth: windows
+/// overlap, so window-number-times-window-length overstates position by the overlap per
+/// window — an error that compounded to a minute and a half by the end of a long recording
+/// and pushed every streamed anchor out of the aligner's reach.
+/// </param>
 public sealed record TranscriptionProgress(
     int ChunksCompleted,
     int ChunksTotal,
     string LatestText,
-    TranscriptionPhase Phase = TranscriptionPhase.Transcribing)
+    TranscriptionPhase Phase = TranscriptionPhase.Transcribing,
+    double LatestStartSeconds = 0,
+    double LatestEndSeconds = 0)
 {
     public double Fraction => ChunksTotal == 0 ? 0 : ChunksCompleted / (double)ChunksTotal;
 }
@@ -137,7 +146,10 @@ public sealed class TranscriptionPipeline
             progress?.Report(new TranscriptionProgress(
                 completed,
                 EstimateTotal(completed, position, audio.DurationSeconds),
-                string.Join(" ", segments.Select(s => s.Text.Trim()))));
+                string.Join(" ", segments.Select(s => s.Text.Trim())),
+                LatestStartSeconds: chunk.StartSeconds,
+                LatestEndSeconds: Math.Min(
+                    chunk.StartSeconds + chunk.ContentSeconds, audio.DurationSeconds)));
         }
 
         // Split where Whisper marked a change of speaker. It writes dialogue the way a script

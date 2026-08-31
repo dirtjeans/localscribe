@@ -2366,12 +2366,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 Status = $"Transcribing… {update.ChunksCompleted} of {update.ChunksTotal} windows";
 
-                if (update.Phase == TranscriptionPhase.Transcribing && update.LatestText.Length > 0)
+                if (update.Phase == TranscriptionPhase.Transcribing && update.LatestText.Length > 0
+                    && update.LatestEndSeconds > update.LatestStartSeconds)
                 {
+                    // The window's real range, not window-number-times-thirty: windows overlap
+                    // by two seconds, and the arithmetic stamp ran ninety seconds late by the
+                    // end of a long recording — every streamed anchor beyond the aligner's
+                    // reach, which is why the in-progress sync was so much worse than the
+                    // finished one.
                     streamed.Add(new TranscriptSegment(
                         update.LatestText,
-                        update.ChunksCompleted * AudioChunker.WindowSeconds,
-                        (update.ChunksCompleted + 1) * AudioChunker.WindowSeconds));
+                        update.LatestStartSeconds,
+                        update.LatestEndSeconds));
 
                     // The progressive pass times a prefix of exactly this list, so the raw
                     // tail must be these segments, not a rebuilt approximation — and the
