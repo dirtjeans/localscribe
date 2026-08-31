@@ -419,6 +419,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private IReadOnlyList<TranscriptSegment> _rawSoFar = [];
 
     /// <summary>
+    /// The timed head as last published, and how many raw segments it replaced. Counts, not
+    /// clocks: timed bounds come from words and are not strictly monotone, and composing the
+    /// view with a time comparison once cut the head short at the first out-of-order end —
+    /// stretches that were clickable went grey. Order is law here as everywhere else.
+    /// </summary>
+    private IReadOnlyList<TranscriptSegment> _timedHead = [];
+
+    private int _timedHeadCovers;
+
+    /// <summary>
     /// How far into the recording clicks already work, or zero when they do not yet. The status
     /// line reads this, and the window uses per-segment timing to draw the same boundary.
     /// </summary>
@@ -492,6 +502,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     break;
                 }
 
+                if (placed.All(words => words is null))
+                {
+                    // A refused pass places nothing. Keeping the previous head is strictly
+                    // better than wiping it; the next stride, or the full preview, tries
+                    // again with more scan behind it.
+                    frontierUsed = frontier;
+                    continue;
+                }
+
                 var timed = new List<TranscriptSegment>(eligible.Count);
 
                 lock (_alignedGate)
@@ -518,6 +537,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         timed.Add(moved);
                     }
                 }
+
+                _timedHead = timed;
+                _timedHeadCovers = eligible.Count;
 
                 SetTranscript([.. timed, .. raws.Skip(eligible.Count)]);
 
@@ -2222,6 +2244,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         Progress = 0;
         SetTranscript([]);
         _rawSoFar = [];
+        _timedHead = [];
+        _timedHeadCovers = 0;
         UsableThroughSeconds = 0;
 
         lock (_frontierGate)
@@ -2286,18 +2310,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     var raws = streamed.ToList();
                     _rawSoFar = raws;
 
-                    var kept = UsableThroughSeconds;
-
-                    if (kept > 0 && _segments.Count > 0)
-                    {
-                        SetTranscript([
-                            .. _segments.TakeWhile(s => s.EndSeconds <= kept),
-                            .. raws.SkipWhile(s => s.StartSeconds < kept)]);
-                    }
-                    else
-                    {
-                        SetTranscript(raws);
-                    }
+                    SetTranscript([.. _timedHead, .. raws.Skip(_timedHeadCovers)]);
                 }
             });
 
