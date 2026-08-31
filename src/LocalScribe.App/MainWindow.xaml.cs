@@ -444,8 +444,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Rebuilds the list. Scrolls to the end only while text is still arriving, so a transcript
-    /// being read is not dragged out from under the reader.
+    /// Rebuilds the list. While text is still arriving, the tail is followed only for a reader
+    /// who was already at the tail — anyone who has scrolled up is reading the head the
+    /// progressive preview just made worth reading, and gets put back exactly where they were.
     /// </summary>
     private void ShowParagraphs()
     {
@@ -457,16 +458,64 @@ public sealed partial class MainWindow : Window
         _markedWord = -1;
 
         var following = _viewModel.IsRecording || _viewModel.IsBusy;
+        var scroller = TranscriptScroller();
+
+        var atTail = scroller is null
+            || scroller.ScrollableHeight < 1
+            || scroller.VerticalOffset >= scroller.ScrollableHeight - 80;
+
+        var offset = scroller?.VerticalOffset ?? 0;
 
         _paragraphs = _viewModel.Paragraphs.Select(p => new ParagraphView(p)).ToList();
         ApplySearch();
 
         if (following && _paragraphs.Count > 0)
         {
-            TranscriptList.ScrollIntoView(_paragraphs[^1]);
+            if (atTail)
+            {
+                TranscriptList.ScrollIntoView(_paragraphs[^1]);
+            }
+            else if (scroller is not null)
+            {
+                // After the rebuild has laid out, or the restore lands on the old layout.
+                _dispatcher.TryEnqueue(
+                    DispatcherQueuePriority.Low,
+                    () => scroller.ChangeView(null, offset, null, disableAnimation: true));
+            }
         }
 
         ShowTransport();
+    }
+
+    private ScrollViewer? _transcriptScroller;
+
+    /// <summary>The list's scroller, found once — rebuilds replace items, not the chrome.</summary>
+    private ScrollViewer? TranscriptScroller()
+    {
+        if (_transcriptScroller is not null)
+        {
+            return _transcriptScroller;
+        }
+
+        var queue = new Queue<DependencyObject>();
+        queue.Enqueue(TranscriptList);
+
+        while (queue.Count > 0)
+        {
+            var next = queue.Dequeue();
+
+            if (next is ScrollViewer found)
+            {
+                return _transcriptScroller = found;
+            }
+
+            for (var i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(next); i++)
+            {
+                queue.Enqueue(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(next, i));
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

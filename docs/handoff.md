@@ -187,9 +187,6 @@ its presence would break `dotnet build` for every other contributor. Build it by
 
 ## Known blemishes, honestly
 
-- The transcript force-scrolls while transcription streams, yanking a reader who has scrolled
-  up into the timed head. The streaming updates rebuild the list each window; the fix is to
-  preserve scroll position across rebuilds (or stop following the tail once the user scrolls).
 - Early clicks during a run are unpredictable, with odd pauses. Three suspects, unmeasured:
   playback buffer underruns while the scan and transcription saturate the machine; the
   progressive passes re-timing the head every few strides so the same word can land slightly
