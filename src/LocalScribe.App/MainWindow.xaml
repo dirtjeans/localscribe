@@ -398,11 +398,10 @@
                 Visibility="Collapsed">
                 <Border.BorderBrush>
                     <LinearGradientBrush x:Name="GlowHaloBrush" StartPoint="0,0" EndPoint="1,1">
-                        <GradientStop Color="#56CCF2" Offset="0" />
-                        <GradientStop Color="#8B7CF2" Offset="0.3" />
-                        <GradientStop Color="#F2566E" Offset="0.55" />
-                        <GradientStop Color="#3A91C8" Offset="0.78" />
-                        <GradientStop Color="#56CCF2" Offset="1" />
+                        <GradientStop Color="#3B82F6" Offset="0" />
+                        <GradientStop Color="#8B5CF6" Offset="0.33" />
+                        <GradientStop Color="#F2456A" Offset="0.66" />
+                        <GradientStop Color="#3B82F6" Offset="1" />
                     </LinearGradientBrush>
                 </Border.BorderBrush>
             </Border>
@@ -417,11 +416,10 @@
                 Visibility="Collapsed">
                 <Border.BorderBrush>
                     <LinearGradientBrush x:Name="GlowRingBrush" StartPoint="0,0" EndPoint="1,1">
-                        <GradientStop Color="#56CCF2" Offset="0" />
-                        <GradientStop Color="#8B7CF2" Offset="0.3" />
-                        <GradientStop Color="#F2566E" Offset="0.55" />
-                        <GradientStop Color="#3A91C8" Offset="0.78" />
-                        <GradientStop Color="#56CCF2" Offset="1" />
+                        <GradientStop Color="#3B82F6" Offset="0" />
+                        <GradientStop Color="#8B5CF6" Offset="0.33" />
+                        <GradientStop Color="#F2456A" Offset="0.66" />
+                        <GradientStop Color="#3B82F6" Offset="1" />
                     </LinearGradientBrush>
                 </Border.BorderBrush>
             </Border>
