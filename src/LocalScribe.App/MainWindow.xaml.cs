@@ -1345,9 +1345,11 @@ public sealed partial class MainWindow : Window
         _glowTicks++;
 
         // No conic gradient in WinUI, so the sweep is a linear gradient whose axis rotates.
+        // The axis runs a little past the box so the clamped ends — solid runs of the two
+        // end colours — stay in the corners instead of swallowing whole edges.
         var radians = _glowTicks * 5 * Math.PI / 180;
-        var dx = Math.Cos(radians) / 2;
-        var dy = Math.Sin(radians) / 2;
+        var dx = Math.Cos(radians) * 0.62;
+        var dy = Math.Sin(radians) * 0.62;
 
         var start = new Windows.Foundation.Point(0.5 - dx, 0.5 - dy);
         var end = new Windows.Foundation.Point(0.5 + dx, 0.5 + dy);

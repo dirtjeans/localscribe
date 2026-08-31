@@ -398,10 +398,16 @@
                 Visibility="Collapsed">
                 <Border.BorderBrush>
                     <LinearGradientBrush x:Name="GlowHaloBrush" StartPoint="0,0" EndPoint="1,1">
+                        <!-- Two full cycles, two stops per colour, different colours on the
+                             two ends: a linear gradient clamps past its endpoints, so whoever
+                             holds an end also owns a solid corner of the ring. One colour on
+                             both ends owned two. -->
                         <GradientStop Color="#2563EB" Offset="0" />
-                        <GradientStop Color="#8B5CF6" Offset="0.33" />
-                        <GradientStop Color="#F2456A" Offset="0.66" />
-                        <GradientStop Color="#2563EB" Offset="1" />
+                        <GradientStop Color="#8B5CF6" Offset="0.2" />
+                        <GradientStop Color="#F2456A" Offset="0.4" />
+                        <GradientStop Color="#2563EB" Offset="0.6" />
+                        <GradientStop Color="#8B5CF6" Offset="0.8" />
+                        <GradientStop Color="#F2456A" Offset="1" />
                     </LinearGradientBrush>
                 </Border.BorderBrush>
             </Border>
@@ -416,10 +422,16 @@
                 Visibility="Collapsed">
                 <Border.BorderBrush>
                     <LinearGradientBrush x:Name="GlowRingBrush" StartPoint="0,0" EndPoint="1,1">
+                        <!-- Two full cycles, two stops per colour, different colours on the
+                             two ends: a linear gradient clamps past its endpoints, so whoever
+                             holds an end also owns a solid corner of the ring. One colour on
+                             both ends owned two. -->
                         <GradientStop Color="#2563EB" Offset="0" />
-                        <GradientStop Color="#8B5CF6" Offset="0.33" />
-                        <GradientStop Color="#F2456A" Offset="0.66" />
-                        <GradientStop Color="#2563EB" Offset="1" />
+                        <GradientStop Color="#8B5CF6" Offset="0.2" />
+                        <GradientStop Color="#F2456A" Offset="0.4" />
+                        <GradientStop Color="#2563EB" Offset="0.6" />
+                        <GradientStop Color="#8B5CF6" Offset="0.8" />
+                        <GradientStop Color="#F2456A" Offset="1" />
                     </LinearGradientBrush>
                 </Border.BorderBrush>
             </Border>
