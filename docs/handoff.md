@@ -76,10 +76,14 @@ failure:
   than the remaining seconds could carry at a sprint is a lie, and clamped end-of-file lies
   once got seven real outro lines convicted as never spoken.
 - **The corridor band is 36 seconds of letters** either side of the spine, sized as roughly
-  double the worst stamp lie ever measured. The band bounds compute, not placement — the audio
-  decides inside it — so its only honest size is wider than the worst lie. A recording much
-  longer than ten minutes may drift proportionally further; if a long recording's tail lags,
-  suspect this constant first and measure with `--check-words` before touching it.
+  double the worst *residual* stamp lie. The accumulated part is removed first: the drift is
+  roughly linear in time (17.5 s over seven minutes; 73 s over twenty-one), so when the stamps
+  describe a longer timeline than the audio, every anchor is scaled by real-end over
+  claimed-end (`CredibleAnchors.Scale`) before the spine is built. Without that, a long
+  recording's drift outruns any affordable band — a twenty-one minute recording placed its
+  eighteenth minute twenty-eight seconds late; with it, the same minute landed within a
+  second of fresh-slice ground truth. If a long recording still lags, measure with
+  `--replay` and fresh slices before touching either constant.
 - **Two trials after placement**: lines stamped past the end of the audio must prove their
   words exist (span and read-back, both failing before conviction — dropping real speech is
   the worse lie, and this trial has told it once), and a line whose folded text is a verbatim

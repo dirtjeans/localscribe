@@ -424,8 +424,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception)
         {
             // The estimate is still there, so this is a loss of precision rather than of the
-            // transcript.
+            // transcript. The stack is kept: a whole recording quietly falling back to
+            // estimates presents as sync drift, and the status line alone was missable.
             Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
+            LogError(exception);
         }
     }
 
@@ -437,10 +439,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// one segment and nothing else.
     /// </para>
     /// </summary>
+    /// <param name="keepAligner">
+    /// Holds on to the model afterwards. The preview pass runs while cleanup is still
+    /// rewriting the text, and the final pass over the cleaned text would otherwise pay a
+    /// full reload for the release in between.
+    /// </param>
     private async Task<IReadOnlyList<TimedSegment>> AlignWordsAsync(
         IReadOnlyList<TranscriptSegment> segments,
         IProgress<double>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool keepAligner = false)
     {
         var untimed = () => (IReadOnlyList<TimedSegment>)
             [.. segments.Select(segment => new TimedSegment(segment, []))];
@@ -665,11 +673,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception)
         {
             Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
+            LogError(exception);
             return untimed();
         }
         finally
         {
-            ReleaseAlignmentModel();
+            if (!keepAligner)
+            {
+                ReleaseAlignmentModel();
+            }
         }
 
         _unheardTail = unheard;
@@ -677,6 +689,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (placed.Count + unheard + doubled != segments.Count)
         {
+            // Never silent: this books every word as an estimate, and an estimated transcript
+            // presents as sync drift with nothing anywhere saying why.
+            Status = $"Transcribed, but the word timings did not balance "
+                + $"({placed.Count} placed, {unheard} unheard, {doubled} doubled of {segments.Count}); "
+                + "word times are estimates.";
+            LogError(new InvalidOperationException(
+                $"Alignment count mismatch: {placed.Count}+{unheard}+{doubled} != {segments.Count}"));
             return untimed();
         }
 
@@ -882,7 +901,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // until the laptop runs the same measurement; the tuning is frozen and thread
                 // count can reorder float summation.
                 using var diarizer = SpeakerDiarizer.Load(
-                    directory, _plan);
+                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
 
                 // Speakers are followed through the audio rather than told apart by their
                 // voices, whether or not a count was given. Two local speakers in one window
@@ -1369,7 +1388,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // until the laptop runs the same measurement; the tuning is frozen and thread
                 // count can reorder float summation.
                 using var diarizer = SpeakerDiarizer.Load(
-                    directory, _plan);
+                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
 
                 if (diarizer.EmbedSpan(audio, example.StartSeconds, example.EndSeconds)
                     is not { } exampleVoice)
@@ -1508,7 +1527,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         _scanInFlight = null;
 
-        await Task.WhenAll(cleaning, listening, scanning);
+        // The fourth lane: the moment the scan lands, the raw transcript gets its word times
+        // and goes on screen — clickable, playable, highlight following the voice — while
+        // cleanup and diarization are still minutes from done. Placing words is the cheap half
+        // of alignment once the scan exists, and neither of the slow stages is needed for it:
+        // diarization only attaches names to words already timed, and cleanup only rewrites
+        // text. The missing names and raw punctuation are themselves the honest sign that the
+        // transcript is still being finished; the final assembly replaces it in place.
+        var previewing = PreviewTimedAsync(spoken, scanning, stages, cancellationToken);
+
+        await Task.WhenAll(cleaning, listening, scanning, previewing);
 
         var refinement = await cleaning;
         var turns = await listening;
@@ -1519,6 +1547,58 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // that was missing for a long time: the cleaned text used to be computed and dropped,
         // and what the user read was always the raw transcript.
         await AssembleAsync(refinement?.CleanedSegments ?? spoken, refiner, stages, cancellationToken);
+    }
+
+    /// <summary>
+    /// Puts the raw transcript on screen with its words timed, as soon as the scan allows.
+    /// <para>
+    /// A failure here costs only the preview — the final assembly neither knows nor cares —
+    /// so nothing but a real cancellation is allowed out.
+    /// </para>
+    /// </summary>
+    private async Task PreviewTimedAsync(
+        IReadOnlyList<TranscriptSegment> spoken,
+        Task scanning,
+        SharedBar stages,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await scanning.ConfigureAwait(true);
+
+            if (_scores is null || spoken.Count == 0)
+            {
+                return;
+            }
+
+            var timed = await AlignWordsAsync(
+                spoken, progress: null, cancellationToken, keepAligner: true).ConfigureAwait(true);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // The times table is keyed here the way Attribute keys it, because the window
+            // looks words up by segment value; the final assembly clears and rekeys it.
+            lock (_alignedGate)
+            {
+                _alignedFor.Clear();
+
+                foreach (var piece in timed.Where(t => t.Words.Count > 0))
+                {
+                    _alignedFor[piece.Segment] = piece.Words;
+                }
+            }
+
+            SetTranscript([.. timed.Select(t => t.Segment)]);
+            stages.PreviewReady();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            LogError(exception);
+        }
     }
 
     /// <summary>
@@ -1543,6 +1623,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // is exactly between them — and cleanup can rewrite the text after the stitcher has
         // finished with it. This is the last point before the reader.
         cleaned = RepeatedPhrase.TrimAcross(cleaned);
+
+        // A segment with no letters or digits in it was never speech — the transcriber pads
+        // music and silence with ellipses. It cannot be aligned, so it would keep its raw
+        // stamp and land between neighbours placed by measurement, out of order: one such "…"
+        // printed itself thirty seconds deep into the middle of a conversation. A reader
+        // loses nothing a reader ever had.
+        cleaned = [.. cleaned.Where(segment => segment.Text.Any(char.IsLetterOrDigit))];
 
         _segmentsBeforeSpeakers = cleaned;
 
@@ -1625,6 +1712,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private bool _cleaningUp;
         private bool _findingSpeakers;
         private bool _timingWords;
+        private bool _usable;
+
+        /// <summary>
+        /// The timed preview is on screen: from here on, every progress line leads with the
+        /// part the user can act on. "Working out who spoke… 43%" reads as "wait"; the same
+        /// words after "you can use this now" read as what they are — background work.
+        /// </summary>
+        public void PreviewReady()
+        {
+            lock (_gate)
+            {
+                _usable = true;
+            }
+
+            Publish();
+        }
 
         public void Cleanup(double fraction)
         {
@@ -1686,6 +1789,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     (false, true, false) => "Working out who spoke",
                     _ => "Timing the words",
                 };
+
+                if (_usable)
+                {
+                    what = "You can use the transcript now — click a line to hear it, "
+                        + $"search to find one. {what} in the background";
+                }
             }
 
             owner.Progress = fraction;
@@ -1997,6 +2106,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // listened to, and offering to translate before that would have been a guess.
             SpokenLanguage = transcriber.DetectedLanguage;
 
+            // The speech model's gigabytes go back before the finish stages: the scan owns
+            // the CPU for minutes while the engine sits idle, and on a 16 GB machine
+            // idle-but-resident is what pushed a long recording into swap, starved the scan,
+            // and put every word on an estimate.
+            ReleaseTranscriberIfCheap();
+
             await FinishTranscriptAsync(transcript.Segments, audio, _cancellation.Token);
 
             Status = DoneStatus();
@@ -2232,6 +2347,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
+    /// Lets go of the cached transcriber, but only where reopening is nearly free. The
+    /// injected engines measured sub-second loads from a warm cache; the QNN engine keeps its
+    /// slot, because its five-second open is the reason the cache exists.
+    /// </summary>
+    private void ReleaseTranscriberIfCheap()
+    {
+        if (_openTranscriber is null)
+        {
+            return;
+        }
+
+        _transcriberLock.Wait();
+
+        try
+        {
+            _transcriber?.Dispose();
+            _transcriber = null;
+            _transcriberKey = null;
+        }
+        finally
+        {
+            _transcriberLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Opens the model this machine will use before anything asks for it.
     /// <para>
     /// A QNN context binary takes several seconds to load, and doing it on the click meant the
@@ -2245,7 +2386,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public async Task PreloadAsync()
     {
-        if (_plan is null || Environment.GetEnvironmentVariable("LOCALSCRIBE_NO_PRELOAD") is { Length: > 0 })
+        // An injected engine is not preloaded: the reason this method exists is QNN's
+        // five-second session open, and whisper.cpp measured 0.9 s from a warm cache —
+        // preloading there spends gigabytes of residency from launch to save less than a
+        // second, which on a 16 GB machine helped push a long transcription into swap.
+        if (_plan is null
+            || _openTranscriber is not null
+            || Environment.GetEnvironmentVariable("LOCALSCRIBE_NO_PRELOAD") is { Length: > 0 })
         {
             return;
         }

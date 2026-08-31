@@ -11,6 +11,31 @@ public class CredibleAnchorsTests
     private const double Limit = 440;
 
     [Fact]
+    public void StampsWithinTheRecordingAreNotRescaled()
+    {
+        Assert.Equal(1.0, CredibleAnchors.Scale(440, 442.7));
+        Assert.Equal(1.0, CredibleAnchors.Scale(442.7, 442.7));
+    }
+
+    /// <summary>
+    /// The measured cases: the podcast's stamps ran to 460 on 442.7 seconds of audio, and the
+    /// twenty-one minute recording's to 1335 on 1262. The scaled stamps land within a second
+    /// or two of the fresh-slice ground truth on both, which is what earned the linear model.
+    /// </summary>
+    [Fact]
+    public void OverrunningStampsScaleToTheRealEnding()
+    {
+        Assert.Equal(442.7 / 460, CredibleAnchors.Scale(460, 442.7), 6);
+        Assert.Equal(1262.38 / 1335.38, CredibleAnchors.Scale(1335.38, 1262.38), 6);
+    }
+
+    [Fact]
+    public void ABrokenTimelineIsNotCrushedFlat()
+    {
+        Assert.Equal(CredibleAnchors.SmallestScale, CredibleAnchors.Scale(3000, 1000));
+    }
+
+    [Fact]
     public void TheEndpointsAlwaysSurvive()
     {
         var kept = CredibleAnchors.Prune([(0, 0), (Limit, Tokens)], Tokens, Limit);

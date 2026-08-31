@@ -35,6 +35,30 @@ public static class CredibleAnchors
     /// </summary>
     public const double SlowestSprint = 25;
 
+    /// <summary>
+    /// Stamps claiming more recording than exists are broken beyond linear repair below this;
+    /// the scale stops here and leaves the rest to pruning and the band.
+    /// </summary>
+    public const double SmallestScale = 0.5;
+
+    /// <summary>
+    /// The factor that brings the stamps' own ending down onto the recording's.
+    /// <para>
+    /// The transcriber's drift accumulates per window and is roughly linear in time — measured
+    /// at 17.5 seconds over seven minutes on one recording and 73 over twenty-one on another —
+    /// so by the end of a long recording the stamps describe a timeline longer than the audio.
+    /// Scaling every anchor by real-end over claimed-end removes the accumulated part of the
+    /// lie in one move and leaves the corridor covering only the local sawtooth, which does not
+    /// grow with length. Without this, a long recording's drift simply outruns any affordable
+    /// band: the twenty-one minute recording placed its eighteenth minute twenty-eight seconds
+    /// late.
+    /// </para>
+    /// </summary>
+    public static double Scale(double stampedEnd, double limit) =>
+        stampedEnd <= limit || limit <= 0
+            ? 1.0
+            : Math.Max(SmallestScale, limit / stampedEnd);
+
     /// <summary>Keeps the anchors whose claims the clock allows.</summary>
     /// <param name="anchors">Claims of (second, token reached), in any order.</param>
     /// <param name="tokens">How many tokens the whole transcript holds.</param>

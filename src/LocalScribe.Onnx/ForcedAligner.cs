@@ -296,6 +296,11 @@ public sealed class ForcedAligner : IDisposable
         var limit = scores.SecondsAt(scores.Frames);
         var anchors = new List<(double Second, int Token)> { (0, 0) };
 
+        // The drift accumulates: stamps describing more recording than exists mean every stamp
+        // along the way is proportionally late, and the correction is one multiplication.
+        var scale = CredibleAnchors.Scale(
+            segments.Count == 0 ? 0 : segments.Max(s => s.EndSeconds), limit);
+
         for (var i = 0; i < segments.Count; i++)
         {
             var words = Words(segments[i].Text);
@@ -316,10 +321,10 @@ public sealed class ForcedAligner : IDisposable
             allTokens.AddRange(tokens);
             parts[i] = (words, spellings, start);
 
-            var from = Math.Clamp(segments[i].StartSeconds, 0, limit);
+            var from = Math.Clamp(segments[i].StartSeconds * scale, 0, limit);
 
             anchors.Add((from, start));
-            anchors.Add((Math.Clamp(segments[i].EndSeconds, from, limit), start + tokens.Count));
+            anchors.Add((Math.Clamp(segments[i].EndSeconds * scale, from, limit), start + tokens.Count));
         }
 
         if (allTokens.Count == 0)
