@@ -1981,10 +1981,10 @@ public sealed partial class MainWindow : Window
                 Severity = InfoBarSeverity.Warning,
                 Title = "No cleanup model is running",
                 Message = "The glossary has no effect until one is. Transcription itself is "
-                    + "unaffected — only the corrections, summary and action items need it. "
-                    + "Downloading fetches Foundry Local's small instruct model (about a "
-                    + "gigabyte, one time) and runs it here; progress lands in the status "
-                    + "line. If you use GenieX instead, just start it and reopen the app.",
+                    + "unaffected — only the glossary corrections and punctuation repair "
+                    + "need it. Downloading fetches Foundry Local's small instruct model "
+                    + "(about a gigabyte, one time) and runs it here; progress lands in the "
+                    + "status line. If you use GenieX instead, just start it and reopen the app.",
                 ActionButton = fetch,
             });
         }
