@@ -21,17 +21,13 @@ public class StreamedStampTests
         var audio = new LocalScribe.Core.Audio.PcmAudio(
             new float[16000 * 70], 16000);
 
+        // Recorded synchronously: Progress<T> posts through the thread pool, and waiting for
+        // it to land made this test fail once under load for no reason of its own.
         var reports = new System.Collections.Generic.List<TranscriptionProgress>();
-        var progress = new System.Progress<TranscriptionProgress>(reports.Add);
+        var progress = new InlineProgress<TranscriptionProgress>(reports.Add);
         var transcriber = new FakeTranscriber((_, i) => [new TranscriptSegment($"w{i}", 0, 1)]);
 
         await new TranscriptionPipeline(transcriber).TranscribeAsync(audio, progress);
-
-        // Progress<T> posts through the thread pool; wait for the reports to land.
-        for (var waited = 0; waited < 50 && reports.Count < 2; waited++)
-        {
-            await System.Threading.Tasks.Task.Delay(20);
-        }
 
         var spoken = reports.Where(r => r.LatestText.Length > 0).ToList();
 
@@ -43,6 +39,12 @@ public class StreamedStampTests
         Xunit.Assert.True(spoken[1].LatestStartSeconds > 0);
         Xunit.Assert.True(spoken[1].LatestEndSeconds <= audio.DurationSeconds + 0.01);
     }
+}
+
+/// <summary>Reports on the calling thread, so a test can read them the moment the call returns.</summary>
+internal sealed class InlineProgress<T>(System.Action<T> report) : System.IProgress<T>
+{
+    public void Report(T value) => report(value);
 }
 
 internal sealed class FakeTranscriber : ITranscriber

@@ -2202,9 +2202,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _cleanupAwake = false;
         _cleanupWake = null;
 
+        // Started, not awaited. Foundry is optional and 'foundry service start' can take a
+        // minute — or hang to its five-minute timeout on a broken install — and the app sat
+        // on "Starting Foundry Local…" with the model unready and a dropped file waiting
+        // behind it. An optional backend never gates the microphone or a transcription; it
+        // announces itself when it arrives.
         if (_languageModel is null)
         {
-            await TryResumeCleanupBackendAsync().ConfigureAwait(true);
+            _ = TryResumeCleanupBackendAsync();
         }
 
         capabilities = capabilities with { LocalLanguageModelPresent = _languageModel is not null };
@@ -2273,6 +2278,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             _cleanupAwake = false;
             _cleanupWake = null;
+
+            // Arriving after initialisation finished, so the summary and the glossary notice
+            // learn about it here rather than from a startup that no longer waits.
+            AnnounceHardware();
+            Raise(nameof(CleanupModel));
+
+            if (_languageModel is { } model)
+            {
+                Status = $"Cleanup ready on {model.Description}.";
+            }
         }
         catch (Exception exception)
         {
