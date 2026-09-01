@@ -1455,6 +1455,7 @@ public sealed partial class MainWindow : Window
             GlowRingBrush.ImageSource ??= disc;
             GlowHaloBrush.ImageSource ??= disc;
             GlowBloomBrush.ImageSource ??= disc;
+            FitGlow();
 
             AiGlowRing.Visibility = Visibility.Visible;
             AiGlowHalo.Visibility = Visibility.Visible;
@@ -1488,8 +1489,40 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private const double HaloRest = 0.34;
-    private const double BloomRest = 0.14;
+    private const double HaloRest = 0.40;
+    private const double BloomRest = 0.18;
+
+    private void OnGlowSizeChanged(object sender, SizeChangedEventArgs e) => FitGlow();
+
+    /// <summary>
+    /// Makes the square conic a true circle in pixels on each stroke, big enough to cover the
+    /// stroke's corners at every angle. A brush is stretched to its box, so a wide box would
+    /// squash the disc into an ellipse and turn the sweep uneven; the fit scale undoes the
+    /// box's own aspect. The three strokes share one centre and one angle, so once each is
+    /// round their colour seams line up — the halo softening the ring instead of arguing
+    /// with it.
+    /// </summary>
+    private void FitGlow()
+    {
+        Fit(AiGlowRing, GlowRingFit);
+        Fit(AiGlowHalo, GlowHaloFit);
+        Fit(AiGlowBloom, GlowBloomFit);
+
+        static void Fit(Border stroke, ScaleTransform fit)
+        {
+            var width = stroke.ActualWidth;
+            var height = stroke.ActualHeight;
+            if (width <= 0 || height <= 0)
+            {
+                return;
+            }
+
+            // Diameter of four times the long side: covers the half-diagonal with room.
+            var side = Math.Max(width, height) * 4;
+            fit.ScaleX = side / width;
+            fit.ScaleY = side / height;
+        }
+    }
 
     /// <summary>
     /// One step: the conic turns on all three strokes together, and the two outer strokes

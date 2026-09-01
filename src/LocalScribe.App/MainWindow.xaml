@@ -402,18 +402,21 @@
                 CornerRadius="15"
                 IsHitTestVisible="False"
                 Opacity="0"
-                Visibility="Collapsed">
+                Visibility="Collapsed"
+                SizeChanged="OnGlowSizeChanged">
                 <Border.BorderBrush>
-                    <!-- Scaled far past the stroke's box before it turns: a rotated
-                         rectangle never covers its own box's corners, and at fill size the
-                         sweep ran the corners out of paint — a broken ring, and three strokes
-                         breaking at different moments. Four times covers any angle up to a
-                         4:1 box. -->
+                    <!-- Turned first, in the disc's own square space, then fitted: the fit
+                         scale is set from the stroke's real box (see FitGlow) so the disc is a
+                         true circle in pixels, wide enough to cover the corners at any angle.
+                         Turning after a stretch made the sweep race across the short sides and
+                         crawl along the long ones, and put each stroke's colour seams in a
+                         different place — the halo disagreeing with the ring it was meant to
+                         soften. -->
                     <ImageBrush x:Name="GlowBloomBrush" Stretch="Fill">
                         <ImageBrush.RelativeTransform>
                             <TransformGroup>
-                                <ScaleTransform CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
                                 <RotateTransform x:Name="GlowBloomSpin" CenterX="0.5" CenterY="0.5" />
+                                <ScaleTransform x:Name="GlowBloomFit" CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
                             </TransformGroup>
                         </ImageBrush.RelativeTransform>
                     </ImageBrush>
@@ -428,18 +431,14 @@
                 CornerRadius="11"
                 IsHitTestVisible="False"
                 Opacity="0"
-                Visibility="Collapsed">
+                Visibility="Collapsed"
+                SizeChanged="OnGlowSizeChanged">
                 <Border.BorderBrush>
-                    <!-- Scaled far past the stroke's box before it turns: a rotated
-                         rectangle never covers its own box's corners, and at fill size the
-                         sweep ran the corners out of paint — a broken ring, and three strokes
-                         breaking at different moments. Four times covers any angle up to a
-                         4:1 box. -->
                     <ImageBrush x:Name="GlowHaloBrush" Stretch="Fill">
                         <ImageBrush.RelativeTransform>
                             <TransformGroup>
-                                <ScaleTransform CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
                                 <RotateTransform x:Name="GlowHaloSpin" CenterX="0.5" CenterY="0.5" />
+                                <ScaleTransform x:Name="GlowHaloFit" CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
                             </TransformGroup>
                         </ImageBrush.RelativeTransform>
                     </ImageBrush>
@@ -453,18 +452,14 @@
                 CornerRadius="8"
                 IsHitTestVisible="False"
                 Opacity="0.95"
-                Visibility="Collapsed">
+                Visibility="Collapsed"
+                SizeChanged="OnGlowSizeChanged">
                 <Border.BorderBrush>
-                    <!-- Scaled far past the stroke's box before it turns: a rotated
-                         rectangle never covers its own box's corners, and at fill size the
-                         sweep ran the corners out of paint — a broken ring, and three strokes
-                         breaking at different moments. Four times covers any angle up to a
-                         4:1 box. -->
                     <ImageBrush x:Name="GlowRingBrush" Stretch="Fill">
                         <ImageBrush.RelativeTransform>
                             <TransformGroup>
-                                <ScaleTransform CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
                                 <RotateTransform x:Name="GlowRingSpin" CenterX="0.5" CenterY="0.5" />
+                                <ScaleTransform x:Name="GlowRingFit" CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
                             </TransformGroup>
                         </ImageBrush.RelativeTransform>
                     </ImageBrush>
