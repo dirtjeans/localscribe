@@ -281,11 +281,13 @@ public sealed partial class MainWindow : Window
                     OpenFileButton.IsEnabled = !_viewModel.IsBusy;
                     OpenTranscriptButton.IsEnabled = !_viewModel.IsBusy;
                     CancelButton.Visibility = _viewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
+                    UpdateRecordButton();
                     UpdateGlow();
                     break;
                 case nameof(MainViewModel.IsRecording):
                 case nameof(MainViewModel.IsPreparing):
                 case nameof(MainViewModel.IsWarmingUp):
+                case nameof(MainViewModel.IsModelReady):
                     UpdateRecordButton();
                     UpdateGlow();
                     break;
@@ -382,8 +384,19 @@ public sealed partial class MainWindow : Window
         StartButton.Visibility = _viewModel.IsRecording ? Visibility.Collapsed : Visibility.Visible;
         StopButton.Visibility = _viewModel.IsRecording ? Visibility.Visible : Visibility.Collapsed;
 
-        StartButton.IsEnabled = true;
-        ToolTipService.SetToolTip(StartButton, null);
+        // Grey until a click would actually record: before the model is loaded, the button
+        // took the click and then made the user watch it get ready — while anything they said
+        // was lost, not queued. Busy transcribing a file is the same promise unkeepable.
+        var canRecord = _viewModel.IsModelReady && !_viewModel.IsBusy;
+
+        StartButton.IsEnabled = canRecord;
+        ToolTipService.SetToolTip(
+            StartButton,
+            canRecord
+                ? null
+                : _viewModel.IsBusy
+                    ? "Busy with the current transcription"
+                    : "Loading the speech model — recording will be ready in a moment");
         StartLabel.Text = "Start listening";
         StartIcon.Glyph = "";                      // microphone
         OpenFileButton.IsEnabled = !_viewModel.IsRecording;

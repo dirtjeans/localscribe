@@ -2039,13 +2039,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 if (_usable)
                 {
-                    what = "You can use the transcript now — click a line to hear it, "
-                        + $"search to find one. {what} in the background";
+                    // Compact on purpose: this shares one status line with a percentage, and
+                    // the first wording taught the interaction so thoroughly it ran off the
+                    // end of the bar.
+                    what = $"Transcript ready — click any line. {what}";
                 }
                 else if (owner.UsableThroughSeconds > 0)
                 {
                     what = $"Clickable through {TranscriptFormatter.Clock(owner.UsableThroughSeconds)} "
-                        + $"— the grey lines follow as timing reaches them. {what}";
+                        + $"(grey still timing). {what}";
                 }
             }
 
@@ -2244,6 +2246,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             _languageModel = await LocalLanguageModel.ResolveAsync();
+
+            // A service asked its models the instant it starts can answer with none while it
+            // is still taking inventory — and that momentary blank once put the download
+            // banner in front of a machine that had a model all along. One short second look
+            // costs two seconds; the wrongly-offered gigabyte cost rather more.
+            if (_languageModel is null)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2));
+                _languageModel = await LocalLanguageModel.ResolveAsync();
+            }
+
             _cleanupAwake = false;
             _cleanupWake = null;
         }
@@ -2866,6 +2879,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private ILanguageModel? _languageModel;
 
+    /// <summary>A health check that treats any failure as "not answering".</summary>
+    private static async Task<bool> AnswersAsync(ILanguageModel model)
+    {
+        try
+        {
+            return await model.IsAvailableAsync();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void AnnounceHardware()
     {
         if (_plan is not { } plan)
@@ -2942,6 +2968,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 Status = started.Message;
                 return false;
+            }
+
+            // What the service already holds comes first — the same rule the resolver lives
+            // by. This button once named the default alias unconditionally, and on a machine
+            // whose cache held a perfectly good model under another name, one click bought a
+            // gigabyte of second model nobody needed.
+            Status = "Checking what the service already has…";
+            _languageModel = await LocalLanguageModel.ResolveAsync();
+
+            if (_languageModel is not null)
+            {
+                _cleanupAwake = false;
+                _cleanupWake = null;
+                AnnounceHardware();
+                Raise(nameof(CleanupModel));
+                Status = $"Cleanup ready on {_languageModel.Description}.";
+
+                if (_rawSegments.Count > 0 && !IsBusy)
+                {
+                    await RetryCleanupAsync();
+                }
+
+                return true;
             }
 
             // Idempotent: a model already in the cache reports success without moving data.

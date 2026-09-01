@@ -56,7 +56,11 @@
                     the only way to hold a colour through every state, and those overrides live
                     on the control.
                 -->
-                <Button x:Name="StartButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}">
+                <Button
+                    x:Name="StartButton"
+                    Click="OnToggleRecording"
+                    Style="{ThemeResource AccentButtonStyle}"
+                    IsEnabled="False">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <FontIcon x:Name="StartIcon" Glyph="&#xE720;" FontSize="16" />
                         <TextBlock x:Name="StartLabel" Text="Start listening" />
