@@ -1451,14 +1451,21 @@ public sealed partial class MainWindow : Window
 
         if (working && _glowTimer is null && AiGlowRing.Visibility != Visibility.Visible)
         {
+            var disc = ConicDisc();
+            GlowRingBrush.ImageSource ??= disc;
+            GlowHaloBrush.ImageSource ??= disc;
+            GlowBloomBrush.ImageSource ??= disc;
+
             AiGlowRing.Visibility = Visibility.Visible;
             AiGlowHalo.Visibility = Visibility.Visible;
+            AiGlowBloom.Visibility = Visibility.Visible;
+            AiGlowHalo.Opacity = HaloRest;
+            AiGlowBloom.Opacity = BloomRest;
 
-            // A person who has turned animations off system-wide gets a still ring: the
+            // A person who has turned animations off system-wide gets the still rings: the
             // information (something is working) without the motion they opted out of.
             if (!new Windows.UI.ViewManagement.UISettings().AnimationsEnabled)
             {
-                AiGlowHalo.Opacity = 0.4;
                 return;
             }
 
@@ -1475,33 +1482,96 @@ public sealed partial class MainWindow : Window
 
             AiGlowRing.Visibility = Visibility.Collapsed;
             AiGlowHalo.Visibility = Visibility.Collapsed;
+            AiGlowBloom.Visibility = Visibility.Collapsed;
             AiGlowHalo.Opacity = 0;
+            AiGlowBloom.Opacity = 0;
         }
     }
 
-    /// <summary>One step of the sweep: the gradient turns, the halo breathes.</summary>
+    private const double HaloRest = 0.34;
+    private const double BloomRest = 0.14;
+
+    /// <summary>
+    /// One step: the conic turns on all three strokes together, and the two outer strokes
+    /// breathe — a slow, shallow pulse, out of phase with the sweep so the two read as
+    /// independent life rather than one mechanism. The crisp ring holds steady so the
+    /// boundary never softens.
+    /// </summary>
     private void TurnGlow()
     {
         _glowTicks++;
 
-        // No conic gradient in WinUI, so the sweep is a linear gradient whose axis rotates.
-        // The axis runs a little past the box so the clamped ends — solid runs of the two
-        // end colours — stay in the corners instead of swallowing whole edges.
-        var radians = _glowTicks * 5 * Math.PI / 180;
-        var dx = Math.Cos(radians) * 0.62;
-        var dy = Math.Sin(radians) * 0.62;
+        var angle = (_glowTicks * 5) % 360;
+        GlowRingSpin.Angle = angle;
+        GlowHaloSpin.Angle = angle;
+        GlowBloomSpin.Angle = angle;
 
-        var start = new Windows.Foundation.Point(0.5 - dx, 0.5 - dy);
-        var end = new Windows.Foundation.Point(0.5 + dx, 0.5 + dy);
+        // A three-second breath.
+        var breath = Math.Sin(_glowTicks * 0.066 * 2 * Math.PI / 3);
+        AiGlowHalo.Opacity = HaloRest + (0.10 * breath);
+        AiGlowBloom.Opacity = BloomRest + (0.06 * breath);
+    }
 
-        GlowRingBrush.StartPoint = start;
-        GlowRingBrush.EndPoint = end;
-        GlowHaloBrush.StartPoint = start;
-        GlowHaloBrush.EndPoint = end;
+    /// <summary>
+    /// The conic gradient XAML cannot draw, computed pixel by pixel once and shared by the
+    /// three strokes as their brush. Each colour holds a solid seventy percent of its third
+    /// and blends into the next across the remaining thirty — thirds that read as thirds,
+    /// with seams soft enough to glow rather than cut. Blue, purple, red: the palette that
+    /// means "the models are thinking" everywhere else.
+    /// </summary>
+    private static Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap? _conic;
 
-        // A four-second breath, out of phase with the sweep so the two read as independent
-        // life rather than one mechanism.
-        AiGlowHalo.Opacity = 0.32 + (0.18 * Math.Sin(_glowTicks * 0.066 * Math.PI / 2));
+    private static Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap ConicDisc()
+    {
+        if (_conic is not null)
+        {
+            return _conic;
+        }
+
+        const int side = 512;
+        const double centre = side / 2.0;
+        const double solid = 0.7;
+
+        (byte R, byte G, byte B)[] colours =
+        [
+            (0x25, 0x63, 0xEB),
+            (0x8B, 0x5C, 0xF6),
+            (0xF2, 0x45, 0x6A),
+        ];
+
+        var pixels = new byte[side * side * 4];
+
+        for (var y = 0; y < side; y++)
+        {
+            for (var x = 0; x < side; x++)
+            {
+                var turn = (Math.Atan2(y - centre, x - centre) + Math.PI) / (2 * Math.PI);
+                var position = turn * colours.Length;
+                var index = (int)position % colours.Length;
+                var next = (index + 1) % colours.Length;
+                var within = position - Math.Floor(position);
+
+                // Solid through most of the third; a smoothstep blend across the seam.
+                var t = within <= solid ? 0 : (within - solid) / (1 - solid);
+                var blend = t * t * (3 - (2 * t));
+
+                var at = ((y * side) + x) * 4;
+                pixels[at] = (byte)(colours[index].B + ((colours[next].B - colours[index].B) * blend));
+                pixels[at + 1] = (byte)(colours[index].G + ((colours[next].G - colours[index].G) * blend));
+                pixels[at + 2] = (byte)(colours[index].R + ((colours[next].R - colours[index].R) * blend));
+                pixels[at + 3] = 255;
+            }
+        }
+
+        var bitmap = new Microsoft.UI.Xaml.Media.Imaging.WriteableBitmap(side, side);
+
+        using (var stream = System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions
+            .AsStream(bitmap.PixelBuffer))
+        {
+            stream.Write(pixels, 0, pixels.Length);
+        }
+
+        return _conic = bitmap;
     }
 
     private DispatcherTimer? _glowTimer;
