@@ -385,86 +385,20 @@
 
             <!--
                 The working glow: three colours, each owning about a third of the border, the
-                whole turning slowly with a soft pulse while the models are busy. Three rounded
-                strokes drawn over the transcript's edge — a crisp ring and two wider, fainter
-                ones stepping outward into the window padding — because WinUI has no blur to
-                make a halo of. The paint is a conic gradient rendered once into a bitmap and
-                used as the stroke brush, since XAML has no conic brush and a linear one can
-                only repeat; rotating the brush is the sweep. Nothing sits behind the list, so
-                Mica is never fought — the version that tried a cover behind the transcript
-                washed the whole page in gradient.
+                whole turning slowly and breathing while the models are busy. WinUI has no blur
+                to make a halo of, so the halo is built as one: a crisp ring at the transcript's
+                edge and a stack of one-pixel rings stepping outward, each fainter than the
+                last on a Gaussian, drawn in code into this cell (see BuildGlow). Three thick
+                strokes at three opacities read as stripes, not light. The paint is a conic
+                gradient rendered once into a bitmap and used as each stroke's brush, since
+                XAML has no conic brush and a linear one can only repeat; rotating the brush is
+                the sweep. Nothing sits behind the list, so Mica is never fought.
             -->
-            <Border
-                x:Name="AiGlowBloom"
+            <Grid
+                x:Name="AiGlowHost"
                 Grid.Row="1"
-                Margin="-7"
-                BorderThickness="8"
-                CornerRadius="15"
                 IsHitTestVisible="False"
-                Opacity="0"
-                Visibility="Collapsed"
-                SizeChanged="OnGlowSizeChanged">
-                <Border.BorderBrush>
-                    <!-- Turned first, in the disc's own square space, then fitted: the fit
-                         scale is set from the stroke's real box (see FitGlow) so the disc is a
-                         true circle in pixels, wide enough to cover the corners at any angle.
-                         Turning after a stretch made the sweep race across the short sides and
-                         crawl along the long ones, and put each stroke's colour seams in a
-                         different place — the halo disagreeing with the ring it was meant to
-                         soften. -->
-                    <ImageBrush x:Name="GlowBloomBrush" Stretch="Fill">
-                        <ImageBrush.RelativeTransform>
-                            <TransformGroup>
-                                <RotateTransform x:Name="GlowBloomSpin" CenterX="0.5" CenterY="0.5" />
-                                <ScaleTransform x:Name="GlowBloomFit" CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
-                            </TransformGroup>
-                        </ImageBrush.RelativeTransform>
-                    </ImageBrush>
-                </Border.BorderBrush>
-            </Border>
-
-            <Border
-                x:Name="AiGlowHalo"
-                Grid.Row="1"
-                Margin="-3"
-                BorderThickness="5"
-                CornerRadius="11"
-                IsHitTestVisible="False"
-                Opacity="0"
-                Visibility="Collapsed"
-                SizeChanged="OnGlowSizeChanged">
-                <Border.BorderBrush>
-                    <ImageBrush x:Name="GlowHaloBrush" Stretch="Fill">
-                        <ImageBrush.RelativeTransform>
-                            <TransformGroup>
-                                <RotateTransform x:Name="GlowHaloSpin" CenterX="0.5" CenterY="0.5" />
-                                <ScaleTransform x:Name="GlowHaloFit" CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
-                            </TransformGroup>
-                        </ImageBrush.RelativeTransform>
-                    </ImageBrush>
-                </Border.BorderBrush>
-            </Border>
-
-            <Border
-                x:Name="AiGlowRing"
-                Grid.Row="1"
-                BorderThickness="2"
-                CornerRadius="8"
-                IsHitTestVisible="False"
-                Opacity="0.95"
-                Visibility="Collapsed"
-                SizeChanged="OnGlowSizeChanged">
-                <Border.BorderBrush>
-                    <ImageBrush x:Name="GlowRingBrush" Stretch="Fill">
-                        <ImageBrush.RelativeTransform>
-                            <TransformGroup>
-                                <RotateTransform x:Name="GlowRingSpin" CenterX="0.5" CenterY="0.5" />
-                                <ScaleTransform x:Name="GlowRingFit" CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
-                            </TransformGroup>
-                        </ImageBrush.RelativeTransform>
-                    </ImageBrush>
-                </Border.BorderBrush>
-            </Border>
+                Visibility="Collapsed" />
 
             <StackPanel
                 x:Name="EmptyState"

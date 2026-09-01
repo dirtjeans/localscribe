@@ -1449,19 +1449,12 @@ public sealed partial class MainWindow : Window
     {
         var working = (_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing;
 
-        if (working && _glowTimer is null && AiGlowRing.Visibility != Visibility.Visible)
+        if (working && _glowTimer is null && AiGlowHost.Visibility != Visibility.Visible)
         {
-            var disc = ConicDisc();
-            GlowRingBrush.ImageSource ??= disc;
-            GlowHaloBrush.ImageSource ??= disc;
-            GlowBloomBrush.ImageSource ??= disc;
+            BuildGlow();
             FitGlow();
-
-            AiGlowRing.Visibility = Visibility.Visible;
-            AiGlowHalo.Visibility = Visibility.Visible;
-            AiGlowBloom.Visibility = Visibility.Visible;
-            AiGlowHalo.Opacity = HaloRest;
-            AiGlowBloom.Opacity = BloomRest;
+            AiGlowHost.Visibility = Visibility.Visible;
+            PaintGlow(0.5);
 
             // A person who has turned animations off system-wide gets the still rings: the
             // information (something is working) without the motion they opted out of.
@@ -1476,73 +1469,140 @@ public sealed partial class MainWindow : Window
             _glowTimer.Tick += (_, _) => TurnGlow();
             _glowTimer.Start();
         }
-        else if (!working && AiGlowRing.Visibility == Visibility.Visible)
+        else if (!working && AiGlowHost.Visibility == Visibility.Visible)
         {
             _glowTimer?.Stop();
             _glowTimer = null;
-
-            AiGlowRing.Visibility = Visibility.Collapsed;
-            AiGlowHalo.Visibility = Visibility.Collapsed;
-            AiGlowBloom.Visibility = Visibility.Collapsed;
-            AiGlowHalo.Opacity = 0;
-            AiGlowBloom.Opacity = 0;
+            AiGlowHost.Visibility = Visibility.Collapsed;
         }
     }
 
-    private const double HaloRest = 0.40;
-    private const double BloomRest = 0.18;
+    /// <summary>How far the halo reaches outward from the ring, in pixels.</summary>
+    private const int GlowReach = 10;
 
-    private void OnGlowSizeChanged(object sender, SizeChangedEventArgs e) => FitGlow();
+    private sealed record GlowStroke(Border Border, RotateTransform Spin, ScaleTransform Fit, int Distance);
+
+    private readonly List<GlowStroke> _glowStrokes = [];
+
+    /// <summary>
+    /// The ring and its halo, one stroke per pixel of reach. Each stroke is its own Border
+    /// with the shared conic as brush, so the halo's falloff can be set per pixel — the
+    /// only way to a smooth glow without a blur effect. Built once, on first need.
+    /// </summary>
+    private void BuildGlow()
+    {
+        if (_glowStrokes.Count > 0)
+        {
+            return;
+        }
+
+        var disc = ConicDisc();
+
+        Add(distance: 0, thickness: 2);
+        for (var distance = 1; distance <= GlowReach; distance++)
+        {
+            Add(distance, thickness: 1);
+        }
+
+        void Add(int distance, double thickness)
+        {
+            var spin = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
+            var fit = new ScaleTransform { CenterX = 0.5, CenterY = 0.5, ScaleX = 4, ScaleY = 4 };
+
+            // Turned first, in the disc's own square space, then fitted (see FitGlow):
+            // rotating after the stretch to the box made the sweep race across the short
+            // sides and crawl along the long ones, with every stroke's seams somewhere else.
+            var group = new TransformGroup();
+            group.Children.Add(spin);
+            group.Children.Add(fit);
+
+            var border = new Border
+            {
+                Margin = new Thickness(-distance),
+                BorderThickness = new Thickness(thickness),
+                CornerRadius = new CornerRadius(8 + distance),
+                IsHitTestVisible = false,
+                BorderBrush = new ImageBrush
+                {
+                    ImageSource = disc,
+                    Stretch = Stretch.Fill,
+                    RelativeTransform = group,
+                },
+            };
+            border.SizeChanged += (_, _) => FitGlow();
+
+            AiGlowHost.Children.Add(border);
+            _glowStrokes.Add(new GlowStroke(border, spin, fit, distance));
+        }
+    }
 
     /// <summary>
     /// Makes the square conic a true circle in pixels on each stroke, big enough to cover the
     /// stroke's corners at every angle. A brush is stretched to its box, so a wide box would
     /// squash the disc into an ellipse and turn the sweep uneven; the fit scale undoes the
-    /// box's own aspect. The three strokes share one centre and one angle, so once each is
-    /// round their colour seams line up — the halo softening the ring instead of arguing
-    /// with it.
+    /// box's own aspect. The strokes share one centre and one angle, so once each is round
+    /// their colour seams line up.
     /// </summary>
     private void FitGlow()
     {
-        Fit(AiGlowRing, GlowRingFit);
-        Fit(AiGlowHalo, GlowHaloFit);
-        Fit(AiGlowBloom, GlowBloomFit);
-
-        static void Fit(Border stroke, ScaleTransform fit)
+        foreach (var stroke in _glowStrokes)
         {
-            var width = stroke.ActualWidth;
-            var height = stroke.ActualHeight;
+            var width = stroke.Border.ActualWidth;
+            var height = stroke.Border.ActualHeight;
             if (width <= 0 || height <= 0)
             {
-                return;
+                continue;
             }
 
             // Diameter of four times the long side: covers the half-diagonal with room.
             var side = Math.Max(width, height) * 4;
-            fit.ScaleX = side / width;
-            fit.ScaleY = side / height;
+            stroke.Fit.ScaleX = side / width;
+            stroke.Fit.ScaleY = side / height;
         }
     }
 
     /// <summary>
-    /// One step: the conic turns on all three strokes together, and the two outer strokes
-    /// breathe — a slow, shallow pulse, out of phase with the sweep so the two read as
-    /// independent life rather than one mechanism. The crisp ring holds steady so the
-    /// boundary never softens.
+    /// One step: the conic turns on every stroke together, and the halo breathes — a slow
+    /// swell and fade that is meant to be seen, not sensed. The ring itself holds steady so
+    /// the boundary never softens.
     /// </summary>
     private void TurnGlow()
     {
         _glowTicks++;
 
         var angle = (_glowTicks * 5) % 360;
-        GlowRingSpin.Angle = angle;
-        GlowHaloSpin.Angle = angle;
-        GlowBloomSpin.Angle = angle;
+        foreach (var stroke in _glowStrokes)
+        {
+            stroke.Spin.Angle = angle;
+        }
 
-        // A three-second breath.
-        var breath = Math.Sin(_glowTicks * 0.066 * 2 * Math.PI / 3);
-        AiGlowHalo.Opacity = HaloRest + (0.10 * breath);
-        AiGlowBloom.Opacity = BloomRest + (0.06 * breath);
+        // A breath every two and a half seconds, eased so it lingers at both ends.
+        var phase = Math.Sin(_glowTicks * 0.066 * 2 * Math.PI / 2.5);
+        PaintGlow(0.5 + (0.5 * phase));
+    }
+
+    /// <summary>
+    /// Sets the halo's opacity profile for one point in the breath, 0 (exhaled) to 1 (full).
+    /// The profile is a Gaussian in distance from the ring; the breath moves both its height
+    /// and its width, so the glow swells outward as it brightens rather than merely fading
+    /// in place — which is what light from a brightening source does.
+    /// </summary>
+    private void PaintGlow(double breath)
+    {
+        var peak = 0.30 + (0.55 * breath);
+        var sigma = GlowReach * (0.34 + (0.16 * breath));
+
+        foreach (var stroke in _glowStrokes)
+        {
+            if (stroke.Distance == 0)
+            {
+                stroke.Border.Opacity = 0.95;
+                continue;
+            }
+
+            var d = stroke.Distance / sigma;
+            stroke.Border.Opacity = peak * Math.Exp(-d * d);
+        }
     }
 
     /// <summary>
