@@ -404,9 +404,17 @@
                 Opacity="0"
                 Visibility="Collapsed">
                 <Border.BorderBrush>
-                    <ImageBrush x:Name="GlowBloomBrush" Stretch="UniformToFill">
+                    <!-- Scaled far past the stroke's box before it turns: a rotated
+                         rectangle never covers its own box's corners, and at fill size the
+                         sweep ran the corners out of paint — a broken ring, and three strokes
+                         breaking at different moments. Four times covers any angle up to a
+                         4:1 box. -->
+                    <ImageBrush x:Name="GlowBloomBrush" Stretch="Fill">
                         <ImageBrush.RelativeTransform>
-                            <RotateTransform x:Name="GlowBloomSpin" CenterX="0.5" CenterY="0.5" />
+                            <TransformGroup>
+                                <ScaleTransform CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
+                                <RotateTransform x:Name="GlowBloomSpin" CenterX="0.5" CenterY="0.5" />
+                            </TransformGroup>
                         </ImageBrush.RelativeTransform>
                     </ImageBrush>
                 </Border.BorderBrush>
@@ -422,9 +430,17 @@
                 Opacity="0"
                 Visibility="Collapsed">
                 <Border.BorderBrush>
-                    <ImageBrush x:Name="GlowHaloBrush" Stretch="UniformToFill">
+                    <!-- Scaled far past the stroke's box before it turns: a rotated
+                         rectangle never covers its own box's corners, and at fill size the
+                         sweep ran the corners out of paint — a broken ring, and three strokes
+                         breaking at different moments. Four times covers any angle up to a
+                         4:1 box. -->
+                    <ImageBrush x:Name="GlowHaloBrush" Stretch="Fill">
                         <ImageBrush.RelativeTransform>
-                            <RotateTransform x:Name="GlowHaloSpin" CenterX="0.5" CenterY="0.5" />
+                            <TransformGroup>
+                                <ScaleTransform CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
+                                <RotateTransform x:Name="GlowHaloSpin" CenterX="0.5" CenterY="0.5" />
+                            </TransformGroup>
                         </ImageBrush.RelativeTransform>
                     </ImageBrush>
                 </Border.BorderBrush>
@@ -439,9 +455,17 @@
                 Opacity="0.95"
                 Visibility="Collapsed">
                 <Border.BorderBrush>
-                    <ImageBrush x:Name="GlowRingBrush" Stretch="UniformToFill">
+                    <!-- Scaled far past the stroke's box before it turns: a rotated
+                         rectangle never covers its own box's corners, and at fill size the
+                         sweep ran the corners out of paint — a broken ring, and three strokes
+                         breaking at different moments. Four times covers any angle up to a
+                         4:1 box. -->
+                    <ImageBrush x:Name="GlowRingBrush" Stretch="Fill">
                         <ImageBrush.RelativeTransform>
-                            <RotateTransform x:Name="GlowRingSpin" CenterX="0.5" CenterY="0.5" />
+                            <TransformGroup>
+                                <ScaleTransform CenterX="0.5" CenterY="0.5" ScaleX="4" ScaleY="4" />
+                                <RotateTransform x:Name="GlowRingSpin" CenterX="0.5" CenterY="0.5" />
+                            </TransformGroup>
                         </ImageBrush.RelativeTransform>
                     </ImageBrush>
                 </Border.BorderBrush>
