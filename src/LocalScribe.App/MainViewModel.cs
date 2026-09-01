@@ -1358,8 +1358,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public async Task RetryCleanupAsync()
     {
-        if (_rawSegments.Count == 0 || IsBusy || BuildRefiner() is not { } refiner)
+        if (_rawSegments.Count == 0 || IsBusy)
         {
+            return;
+        }
+
+        // Asked again rather than trusted — which is what made Try again once fail exactly
+        // the way the run had, against a port the restarted service no longer held.
+        await EnsureCleanupBackendAnswersAsync();
+
+        if (BuildRefiner() is not { } refiner)
+        {
+            Status = "No cleanup model is running any more, so there is nothing to retry with.";
             return;
         }
 
@@ -1731,6 +1741,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         CancellationToken cancellationToken,
         double progressFloor = 0)
     {
+        // Before the refiner is built from it, so a backend that restarted since discovery is
+        // rediscovered instead of failing every cleanup window one notice deep.
+        await EnsureCleanupBackendAnswersAsync();
+
         var refiner = BuildRefiner();
 
         _rawSegments = spoken;
@@ -2889,6 +2903,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Makes sure the cached cleanup backend still answers before anything leans on it.
+    /// Foundry binds a dynamic port, and a service restarted since discovery leaves the
+    /// cached client talking to an address nobody holds. A ping costs milliseconds and runs
+    /// once per run; rediscovery — asking the CLI where the service lives now — runs only
+    /// when the ping fails.
+    /// </summary>
+    private async Task EnsureCleanupBackendAnswersAsync()
+    {
+        if (_languageModel is { } cached && !await AnswersAsync(cached))
+        {
+            (cached as IDisposable)?.Dispose();
+            _languageModel = await LocalLanguageModel.ResolveAsync();
+            AnnounceHardware();
+            Raise(nameof(CleanupModel));
         }
     }
 
