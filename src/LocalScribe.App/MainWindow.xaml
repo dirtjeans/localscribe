@@ -137,6 +137,49 @@
                     Click="OnCancel"
                     Content="Cancel"
                     Visibility="Collapsed" />
+
+                <!--
+                    How hard making a transcript may work the machine, so it ends the group that
+                    makes them. Here rather than at the far right, where it first went: a narrow
+                    window clips the toolbar from the right, and the right-hand group was already
+                    losing its last label at a common window size. An icon alone, because it is
+                    set once and left: a labelled button would claim attention every session for
+                    a choice made in the first.
+                -->
+                <Button
+                    x:Name="PaceButton"
+                    ToolTipService.ToolTip="Processing speed"
+                    AutomationProperties.Name="Processing speed">
+                    <FontIcon Glyph="&#xEC4A;" FontSize="16" />
+                    <Button.Flyout>
+                        <Flyout Placement="BottomEdgeAlignedLeft" Opening="OnPaceFlyoutOpening">
+                            <StackPanel Width="320" Spacing="8">
+                                <TextBlock Text="Processing speed" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                                <Slider
+                                    x:Name="PaceSlider"
+                                    Minimum="0"
+                                    Maximum="3"
+                                    StepFrequency="1"
+                                    TickFrequency="1"
+                                    TickPlacement="Outside"
+                                    SnapsTo="Ticks"
+                                    IsThumbToolTipEnabled="False"
+                                    AutomationProperties.Name="Processing speed"
+                                    ValueChanged="OnPaceChanged" />
+                                <Grid Margin="0,-4,0,0">
+                                    <TextBlock Text="Lighter on this PC" Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.7" HorizontalAlignment="Left" />
+                                    <TextBlock Text="Faster" Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.7" HorizontalAlignment="Right" />
+                                </Grid>
+                                <TextBlock x:Name="PaceDescriptionText" TextWrapping="Wrap" />
+                                <TextBlock
+                                    Text="Takes effect from the next transcription or recording."
+                                    Style="{ThemeResource CaptionTextBlockStyle}"
+                                    Opacity="0.7"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
             </StackPanel>
 
             <!-- Doing something with the transcript you have. -->

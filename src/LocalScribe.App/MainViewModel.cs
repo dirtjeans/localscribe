@@ -79,7 +79,59 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _modelRoot = modelRoot ?? Path.Combine(AppContext.BaseDirectory, "models");
         _openTranscriber = openTranscriber;
+        _pace = WorkPaces.Read(WorkPaces.DefaultPath);
     }
+
+    /// <summary>
+    /// How much of the machine a transcription may use, from the pace slider.
+    /// <para>
+    /// Applied to the plan rather than stored beside it, so every stage that reads the plan —
+    /// the speech model, the aligner, the diarizer — follows the slider without knowing it
+    /// exists. Takes effect from the next piece of work: a run in progress keeps the sessions
+    /// it opened, and the speech model is reopened only when something actually asks for it.
+    /// </para>
+    /// </summary>
+    public WorkPace Pace
+    {
+        get => _pace;
+        set
+        {
+            if (_pace == value)
+            {
+                return;
+            }
+
+            _pace = value;
+            WorkPaces.Write(WorkPaces.DefaultPath, value);
+
+            if (_basePlan is { } planned)
+            {
+                _plan = Paced(planned);
+            }
+
+            Raise(nameof(Pace));
+            Raise(nameof(PaceDescription));
+        }
+    }
+
+    /// <summary>What the current pace will do on this machine, for under the slider.</summary>
+    public string PaceDescription =>
+        _plan is { } plan ? WorkPaces.Describe(_pace, plan, Cores) : string.Empty;
+
+    private WorkPace _pace;
+
+    /// <summary>The planner's answer before the pace is applied, kept so the slider can move back.</summary>
+    private ExecutionPlan? _basePlan;
+
+    private int Cores => Math.Max(1, _capabilities?.PerformanceCoreCount ?? Environment.ProcessorCount);
+
+    private ExecutionPlan Paced(ExecutionPlan plan) => WorkPaces.Apply(plan, _pace, Cores);
+
+    /// <summary>
+    /// The most speakers the "How many speakers?" question should offer. Nemotron has eight
+    /// output channels; offering ten would promise something it cannot do.
+    /// </summary>
+    public int MostSpeakers => SpeakerEngines.MostSpeakers(SpeakerEngines.Current);
 
     /// <summary>
     /// How a transcriber is opened for a plan, given the resolved ONNX model directory (null
@@ -1077,6 +1129,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         int? speakers,
         IProgress<double>? progress)
     {
+        if (SpeakerEngines.Current == SpeakerEngine.Sortformer)
+        {
+            return await FindTurnsWithNemotronAsync(audio, speakers, progress).ConfigureAwait(true);
+        }
+
         var directory = Path.Combine(_modelRoot, "diarization");
 
         if (!File.Exists(Path.Combine(directory, "segmentation.onnx")))
@@ -1088,12 +1145,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             return await Task.Run(() =>
             {
-                // The thread budget is passed only where a --diarize turn diff has proven it moves
-                // no boundary — macOS so far. Windows keeps its historical all-cores sessions
-                // until the laptop runs the same measurement; the tuning is frozen and thread
-                // count can reorder float summation.
-                using var diarizer = SpeakerDiarizer.Load(
-                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
+                // Under the thread budget, which each platform adopted only after a --diarize
+                // turn diff came back byte-identical (see SpeakerDiarizer.Load): the tuning is
+                // frozen, and thread count can reorder float summation.
+                using var diarizer = SpeakerDiarizer.Load(directory, _plan);
 
                 // Speakers are followed through the audio rather than told apart by their
                 // voices, whether or not a count was given. Two local speakers in one window
@@ -1148,6 +1203,78 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return null;
         }
     }
+
+    /// <summary>
+    /// Who spoke when, by Nemotron. Null when the model is missing or the run failed.
+    /// <para>
+    /// One model where the pipeline chains three, so there is nothing here to tune: no
+    /// threshold, no choice between tracking and comparing voices. A speaker count from the
+    /// user is met by folding the extras into whoever they sound most like, using the voice
+    /// model the rename-by-voice feature already loads; Nemotron is never asked to split.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<SpeakerTurn>?> FindTurnsWithNemotronAsync(
+        PcmAudio audio,
+        int? speakers,
+        IProgress<double>? progress)
+    {
+        var directory = Path.Combine(_modelRoot, SortformerModelSource.DirectoryName);
+
+        if (!SortformerModelSource.IsInstalled(directory))
+        {
+            return null;
+        }
+
+        var cancellation = _cancellation?.Token ?? default;
+
+        try
+        {
+            return await Task.Run(() =>
+            {
+                using var diarizer = SortformerDiarizer.Load(directory, _plan);
+
+                var activity = diarizer.Diarize(audio, progress, cancellation);
+                var turns = activity.Turns();
+
+                // Read straight off the model: frames where two of its speakers are talking.
+                _overlaps = activity.Overlaps();
+
+                var heard = turns.Select(t => t.Speaker).Distinct().Count();
+                var voices = Path.Combine(_modelRoot, "diarization");
+
+                if (speakers is { } wanted && heard > wanted
+                    && File.Exists(Path.Combine(voices, "embedding.onnx")))
+                {
+                    using var voiceModel = SpeakerDiarizer.Load(voices, _plan);
+                    var prints = SortformerDiarizer.VoicePrints(voiceModel, audio, turns, cancellation);
+
+                    turns = SpeakerMerging.ToCount(turns, prints, wanted);
+
+                    // Recomputed, because two channels that are one person talking "over"
+                    // each other is not crosstalk.
+                    _overlaps = SpeakerMerging.Overlaps(turns);
+                }
+                else if (speakers is { } asked && heard < asked)
+                {
+                    _speakerShortfall = $"Only {heard} distinct voice{(heard == 1 ? " was" : "s were")} heard, not {asked}.";
+                }
+
+                return turns;
+            }, cancellation).ConfigureAwait(true);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            Status = $"Transcribed, but speakers could not be identified: {exception.Message}";
+            return null;
+        }
+    }
+
+    /// <summary>Set when the user asked for more speakers than were heard, for the status line.</summary>
+    private string? _speakerShortfall;
 
     /// <summary>How many distinct people the transcript is currently attributed to.</summary>
     public int SpeakerCount
@@ -1481,6 +1608,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         Status = speakers is { } n ? $"Finding {n} speakers…" : "Working out who spoke…";
+        _speakerShortfall = null;
 
         IsBusy = true;
 
@@ -1516,6 +1644,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             1 => "Found one speaker.",
             var many => $"Found {many} speakers.",
         };
+
+        // Said rather than hidden: the user named a number and is owed the reason it was not met.
+        if (_speakerShortfall is { } shortfall)
+        {
+            Status = $"{Status} {shortfall}";
+            _speakerShortfall = null;
+        }
     }
 
     /// <summary>
@@ -1631,12 +1766,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             split = await Task.Run(() =>
             {
-                // The thread budget is passed only where a --diarize turn diff has proven it moves
-                // no boundary — macOS so far. Windows keeps its historical all-cores sessions
-                // until the laptop runs the same measurement; the tuning is frozen and thread
-                // count can reorder float summation.
-                using var diarizer = SpeakerDiarizer.Load(
-                    directory, _capabilities?.Platform == DevicePlatform.MacOS ? _plan : null);
+                // Under the thread budget, as every other model session is.
+                using var diarizer = SpeakerDiarizer.Load(directory, _plan);
 
                 if (diarizer.EmbedSpan(audio, example.StartSeconds, example.EndSeconds)
                     is not { } exampleVoice)
@@ -2215,7 +2346,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         capabilities = capabilities with { LocalLanguageModelPresent = _languageModel is not null };
 
         _capabilities = capabilities;
-        _plan = AcceleratorPlanner.Plan(capabilities);
+        _basePlan = AcceleratorPlanner.Plan(capabilities);
+        _plan = Paced(_basePlan);
+        Raise(nameof(PaceDescription));
 
         // Where the work will run, but not which weights: that is not known until they are
         // opened, and naming the size the planner asked for is how the window spent a session
@@ -2524,10 +2657,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         // Live work wants a smaller model than batch, so the plan is recomputed for this mode.
-        var livePlan = AcceleratorPlanner.Plan(
+        var livePlan = Paced(AcceleratorPlanner.Plan(
             _capabilities ?? DeviceCapabilities.Unknown,
             PerformanceProfile.Considerate,
-            WorkloadMode.Live);
+            WorkloadMode.Live));
 
         IsPreparing = true;
         Status = "Loading the model — wait for the go-ahead before speaking…";
@@ -2643,7 +2776,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 plan.Encoder.Device, plan.WhisperModel);
 
         var key = $"{directory}|{plan.Encoder.Device}|{plan.Decoder.Device}|"
-            + $"{plan.CpuBudget.IntraOpThreads}|{plan.StrictProviderCheck}";
+            + $"{plan.CpuBudget.IntraOpThreads}|{plan.NpuPower}|{plan.StrictProviderCheck}";
 
         // Two callers can arrive at once — a preload running while the user clicks record — and
         // opening the same model twice wastes both the time and the memory.
@@ -2732,10 +2865,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // The listening plan, because that is the path where waiting costs words rather than
         // patience. A file transcription reuses it when the weights resolve the same.
-        var livePlan = AcceleratorPlanner.Plan(
+        var livePlan = Paced(AcceleratorPlanner.Plan(
             _capabilities ?? DeviceCapabilities.Unknown,
             PerformanceProfile.Considerate,
-            WorkloadMode.Live);
+            WorkloadMode.Live));
 
         IsWarmingUp = true;
         Status = "Warming up…";

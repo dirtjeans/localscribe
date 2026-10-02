@@ -1,3 +1,4 @@
+using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Models;
 
 namespace LocalScribe.Core.Provisioning;
@@ -28,7 +29,8 @@ public sealed class ModelProvisioner(
     public static bool NeedsAnything(string modelRoot, bool whisperCpp) =>
         (whisperCpp && !HasWhisperCpp(modelRoot))
         || !HasAligner(modelRoot)
-        || !DiarizationModelInstaller.IsInstalled(Path.Combine(modelRoot, "diarization"));
+        || !DiarizationModelInstaller.IsInstalled(Path.Combine(modelRoot, "diarization"))
+        || (SpeakerEngines.Current == SpeakerEngine.Sortformer && !HasSortformer(modelRoot));
 
     /// <summary>
     /// Ensures everything transcription wants is on disk, reporting each stage.
@@ -57,9 +59,42 @@ public sealed class ModelProvisioner(
             await FetchAlignerAsync(modelRoot, progress, cancellationToken).ConfigureAwait(false);
         }
 
+        // The pipeline's models are fetched everywhere: on a machine that diarizes with
+        // Nemotron, renaming a speaker by voice still listens with the pipeline's voice model.
         await FetchDiarizationAsync(modelRoot, progress, cancellationToken).ConfigureAwait(false);
 
+        if (SpeakerEngines.Current == SpeakerEngine.Sortformer && !HasSortformer(modelRoot))
+        {
+            await FetchSortformerAsync(modelRoot, progress, cancellationToken).ConfigureAwait(false);
+        }
+
         return canTranscribe;
+    }
+
+    private static bool HasSortformer(string modelRoot) =>
+        SortformerModelSource.IsInstalled(Path.Combine(modelRoot, SortformerModelSource.DirectoryName));
+
+    private async Task FetchSortformerAsync(
+        string modelRoot,
+        IProgress<InstallProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _fetcher.FetchAsync(
+                    Path.Combine(modelRoot, SortformerModelSource.DirectoryName),
+                    SortformerModelSource.Files,
+                    Staged(progress, "the speaker model", SortformerModelSource.ApproximateBytes),
+                    force: false,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException or InvalidDataException)
+        {
+            // Optional: the transcript still says what was said, just not who said it.
+            progress?.Report(new InstallProgress(
+                "models", $"The speaker model could not be downloaded: {exception.Message}"));
+        }
     }
 
     private static bool HasWhisperCpp(string modelRoot)

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using LocalScribe.Core.Archive;
+using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Transcription;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
@@ -2141,6 +2142,32 @@ public sealed partial class MainWindow : Window
 
     private void OnCancel(object sender, RoutedEventArgs e) => _viewModel.Cancel();
 
+    /// <summary>Shows the saved pace each time, so the slider never disagrees with the setting.</summary>
+    private void OnPaceFlyoutOpening(object? sender, object e)
+    {
+        PaceSlider.Value = (int)_viewModel.Pace;
+        PaceDescriptionText.Text = _viewModel.PaceDescription;
+        _paceShown = true;
+    }
+
+    /// <summary>
+    /// False until the slider has been shown the saved pace. A slider reports its first value
+    /// while the window is being built, and taking that as a choice would quietly reset the
+    /// user's setting to the slider's starting position on every launch.
+    /// </summary>
+    private bool _paceShown;
+
+    private void OnPaceChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_paceShown)
+        {
+            return;
+        }
+
+        _viewModel.Pace = (WorkPace)(int)Math.Round(e.NewValue);
+        PaceDescriptionText.Text = _viewModel.PaceDescription;
+    }
+
     /// <summary>
     /// Collects the terms the cleanup model should spell correctly: names, products, jargon.
     /// This is the cheapest accuracy win available, and no larger Whisper model substitutes for it.
@@ -2159,7 +2186,7 @@ public sealed partial class MainWindow : Window
         var choices = new ComboBox { SelectedIndex = 0, MinWidth = 220 };
         choices.Items.Add("Work it out automatically");
 
-        for (var n = 1; n <= 10; n++)
+        for (var n = 1; n <= _viewModel.MostSpeakers; n++)
         {
             choices.Items.Add(n == 1 ? "1 speaker" : $"{n} speakers");
         }

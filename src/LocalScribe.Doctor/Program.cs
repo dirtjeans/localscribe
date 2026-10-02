@@ -120,6 +120,21 @@ internal static class Program
             live ? WorkloadMode.Live : WorkloadMode.Batch,
             strictProviderCheck: args.Contains("--strict"));
 
+        // The app's pace slider, so each stop can be timed on the commands that take the plan.
+        if (ArgumentValue(args, "--pace") is { } paceName)
+        {
+            var pace = WorkPaces.Parse(paceName);
+            plan = WorkPaces.Apply(plan, pace, capabilities.PerformanceCoreCount);
+            Report("Pace", WorkPaces.Describe(pace, plan, capabilities.PerformanceCoreCount));
+        }
+
+        // An exact thread count, for finding where adding threads stops helping.
+        if (int.TryParse(ArgumentValue(args, "--threads"), out var forcedThreads) && forcedThreads > 0)
+        {
+            plan = plan with { CpuBudget = plan.CpuBudget with { IntraOpThreads = forcedThreads } };
+            Report("Threads", $"{forcedThreads}, as asked");
+        }
+
         Report("Whisper model", plan.WhisperModel);
         Report("Encoder", $"{plan.Encoder.Device} — {plan.Encoder.Reason}");
         Report("Decoder", $"{plan.Decoder.Device} — {plan.Decoder.Reason}");
@@ -172,6 +187,23 @@ internal static class Program
                 matrixAudio,
                 ArgumentValue(args, "--diarization-models") ?? Path.Combine(modelDirectory, "diarization"),
                 ArgumentValue(args, "--spans") ?? string.Empty);
+        }
+
+        var trialRecording = ArgumentValue(args, "--diarize-trial");
+        if (trialRecording is not null)
+        {
+            return DiarizerTrialCommand.Run(
+                trialRecording,
+                ArgumentValue(args, "--diarization-models") ?? Path.Combine(modelDirectory, "diarization"),
+                ArgumentValue(args, "--nemotron-models") ?? Path.Combine(modelDirectory, "diarization-nemotron"),
+                modelDirectory,
+                args.Contains("--transcripts", StringComparer.Ordinal),
+                ArgumentValue(args, "--only"),
+                args.Contains("--float32", StringComparer.Ordinal),
+                args.Contains("--all-cores", StringComparer.Ordinal),
+                args.Contains("--turns", StringComparer.Ordinal),
+                ArgumentValue(args, "--threads"),
+                ArgumentValue(args, "--speakers"));
         }
 
         var diarizeAudio = ArgumentValue(args, "--diarize");
@@ -316,6 +348,8 @@ internal static class Program
         Console.WriteLine("  --fetch-models   Download the portable Whisper export this machine will use.");
         Console.WriteLine("  --model <size>   Size to fetch. Defaults to the one the plan chose.");
         Console.WriteLine("  --force          Re-download files that are already present.");
+        Console.WriteLine("  --pace <p>       Plan at a slider stop: light, balanced, fast or full.");
+        Console.WriteLine("  --threads <n>    Plan with exactly n CPU threads, to find where more stop helping.");
         Console.WriteLine("  --no-alignment   With --fetch-models: skip the 602 MB word aligner.");
         Console.WriteLine("                   Speaker models are always fetched; they are small.");
         Console.WriteLine("  --transcribe <f> Transcribe a PCM WAV file and report what happened.");
@@ -325,6 +359,8 @@ internal static class Program
         Console.WriteLine("  --threshold <d>  Cosine distance at which two voices are different people.");
         Console.WriteLine("  --sweep          With --diarize: try every threshold and show where the answer changes.");
         Console.WriteLine("  --tracking       With --diarize: follow speakers between windows instead of comparing voices.");
+        Console.WriteLine("  --diarize-trial <f>  Run the current diarizer and Nemotron on a WAV or .scrb and compare.");
+        Console.WriteLine("                   --only current|nemotron, --float32, --all-cores, --threads <n>, --speakers <n>, --turns, --transcripts.");
         Console.WriteLine("  --align <f>      Scan a WAV with the alignment model and read the grid back.");
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");

@@ -12,11 +12,12 @@ The macOS port has run; its own handoff is [handoff-macos.md](handoff-macos.md).
 
 The app transcribes on the Hexagon NPU (Whisper large-v3-turbo through a cached QNN export,
 encoder and decoder both), times every word with an MMS CTC aligner on the CPU, attributes
-speakers with pyannote segmentation plus WeSpeaker embeddings through sherpa-onnx, cleans up
+speakers with NVIDIA's Nemotron 3 Diarization on ARM64 (pyannote segmentation plus WeSpeaker
+embeddings elsewhere), cleans up
 with a local language model through Foundry Local or GenieX, and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
 segments, and a readable text copy — that reopen instantly and are byte-portable across
-machines. The core library's 589 tests pass; the published app is self-contained and carries
+machines. The core library's 674 tests pass; the published app is self-contained and carries
 its own .NET runtime.
 
 The reference recordings are a seven-minute studio podcast with five speakers, an interview
@@ -99,7 +100,28 @@ errors, twice.
 
 ## Diarization: frozen tuning, honest marks
 
-The active method is 'voices' (clustering), selected by `active-diarizer.txt` beside the
+**On ARM64 the diarizer is Nemotron 3 Diarization, not the pipeline this section goes on to
+describe.** `SpeakerEngines.For` picks by processor; the reasoning, the five-recording
+measurement and the model's provenance are in `diarization.md`. The pipeline below still runs
+everywhere else, still frozen, and its WeSpeaker model still serves rename-by-voice on ARM64.
+
+Everything downstream of the diarizer — word-level attribution, `UnfinishedSentences`,
+crosstalk marks — was tuned while pyannote supplied the turns, and two of its rules exist
+because of pyannote's habits: turns under half a second are ignored as window-vote flicker, and
+a word no turn covers is resolved by list order. `--diarize-trial <file.scrb>` runs a saved
+transcript's words through that attribution with both engines and counts what those rules do.
+On the debate and both podcasts neither rule fired on Nemotron's turns beyond a single word
+per recording, so nothing downstream was retuned. (The hour-long panel's word-level run did not
+finish inside the session's time limit; its segment-level comparison agreed on 99.1% of
+single-speaker time.) Where the two engines
+attribute words differently, Nemotron was right more often: on the second podcast it was right
+on all four disputed runs (host lines, and where the guest's answer begins) and the pipeline on
+none; on the debate it separated "How is it irrelevant?", "In what way?" and "Because, again--"
+from the paragraphs around them. The debate's remaining errors — a sentence split mid-way, the
+tangle around 1:49 where the transcriber wrote crosstalk down twice — appear under both engines
+and sit downstream of the diarizer.
+
+The pipeline's active method is 'voices' (clustering), selected by `active-diarizer.txt` beside the
 models; 'tracking' remains available and each has recordings it wins on. Attribution is
 word-level: segments are cut at the word where the voice changed, judged on each word's ending,
 with grammar repairs for sentences split across turns (`UnfinishedSentences`) and a
@@ -160,7 +182,22 @@ sidecars by name from inside the graph. `localscribe-model.json` records roles i
 `foundry service status`.
 
 **CPU threads are capped rather than maximised.** The machine staying responsive is the product
-requirement, not a limitation to optimise away.
+requirement, not a limitation to optimise away. The pace slider (`WorkPaces`) lets the user
+move the budget; its Balanced stop is exactly the planner's answer and must stay so. Its top
+stop leaves two cores free, and that is measured, not cautious: on the 12-core Snapdragon the
+aligner took 18.1 s on ten threads and 25.4 s on twelve, and during a burst of Windows Recall's
+background indexing twelve threads took Nemotron from 36 s to 130 s. Every parallel step waits
+for its slowest thread, and a thread sharing its core with anything else is that thread.
+
+| Pace | Threads here | Aligner, 7-min podcast | Speech model |
+|---|---|---|---|
+| Light | 1, NPU in balanced power | 409 s | 17.3 s on the 2-min debate |
+| Balanced | 2 | 217 s | 16.7 s |
+| Fast | 6 | 85 s | as Balanced |
+| Fastest | 10 | about 70 s, from the debate's scaling | as Balanced |
+
+The NPU's power mode barely moves the speech model on this export (17.3 s against 16.7 s); the
+aligner is where the slider earns its place.
 
 **Nothing installs the Hexagon driver.** Signed kernel driver behind an account wall; report
 it, never automate it.

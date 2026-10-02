@@ -94,6 +94,20 @@ download themselves with the cost announced, but Foundry Local waits for its but
 
 ## Still open, ranked by likelihood of mattering
 
+0. **Apple silicon now diarizes with Nemotron, unmeasured on the Mac.** The engine is chosen by
+   processor (`SpeakerEngines.For`: ARM64 → Nemotron 3 Diarization), and `MainViewModel` is
+   shared, so the next Mac build downloads the 105 MB model and uses it. It was measured only on
+   the Snapdragon (see `docs/diarization.md`). Before trusting it here, run the same trial on
+   the Mac's recordings — it compares both engines and prints where they disagree:
+   `localscribe-doctor --models <models> --diarize-trial <file.scrb>`. The int8 graph needs
+   ONNX Runtime's `MatMulInteger` and `DynamicQuantizeLinear` on the CPU provider; if 1.29 on
+   macOS objects, `--float32` runs the full-precision graph. If anything is wrong, returning
+   macOS to the pipeline is one line in `SpeakerEngines.For`.
+   **The pace slider has no macOS control yet.** `MainViewModel.Pace` and `PaceDescription` are
+   shared and persist on their own; the Avalonia window needs a slider bound to them (four stops,
+   Light to Full — see the WinUI flyout in `MainWindow.xaml`). The speakers dialog should offer
+   `MostSpeakers` choices, which is eight under Nemotron.
+
 1. ~~The Windows build has not compiled the shared-file edits.~~ Done: solution, WinUI app and
    all 605 tests pass on the laptop; the scan overlap measured 294 s → 271 s there with
    identical spans, and the diarizer cap's turn diff came back byte-identical on the podcast

@@ -73,6 +73,9 @@ public sealed record ExecutionPlan
 
     public required CpuBudget CpuBudget { get; init; }
 
+    /// <summary>How hard the NPU is driven, for stages placed on it.</summary>
+    public NpuPower NpuPower { get; init; } = NpuPower.Burst;
+
     /// <summary>Whisper variant to load, e.g. <c>base.en</c>.</summary>
     public required string WhisperModel { get; init; }
 

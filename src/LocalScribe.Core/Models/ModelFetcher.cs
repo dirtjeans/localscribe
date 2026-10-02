@@ -125,6 +125,28 @@ public sealed class ModelFetcher(HttpClient? httpClient = null)
             }
         }
 
+        // Checked before the move, so a file that fails never reaches the name the app looks
+        // for: it would load, and run, and be the wrong model.
+        if (download.Sha256 is { Length: > 0 } expected)
+        {
+            string actual;
+            await using (var check = File.OpenRead(partial))
+            {
+                actual = Convert.ToHexString(
+                        await System.Security.Cryptography.SHA256.HashDataAsync(check, cancellationToken)
+                            .ConfigureAwait(false))
+                    .ToLowerInvariant();
+            }
+
+            if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(partial);
+                throw new InvalidDataException(
+                    $"{download.FileName} is not the file this version of LocalScribe was built "
+                    + $"against: expected SHA-256 {expected}, got {actual}.");
+            }
+        }
+
         File.Move(partial, destination, overwrite: true);
         progress?.Report(new FetchProgress(download.FileName, written, total, Done: true));
 

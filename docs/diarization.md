@@ -1,6 +1,52 @@
 # Speaker diarization
 
-Speaker labels come from pyannote's segmentation model, run through
+## Two engines, chosen by processor
+
+**On ARM64 — the Snapdragon laptops and Apple silicon — speakers come from NVIDIA's
+[Nemotron 3 Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization).** Everywhere
+else they come from the pyannote pipeline described in the rest of this document, whose tuning
+stays frozen. `SpeakerEngines.For` is the one switch.
+
+Nemotron is a 100M-parameter streaming Sortformer: one transformer that emits eight speaker
+activity channels every 10 ms, trained to keep each person on one channel. There is no
+clustering and no threshold, so nothing to tune and nothing to drift — and a hard ceiling of
+eight people. Speakers are numbered by first arrival; identity across a long recording is kept
+by an arrival-order speaker cache (`ArrivalOrderSpeakerCache`) that the model is shown ahead of
+every 27-second chunk.
+
+Measured on the Snapdragon X Elite against the pipeline it replaced (`--diarize-trial`):
+
+| Recording | Length | Pipeline speakers | Nemotron speakers | Same person, single-speaker time |
+|---|---|---|---|---|
+| Debate | 1:56 | 2 | 2 | 97.4% |
+| Podcast, Aug 10 | 7:23 | 5 | 5 | 100% |
+| Podcast, Aug 17 | 7:36 | 5 | 5 | 99.9% |
+| Zero Trust panel | 61:42 | 16 | 3 | 99.1% |
+| Karl (phone, poor) | 21:02 | 25 | 6 | 92.8% |
+
+Where the pipeline was right the two agree; where it over-counted, the extra speakers were
+fragments of one or two seconds. Nemotron was four to eleven times faster at every thread budget
+(Karl: 25 s against 92 s at two threads), and peaks about 160 MB higher in memory.
+
+**Provenance and verification.** NVIDIA publishes PyTorch weights only. The app downloads a
+community ONNX export (`NealCaren/Nemotron-3-Diarization-ONNX`), pinned to a commit and to the
+SHA-256 of every file (`SortformerModelSource`). The C# driver (`SortformerDiarizer`, with
+`PreEmphasisLogMel` and `ArrivalOrderSpeakerCache` in Core) was checked against the exporter's
+JavaScript reference on the debate and on all of Karl: 137,837 frames, every probability
+bit-identical. The exporter checked that reference against NVIDIA's transformers code.
+
+**A user-given speaker count** is met by folding extra speakers, smallest first, into whoever
+they sound most like, using the pipeline's WeSpeaker voice model (`SpeakerMerging`). Nemotron
+is never asked to split: if it heard fewer people than the user names, the status line says so.
+
+**Crosstalk** is read straight off the model: frames where two channels are above 0.5.
+
+The pipeline's models are still downloaded on ARM64, because renaming a speaker by voice
+listens with the WeSpeaker model.
+
+## The pyannote pipeline
+
+Speaker labels on non-ARM64 machines come from pyannote's segmentation model, run through
 [sherpa-onnx](https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/index.html).
 
 ## What runs where

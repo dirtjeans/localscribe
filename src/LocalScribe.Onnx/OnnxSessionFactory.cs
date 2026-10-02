@@ -86,8 +86,9 @@ public static class OnnxSessionFactory
             ["backend_path"] = "QnnHtp.dll",
 
             // Burst gives the shortest time to first token. It also draws more power, which is
-            // the right trade for a foreground transcription the user is waiting on.
-            ["htp_performance_mode"] = "burst",
+            // the right trade for a foreground transcription the user is waiting on — unless
+            // they have said otherwise on the pace slider.
+            ["htp_performance_mode"] = plan.NpuPower == NpuPower.Balanced ? "balanced" : "burst",
 
             // Precompiled context binaries skip on-device graph compilation. Without this the
             // first run of every session pays several seconds of compile time.

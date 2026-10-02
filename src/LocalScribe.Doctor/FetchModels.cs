@@ -1,3 +1,4 @@
+using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
 using LocalScribe.Core.Provisioning;
@@ -94,6 +95,11 @@ internal static class FetchModels
         }
 
         await FetchDiarizationAsync(modelRoot).ConfigureAwait(false);
+
+        if (SpeakerEngines.Current == SpeakerEngine.Sortformer)
+        {
+            await FetchSortformerAsync(modelRoot).ConfigureAwait(false);
+        }
 
         if (OperatingSystem.IsMacOS())
         {
@@ -233,6 +239,39 @@ internal static class FetchModels
     /// used; these are the same weights this app already runs through its own code.
     /// </para>
     /// </summary>
+    /// <summary>Fetches Nemotron, the speaker model ARM64 machines diarize with.</summary>
+    private static async Task FetchSortformerAsync(string modelRoot)
+    {
+        var directory = Path.Combine(modelRoot, SortformerModelSource.DirectoryName);
+
+        if (SortformerModelSource.IsInstalled(directory))
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Nemotron speaker model already present in {directory}.");
+            return;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Fetching the Nemotron speaker model into {directory}");
+
+        try
+        {
+            var results = await new ModelFetcher()
+                .FetchAsync(directory, SortformerModelSource.Files)
+                .ConfigureAwait(false);
+
+            foreach (var result in results)
+            {
+                Console.WriteLine($"  {result.FileName,-20} {result.Outcome}, {result.Bytes / 1024.0 / 1024:F1} MB");
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or IOException or InvalidDataException)
+        {
+            Console.Error.WriteLine($"  The Nemotron speaker model could not be fetched: {exception.Message}");
+            Console.Error.WriteLine("  Transcription still works; nothing will be labelled by speaker.");
+        }
+    }
+
     private static async Task FetchDiarizationAsync(string modelRoot)
     {
         var directory = Path.Combine(modelRoot, "diarization");

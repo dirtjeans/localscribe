@@ -6,7 +6,11 @@ namespace LocalScribe.Core.Models;
 /// <param name="Optional">
 /// When true, a download failure is reported and tolerated rather than fatal.
 /// </param>
-public sealed record ModelDownload(Uri Source, string FileName, bool Optional = false);
+/// <param name="Sha256">
+/// The exact file expected, as lowercase hex. Pinned where the source is not the model's
+/// author, so a changed upload fails the download instead of quietly becoming the model.
+/// </param>
+public sealed record ModelDownload(Uri Source, string FileName, bool Optional = false, string? Sha256 = null);
 
 /// <summary>
 /// Maps a Whisper size onto the files that make up a portable export.

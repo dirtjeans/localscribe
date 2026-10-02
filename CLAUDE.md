@@ -44,11 +44,13 @@ Do not change these without reading the reasoning in `docs/handoff.md`:
 - **Never rename downloaded model files.** Large ONNX graphs reference their weight sidecars by
   name. `localscribe-model.json` records the roles instead.
 - **Never auto-install the Hexagon driver.** Signed kernel driver, account wall. Report it.
-- **Diarization runs on the CPU, not the NPU.** The weights are pyannote's; the runtime is
-  sherpa-onnx's own ONNX Runtime, which has no QNN provider. There is no "pyannote-NPU". See
-  `docs/diarization.md`.
+- **Diarization runs on the CPU, not the NPU.** On ARM64 it is NVIDIA's Nemotron 3
+  Diarization, one end-to-end model with eight speakers at most; elsewhere the pyannote
+  pipeline, whose tuning is frozen. Both are dynamic-shape graphs. `SpeakerEngines.For` picks.
+  See `docs/diarization.md`.
 - **CPU threads are capped on purpose**, so the rest of Windows stays responsive. That is the
-  product requirement, not a limitation to optimise away.
+  product requirement, not a limitation to optimise away. The user can move the budget on the
+  pace slider (`WorkPaces`); its default stop must stay exactly the planner's answer.
 
 ## Style
 
