@@ -92,21 +92,129 @@ the Core ML bundle's path from the GGML file's name, so the invariant now guards
 too. The Foundry port stays dynamic. The app installs nothing uninvited: model weights
 download themselves with the cost announced, but Foundry Local waits for its button.
 
+## Next Mac build: Nemotron and the pace slider
+
+Two changes landed on Windows in commit `bf2acc2`, and both reach this Mac through the shared
+`MainViewModel` whether or not anything here is touched. Neither has run on a Mac.
+
+**Nemotron 3 Diarization is now the only diarizer on ARM64**, and Apple silicon is ARM64.
+`SpeakerEngines.For` picks by processor, so the next build diarizes with NVIDIA's end-to-end
+model instead of the pyannote pipeline. On the Snapdragon it found the same speakers wherever
+the pipeline was right and far fewer phantom ones where it was not (sixteen to three on the
+hour-long panel, twenty-five to six on Karl's phone call), at four to eleven times the speed;
+word by word it won the lines the two disputed. The evidence, the model's provenance and its
+limits — eight speakers at most, no threshold to turn — are in [diarization.md](diarization.md).
+
+**A pace slider** moves the CPU budget the plan hands every model session: Light, Balanced (the
+planner's own answer, unchanged), Fast, Fastest. `MainViewModel.Pace` and `PaceDescription`
+carry it and the choice persists by itself; the Avalonia window has no control for it yet.
+
+### What happens on its own
+
+- First launch fetches the model into `models/diarization-nemotron/` beside the others: about
+  105 MB, five files from a community ONNX export, each pinned to a commit and a SHA-256
+  (`SortformerModelSource`). A file that fails its pin is refused before it reaches the name
+  the app loads. `--fetch-models` fetches it too.
+- The pyannote models are still fetched. Renaming a speaker by voice listens with the WeSpeaker
+  model, on every platform.
+- A user-given speaker count is met by folding Nemotron's extra speakers, smallest first, into
+  whoever they sound most like. It never splits; if fewer people were heard than the user
+  names, the status line says so.
+- Crosstalk badges come straight from the model: frames where two of its speakers are active.
+
+### Verify, in this order
+
+1. **`dotnet test`** — 674 on the Snapdragon, all passing.
+2. **`--diarize-trial`** on the two fixtures that live on both machines:
+   ```bash
+   localscribe-doctor --models <models> --diarize-trial "Peterson debate.scrb" --transcripts
+   localscribe-doctor --models <models> --diarize-trial "MM Aug 10_v1-new.scrb"
+   ```
+   It runs both engines, times them, and compares them frame by frame and then word by word
+   through the app's own attribution. The Snapdragon's answers, to hold the Mac's against:
+
+   | Recording | Speakers, pipeline / Nemotron | Same person, single-speaker time | Words given to the same person |
+   |---|---|---|---|
+   | Debate | 2 / 2 | 97.4% | 358 of 388 |
+   | Podcast, Aug 10 | 5 / 5 | 100% | 1,178 of 1,178 |
+
+   The Mac should match these closely. Exactly is not guaranteed: the int8 arithmetic can take
+   a different kernel path on a different chip, which moves probabilities by tiny amounts.
+3. **If the int8 graph will not load.** It should: it needs only `MatMulInteger` and
+   `DynamicQuantizeLinear`, which loaded on Windows ARM64 through the same CPU kernels, and the
+   `ConvInteger` gap that ruled out the aligner's quantised builds does not apply. If it does
+   fail, try the full-precision graph with the doctor's `--float32`. The app does not download
+   that one: fetch `step.onnx` by hand from the same commit into `models/diarization-nemotron/`
+   (396 MB, SHA-256 `cd7fa5b062e0cbcd8c43e27627eb7fb305e5bce3ec4faa89d8ff8d8879bae82f`). If
+   neither works, returning macOS to the pipeline is one line in `SpeakerEngines.For`.
+4. **Optional: parity with the reference.** The Windows port was checked against the
+   exporter's JavaScript (`diar.js` in nealcaren/local-interview-transcriber) and matched on
+   every frame. To repeat it here: run `diar.js` under Node with `onnxruntime-node`, then run
+   the trial with `LOCALSCRIBE_DUMP_ACTIVITY=<file>` set, which writes the raw probabilities
+   as float32, eight per 10 ms frame, and compare the two files.
+
+### Threads on Apple silicon: the one thing expected to go wrong
+
+`DeviceProbe` reports `Environment.ProcessorCount` as the performance-core count, which on the
+M2 is eight: four performance cores and four efficiency cores, counted as equals. On the
+Snapdragon, where all twelve cores are alike, twelve threads already measured slower than ten —
+every parallel step waits for its slowest thread — so the slider's top stop leaves two cores
+free (`WorkPaces.MostThreads`). Here the slow threads are built in: anything past four lands on
+an efficiency core. On battery, expect Fast (five threads) and Fastest (six) to be no faster
+than Balanced (three), and possibly slower. Plugged in it is worse: the planner's own share is
+two-thirds of eight, so Balanced itself is five threads and may already be past the knee.
+
+Measure before changing anything — the doctor's `--threads` takes an exact count:
+
+```bash
+unzip -p "Peterson debate.scrb" audio.wav > debate.wav
+for t in 2 3 4 5 6 8; do localscribe-doctor --models <models> --threads $t --align debate.wav | grep Took; done
+for t in 2 3 4 5 6 8; do localscribe-doctor --models <models> --diarize-trial debate.wav --only nemotron --threads $t | grep Took; done
+```
+
+If four wins, the likely fix is to read the performance-core count from
+`sysctl -n hw.perflevel0.physicalcpu` in `DeviceProbe` on macOS. Mind what else reads that
+number: the planner's own budget is a share of it, so the change would move Balanced too — from
+three threads to two on battery — and whisper.cpp's 7.4× real time was measured at three. Either
+re-measure whisper.cpp at the new default, or apply the performance-core count only where the
+slider's stops are computed.
+
+The NPU power setting does nothing here: whisper.cpp reaches the Neural Engine through Core ML,
+not QNN, so on the Mac Light only halves the threads. `PaceDescription` already leaves the NPU
+out when the plan has no NPU stage.
+
+### Window work in `LocalScribe.Desktop`
+
+- **The pace control.** Bind a four-stop slider to `MainViewModel.Pace` (`WorkPace`, values
+  0 to 3) and show `PaceDescription` under it, with a note that it applies from the next
+  transcription or recording. Two lessons from the WinUI version: put it where a narrow window
+  cannot clip it — on Windows it moved from the far right to the end of the
+  make-a-transcript group for that reason — and do not take the control's first value change
+  as a choice, or every launch resets the user's setting to the slider's starting position.
+  The choice persists by itself under the user's local application data folder
+  (`LocalScribe/work-pace.txt`).
+- **The speakers flyout.** `SpeakerCountBox` allows up to 12. Bind its `Maximum` to
+  `MainViewModel.MostSpeakers`, which is eight under Nemotron and ten for the pipeline.
+- Nothing else in the window needs to change for Nemotron.
+
+### What to expect
+
+Estimates from the Snapdragon's measurements and the pipeline's ~20× real time measured here,
+not measurements:
+
+| Recording | Diarization on this Mac, battery budget |
+|---|---|
+| Podcast, 7 min | 5–8 s |
+| Karl, 21 min | 20–25 s |
+| Panel, 62 min | about a minute |
+
+Diarization will be short enough that the fanless chassis never heats up on its account. On a
+long recording the word aligner is the stage that will, as it is the long pole on Windows too.
+
 ## Still open, ranked by likelihood of mattering
 
-0. **Apple silicon now diarizes with Nemotron, unmeasured on the Mac.** The engine is chosen by
-   processor (`SpeakerEngines.For`: ARM64 → Nemotron 3 Diarization), and `MainViewModel` is
-   shared, so the next Mac build downloads the 105 MB model and uses it. It was measured only on
-   the Snapdragon (see `docs/diarization.md`). Before trusting it here, run the same trial on
-   the Mac's recordings — it compares both engines and prints where they disagree:
-   `localscribe-doctor --models <models> --diarize-trial <file.scrb>`. The int8 graph needs
-   ONNX Runtime's `MatMulInteger` and `DynamicQuantizeLinear` on the CPU provider; if 1.29 on
-   macOS objects, `--float32` runs the full-precision graph. If anything is wrong, returning
-   macOS to the pipeline is one line in `SpeakerEngines.For`.
-   **The pace slider has no macOS control yet.** `MainViewModel.Pace` and `PaceDescription` are
-   shared and persist on their own; the Avalonia window needs a slider bound to them (four stops,
-   Light to Full — see the WinUI flyout in `MainWindow.xaml`). The speakers dialog should offer
-   `MostSpeakers` choices, which is eight under Nemotron.
+0. **Nemotron and the pace slider reach the Mac on its next build, unmeasured there.** See the
+   section above; it is the first thing to do.
 
 1. ~~The Windows build has not compiled the shared-file edits.~~ Done: solution, WinUI app and
    all 605 tests pass on the laptop; the scan overlap measured 294 s → 271 s there with
