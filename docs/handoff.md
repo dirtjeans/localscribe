@@ -17,7 +17,7 @@ embeddings elsewhere), cleans up
 with a local language model through Foundry Local or GenieX, and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
 segments, and a readable text copy — that reopen instantly and are byte-portable across
-machines. The core library's 674 tests pass; the published app is self-contained and carries
+machines. The core library's 693 tests pass; the published app is self-contained and carries
 its own .NET runtime.
 
 The reference recordings are a seven-minute studio podcast with five speakers, an interview
@@ -26,6 +26,29 @@ Current state on the podcast: 6 of 290 checkable words adrift (a single bounded 
 wobble mid-file plus two odd words), drift +0.00 in every fifth, one transcriber-duplicated
 line detected and dropped, crosstalk marked from the segmentation model's own overlap classes,
 and the highlight in sync to the last word.
+
+## When a transcript becomes usable, on the Snapdragon
+
+Three lanes start the moment a recording loads: transcription on the NPU, the word-timing scan
+on the CPU, and — since 2026-10-04 — speaker finding with Nemotron, also on the CPU. Whisper
+here reports no word times of its own, so a line becomes clickable when the scan's timed head
+reaches it, and speaker labels attach to lines as they become timed. Measured on the 7-minute
+podcast at Balanced, from the start of transcription: labels and the first clickable words at
+about 32 s, transcription done at about 45 s, the scan and the run done at about 150 s, or
+about 236 s with cleanup on. Text is selectable and copyable as soon as it appears; a click
+plays the word, a drag selects.
+
+The order was chosen by measurement against the Mac's (see the macOS handoff's "Next Windows
+build" section): the Mac holds the scan back until transcription ends because there it
+competes with Whisper's decoder, and its whisper.cpp words make lines clickable without it.
+Neither is true here, and holding the scan back measured slower on every count. Overrides for
+re-measuring: `LOCALSCRIBE_DIARIZE_EARLY` and `LOCALSCRIBE_SCAN_AFTER` (`1` or `0`); the
+stage log (`localscribe-stages.txt` in the temp folder) records "labels on screen", "first
+words clickable" and "done" for each run.
+
+The word aligner on Windows ARM64 is the 4-bit MMS build: about half the scan time of fp16
+for the same sync against the audio. It is the lever that matters most here, because the scan
+is what makes a Windows transcript clickable; the pace slider is the other.
 
 ## How anything here gets believed
 

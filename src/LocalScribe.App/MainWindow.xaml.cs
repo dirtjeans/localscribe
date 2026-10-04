@@ -254,6 +254,9 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.HardwareSummary):
                     HardwareText.Text = _viewModel.HardwareSummary;
+
+                    // Trimmed to one line in the corner; the whole of it on hover.
+                    ToolTipService.SetToolTip(HardwareText, _viewModel.HardwareSummary);
                     break;
                 case nameof(MainViewModel.Paragraphs):
                     ShowParagraphs();
@@ -851,16 +854,25 @@ public sealed partial class MainWindow : Window
         // Three scopes, so radio buttons rather than three verbs across the bottom of the
         // dialog. The buttons said "Rename everywhere" and "This part only", which read as
         // opposites and hid the fact that the interesting case is neither.
+        // Renaming works from the moment labels appear, and the name survives every rebuild of
+        // the running transcript. Comparing voices is the exception: it needs the finished
+        // transcript, so while one is being made it is left out rather than offered and refused.
+        var choices = new List<string>
+        {
+            "This part only",
+            $"Every part labelled {paragraph.Speaker}",
+        };
+
+        if (!_viewModel.IsBusy)
+        {
+            choices.Add("This part and others that sound like them");
+        }
+
         var scope = new RadioButtons
         {
             Header = "Apply to",
             SelectedIndex = 0,
-            ItemsSource = new[]
-            {
-                "This part only",
-                $"Every part labelled {paragraph.Speaker}",
-                "This part and others that sound like them",
-            },
+            ItemsSource = choices,
         };
 
         var dialog = new ContentDialog
@@ -876,9 +888,13 @@ public sealed partial class MainWindow : Window
                     scope,
                     new TextBlock
                     {
-                        Text = "Use \u201cevery part\u201d when two labels turn out to be one person, "
-                            + "and \u201cothers that sound like them\u201d when one label turns out to "
-                            + "be two \u2014 that compares the voices and moves only the matching parts.",
+                        Text = _viewModel.IsBusy
+                            ? "Use \u201cevery part\u201d when two labels turn out to be one person. "
+                                + "The name sticks as the transcript fills in. Comparing voices, for "
+                                + "when one label turns out to be two, is offered once it is finished."
+                            : "Use \u201cevery part\u201d when two labels turn out to be one person, "
+                                + "and \u201cothers that sound like them\u201d when one label turns out to "
+                                + "be two \u2014 that compares the voices and moves only the matching parts.",
                         TextWrapping = TextWrapping.Wrap,
                         Opacity = 0.8,
                         Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
@@ -1087,6 +1103,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void FillWithWords(TextBlock body, ParagraphView paragraph)
     {
+        ListenForClicks(body);
         body.Inlines.Clear();
 
         var words = _viewModel.WordsIn(paragraph.Segments);
@@ -1113,37 +1130,19 @@ public sealed partial class MainWindow : Window
 
             for (var i = 0; i < own.Count; i++)
             {
-                var at = own[i].StartSeconds;
-
-                if (timed)
+                // Plain runs, not links. A link takes the press for itself, so a drag that
+                // starts on a word — which is where every drag starts — never selected
+                // anything. The click a link gave is found from the release instead.
+                body.Inlines.Add(new Run
                 {
-                    var link = new Hyperlink
-                    {
-                        UnderlineStyle = UnderlineStyle.None,
-                        Foreground = TextBrush(body),
-                    };
-
-                    link.Inlines.Add(new Run { Text = own[i].Text });
-
-                    // A little before the word, not exactly on it. Seeking to the instant a
-                    // word begins starts playback inside its first consonant, which sounds
-                    // like a miss however accurate the timing was — the ear needs a moment of
-                    // run-up to hear a word whole.
-                    link.Click += (_, _) => Seek(Math.Max(0, at - RunUpSeconds), play: true);
-
-                    body.Inlines.Add(link);
-                }
-                else
-                {
-                    body.Inlines.Add(new Run
-                    {
-                        Text = own[i].Text,
-                        Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-                    });
-                }
+                    Text = own[i].Text,
+                    Foreground = timed
+                        ? TextBrush(body)
+                        : (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+                });
 
                 spans.Add(new SpokenWord(
-                    own[i].StartSeconds, own[i].EndSeconds, offset, own[i].Text.Length, own[i].Text));
+                    own[i].StartSeconds, own[i].EndSeconds, offset, own[i].Text.Length, own[i].Text, timed));
                 offset += own[i].Text.Length;
                 wordAt++;
 
@@ -1183,9 +1182,160 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>Where one word sits, both in the recording and in the laid-out text.</summary>
-    private sealed record SpokenWord(double From, double To, int Offset, int Length, string Text);
+    /// <param name="Timed">Whether a click on it may seek: its words have been measured.</param>
+    private sealed record SpokenWord(double From, double To, int Offset, int Length, string Text, bool Timed = true);
 
     private readonly Dictionary<ParagraphView, IReadOnlyList<SpokenWord>> _spokenWords = [];
+
+    /// <summary>Bodies already listening, so a recycled row is not given its handlers twice.</summary>
+    private readonly HashSet<TextBlock> _listening = [];
+
+    /// <summary>Where the press began, for the body being pressed; null when none is.</summary>
+    private Windows.Foundation.Point? _pressedAt;
+
+    /// <summary>The body holding the latest selection, which the Copy button serves.</summary>
+    private TextBlock? _selecting;
+
+    /// <summary>
+    /// Gives a paragraph's text its click and its selection, both from the same pointer.
+    /// <para>
+    /// Registered for handled events too: a selectable block marks its own presses handled to
+    /// start a selection, and an ordinary handler would never hear them.
+    /// </para>
+    /// </summary>
+    private void ListenForClicks(TextBlock body)
+    {
+        if (!_listening.Add(body))
+        {
+            return;
+        }
+
+        body.AddHandler(
+            UIElement.PointerPressedEvent,
+            new PointerEventHandler((_, e) =>
+            {
+                _pressedAt = e.GetCurrentPoint(body).Properties.IsLeftButtonPressed
+                    ? e.GetCurrentPoint(body).Position
+                    : null;
+
+                // A press anywhere else in the transcript lets go of the last selection. The
+                // block that held it stops drawing its highlight once another takes focus but
+                // keeps the selection itself, and Copy would then copy text nobody can see.
+                if (_selecting is { } previous && !ReferenceEquals(previous, body))
+                {
+                    previous.Select(previous.ContentStart, previous.ContentStart);
+                    _selecting = null;
+                }
+            }),
+            handledEventsToo: true);
+
+        body.AddHandler(
+            UIElement.PointerReleasedEvent,
+            new PointerEventHandler((_, e) => OnBodyReleased(body, e)),
+            handledEventsToo: true);
+    }
+
+    /// <summary>
+    /// A click, as opposed to a drag: the release that ends a press which barely moved and
+    /// left nothing selected plays the word under it. A drag selects and plays nothing — a
+    /// click hears the word, a drag copies it, and neither does the other's job. The rule the
+    /// Mac window arrived at first.
+    /// </summary>
+    private void OnBodyReleased(TextBlock body, PointerRoutedEventArgs e)
+    {
+        if (_pressedAt is not { } from)
+        {
+            return;
+        }
+
+        _pressedAt = null;
+        var to = e.GetCurrentPoint(body).Position;
+
+        if (!string.IsNullOrEmpty(body.SelectedText))
+        {
+            // One selection at a time, as in any reader; the press already let go of any
+            // other paragraph's.
+            _selecting = body;
+            return;
+        }
+
+        // A click collapses this block's own selection, so it no longer has one to copy.
+        if (ReferenceEquals(_selecting, body))
+        {
+            _selecting = null;
+        }
+
+        if (Math.Abs(to.X - from.X) + Math.Abs(to.Y - from.Y) > 4
+            || body.DataContext is not ParagraphView paragraph)
+        {
+            return;
+        }
+
+        if (!_viewModel.Player.HasAudio)
+        {
+            StatusText.Text = "No audio is loaded for this transcript, so there is nothing to play.";
+            return;
+        }
+
+        if (WordAt(body, paragraph) is not { } word)
+        {
+            // Between words or past the last one: the paragraph, as a click on its row does.
+            PlayParagraph(paragraph);
+            return;
+        }
+
+        if (!word.Timed)
+        {
+            ClicksMustWait(paragraph);
+            return;
+        }
+
+        // A little before the word, not exactly on it. Seeking to the instant a word begins
+        // starts playback inside its first consonant, which sounds like a miss however
+        // accurate the timing was — the ear needs a moment of run-up to hear a word whole.
+        TranscriptList.SelectedItem = paragraph;
+        Seek(Math.Max(0, word.From - RunUpSeconds), play: true);
+    }
+
+    /// <summary>
+    /// The word a click landed on. A click in selectable text leaves the selection collapsed
+    /// where it landed; selecting from the start of the text to there and measuring what was
+    /// selected turns that position into a character index without depending on how the text
+    /// is broken into runs. The selection is collapsed again before anything draws.
+    /// </summary>
+    private SpokenWord? WordAt(TextBlock body, ParagraphView paragraph)
+    {
+        if (!_spokenWords.TryGetValue(paragraph, out var words) || words.Count == 0)
+        {
+            return null;
+        }
+
+        var caret = body.SelectionStart;
+        if (caret is null)
+        {
+            return null;
+        }
+
+        body.Select(body.ContentStart, caret);
+        var index = body.SelectedText.Length;
+        body.Select(caret, caret);
+
+        // The word containing the click, or the one just before it when the click fell on the
+        // space after a word: a click in a word's trailing space is still aimed at that word.
+        SpokenWord? found = null;
+
+        foreach (var word in words)
+        {
+            if (word.Offset > index)
+            {
+                break;
+            }
+
+            found = word;
+        }
+
+        return found is not null && index <= found.Offset + found.Length + 1 ? found : null;
+    }
 
     /// <summary>
     /// How far before a word to start playing it. Enough to hear the word begin rather than
@@ -1921,14 +2071,25 @@ public sealed partial class MainWindow : Window
         });
 
 
+    /// <summary>
+    /// Copies what is selected, or the whole transcript when nothing is. Each paragraph is its
+    /// own block and a drag selects within one, so the button is also the way to take the lot —
+    /// and it works mid-run, copying whatever has been transcribed so far.
+    /// </summary>
     private void OnCopy(object sender, RoutedEventArgs e)
     {
+        var selected = _selecting?.SelectedText;
         var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
-        package.SetText(_viewModel.Export(TranscriptFormat.PlainText));
+
+        package.SetText(string.IsNullOrEmpty(selected)
+            ? _viewModel.Export(TranscriptFormat.PlainText)
+            : selected);
 
         Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
 
-        StatusText.Text = "Transcript copied.";
+        StatusText.Text = string.IsNullOrEmpty(selected)
+            ? _viewModel.IsBusy ? "Copied the transcript so far." : "Transcript copied."
+            : "Selection copied.";
     }
 
     private async void OnSave(object sender, RoutedEventArgs e) => await SaveViaPickerAsync();
@@ -2147,8 +2308,16 @@ public sealed partial class MainWindow : Window
     {
         PaceSlider.Value = (int)_viewModel.Pace;
         PaceDescriptionText.Text = _viewModel.PaceDescription;
+        CleanupToggle.IsChecked = _viewModel.CleanupEnabled;
         _paceShown = true;
     }
+
+    /// <summary>
+    /// Turns cleanup on or off for the next run. Shared with the Mac, which reads the same
+    /// preference; on there by default only on Windows, where the app was tuned with it.
+    /// </summary>
+    private void OnCleanupToggled(object sender, RoutedEventArgs e) =>
+        _viewModel.CleanupEnabled = CleanupToggle.IsChecked == true;
 
     /// <summary>
     /// False until the slider has been shown the saved pace. A slider reports its first value

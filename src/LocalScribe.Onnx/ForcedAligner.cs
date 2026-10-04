@@ -900,8 +900,9 @@ public sealed class ForcedAligner : IDisposable
         // use ConvInteger, which ONNX Runtime has no ARM64 implementation for, so a machine that
         // downloaded one would fail at load rather than run slowly.
         // The 4-bit build quantises only the MatMuls (MatMulNBits, which has ARM64 kernels) and
-        // so loads where the int8 builds do not. It leads on macOS, where --aligner-trial
-        // graded it equal to fp16 and faster; elsewhere fp16 leads until the trial is run there.
+        // so loads where the int8 builds do not. It leads on macOS and on Windows ARM64, where
+        // --aligner-trial graded it equal to fp16 and about twice as fast; elsewhere fp16 leads
+        // until the trial is run there.
         string[] names = Core.Models.AlignmentModelSource.PreferQuantised
             ? ["model_q4.onnx", "model_fp16.onnx", "model.onnx", "model_fp32.onnx", "model_q4f16.onnx"]
             : ["model_fp16.onnx", "model.onnx", "model_fp32.onnx", "model_q4.onnx", "model_q4f16.onnx"];

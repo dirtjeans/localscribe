@@ -350,6 +350,56 @@ heard words, so its transcript waits for the scan exactly as before. An ONNX equ
 need the decoder's cross-attention weights as an output; whether the current graphs offer
 them has not been checked.
 
+### Measured on the Snapdragon (2026-10-04), and what Windows adopted
+
+The shared changes built and ran on Windows unchanged; 693 tests pass. Each trial above was run
+on the Snapdragon X Elite (12 cores, 64 GB) with the podcast and debate fixtures, at Balanced.
+
+- **The 4-bit aligner: adopted on Windows ARM64.** `--aligner-trial` against fp16: podcast 99%
+  of words within 0.1 s and all within 0.25 s, debate 89% and 94%, no drift in any fifth; 62.5 s
+  against 119.8 s and 37.4 s against 69.9 s. Graded against the audio by `--check-words`, the
+  two builds left the same 12 of 71 words adrift on the debate, and 6 and 8 of 290 on the
+  podcast. `PreferQuantised` now covers Windows on ARM64; x64 keeps fp16 until measured.
+- **Speakers at load: adopted wherever Nemotron diarizes.** Seconds from the start of
+  transcription to labels on screen, three runs each: 68, 68, 67 with the old order; 40, 32,
+  32 with speakers found at load — and the first clickable words no later (33–41 against
+  32–40), the run done no later. Labels still wait for the scan's timed head, because the QNN
+  transcriber hears no words of its own; they now arrive with it instead of after
+  transcription ends.
+- **Scan after transcription: rejected for Windows.** Labels and the first clickable words came
+  at 89 s instead of 32–40, and the run finished at 204 s instead of about 150. On the Mac the
+  scan competes with Whisper's decoder for the CPU; here the transcriber is on the NPU and the
+  scan is the only thing that makes the transcript clickable, so holding it back only delays.
+- **Heard words: not possible with the current Snapdragon export.** The QNN decoder's declared
+  outputs are `logits` and the self-attention caches; its cross-attention keys and values are
+  inputs, and no attention weights come out. DTW timing would need a re-export from AI Hub
+  with cross-attention outputs. Until then the scan's speed is what decides how soon a Windows
+  transcript is clickable, which is why the 4-bit aligner matters more here than on the Mac.
+- **Memory is not tight here** (64 GB), so cleanup keeps running beside the scan.
+- **Cleanup stays on by default on Windows.** Measured on the podcast: about 150 s to done
+  without it, 236 s with it — roughly a minute and a half past the scan. The WinUI window now
+  has the switch, under the processing-speed slider, worded as on the Mac.
+- **A Windows-only wait found on the way.** The finish stages began by checking the cleanup
+  backend still answered, and when the cached client did not, asking Foundry's CLI where it
+  was took about twelve seconds, during which the timed preview — and the speakers, when
+  found late — had not started. The check now starts with transcription and is collected at
+  the finish (`_cleanupCheck`); the gap is gone in both orders.
+- **The roster summary broke the WinUI layout.** Naming the speaker and cleanup models made
+  the hardware line long enough that, in an automatic column with a wrapping caption style, it
+  took the status bar's whole width and wrapped to five lines, squeezing the transcript to a
+  strip and hiding the status. The WinUI status bar now shares its width 2:1 and trims both
+  lines; the full hardware line is a tooltip. Worth checking the Avalonia window for the same.
+- **Shared-code change the Mac inherits:** `RenameSpeakerByVoiceAsync` now refuses while a run
+  is in progress. It takes the busy state and hands it back when done, which mid-run would
+  declare the run finished while it was still going. The Mac's menu already hides "by voice"
+  until the transcript is finished; the WinUI dialog now does too.
+- **Text is selectable on Windows from the moment it appears**, the Mac's click-or-drag rule
+  (`OnBodyReleased`): a press and release that barely moved and selected nothing plays the word,
+  a drag selects. Words are plain runs rather than links, because a link swallowed a drag that
+  started on it. Copy copies the selection, or the whole transcript so far when there is none;
+  a press in another paragraph lets go of the last selection, since WinUI stops drawing an
+  unfocused block's highlight but keeps its selection.
+
 ### New instruments
 
 - `localscribe-doctor --aligner-trial <file.scrb>` — times each aligner build present and the

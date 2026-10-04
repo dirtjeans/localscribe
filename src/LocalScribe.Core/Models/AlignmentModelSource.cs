@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace LocalScribe.Core.Models;
 
 /// <summary>
@@ -67,10 +69,22 @@ public static class AlignmentModelSource
     ];
 
     /// <summary>
-    /// Whether this machine runs the 4-bit build. macOS only, because that is where the trial
-    /// was run; the Snapdragon keeps fp16 until the same trial is run there.
+    /// Whether this machine runs the 4-bit build: macOS, and Windows on ARM64, the two places
+    /// the trial has been run.
+    /// <para>
+    /// On the Snapdragon X Elite, --aligner-trial against fp16: the podcast 99% of words
+    /// within 0.1 s and every word within 0.25 s, the debate 89% and 94%, no drift in any fifth
+    /// of either — in 62.5 s against 119.8 s and 37.4 s against 69.9 s. The debate's looser
+    /// match sits in its crosstalk, where the transcript holds speech written down twice and a
+    /// small numeric difference can tip an ambiguous placement; graded against the audio by
+    /// --check-words, the two builds left the same 12 of 71 words adrift there, and 6 and 8
+    /// of 290 on the podcast. Half the time for the same sync, on the stage that decides when a
+    /// Windows transcript becomes clickable. Other Windows machines keep fp16 until measured.
+    /// </para>
     /// </summary>
-    public static bool PreferQuantised => OperatingSystem.IsMacOS();
+    public static bool PreferQuantised =>
+        OperatingSystem.IsMacOS()
+        || (OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
 
     public static IReadOnlyList<ModelDownload> FilesForThisMachine =>
         PreferQuantised ? QuantisedFiles : Files;

@@ -289,6 +289,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// Replaces the transcript and everything derived from it. One place, so the paragraphs, the
     /// flat text and the export never disagree about what the transcript currently is.
     /// </summary>
+    private bool _labelsLogged;
+    private bool _clickableLogged;
+
     private void SetTranscript(IReadOnlyList<TranscriptSegment> segments)
     {
         // Anything that changes the transcript makes the copy on disk stale — a fresh
@@ -299,6 +302,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _segments = segments;
         Paragraphs = TranscriptFormatter.Paragraphs(segments);
         Transcript = TranscriptFormatter.ToPlainText(Paragraphs);
+
+        // The two moments that decide when a running transcript becomes usable, logged once
+        // per run so the order of the lanes can be judged by when the user gets something,
+        // not by when the run ends.
+        if (IsBusy)
+        {
+            if (!_labelsLogged && segments.Any(segment => segment.Speaker is not null))
+            {
+                _labelsLogged = true;
+                Stage($"labels on screen: {DistinctSpeakers(segments)} speakers");
+            }
+
+            if (!_clickableLogged && segments.Any(IsTimed))
+            {
+                _clickableLogged = true;
+                Stage("first words clickable");
+            }
+        }
 
         // Counted here rather than where diarization finishes, so that renaming keeps it honest:
         // merging two labels that were the same person really is one speaker fewer, and the
@@ -1398,15 +1419,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>
     /// Whether speaker finding starts when the audio loads rather than when transcription
-    /// ends. Measured on the Mac (see <see cref="ScanAfterTranscription"/>); on Windows it
-    /// would share the CPU with the scan, which has not been measured there, so it waits for
-    /// that trial. LOCALSCRIBE_DIARIZE_EARLY=1 or 0 overrides.
+    /// ends. Measured on the Mac (see <see cref="ScanAfterTranscription"/>), and since on the
+    /// Snapdragon, where it shares the CPU with the scan beside a transcriber on the NPU.
+    /// <para>
+    /// On the podcast at Balanced, seconds from the start of transcription to labels on
+    /// screen: 68, 68, 67 when speakers waited for transcription, 40, 32, 32, 32 when they
+    /// started with the audio — with the first clickable words no later (33–41 against
+    /// 32–40) and the run done no later either. Nemotron takes about ten seconds of two
+    /// threads for seven minutes of audio, which the scan beside it does not notice. Labels
+    /// still arrive only where the scan has timed the words, because the Windows transcriber
+    /// hears none of its own; they arrive with the first timed lines instead of after the
+    /// last transcribed one. The pyannote pipeline, heavier and unmeasured in this position,
+    /// keeps the old order. LOCALSCRIBE_DIARIZE_EARLY=1 or 0 overrides.
+    /// </para>
     /// </summary>
     private static bool DiarizeEarly => Environment.GetEnvironmentVariable("LOCALSCRIBE_DIARIZE_EARLY") switch
     {
         "1" => true,
         "0" => false,
-        _ => OperatingSystem.IsMacOS(),
+        _ => OperatingSystem.IsMacOS() || SpeakerEngines.Current == SpeakerEngine.Sortformer,
     };
 
     /// <summary>The alignment model, held only between the scan and the placing.</summary>
@@ -2119,7 +2150,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         string? currentName,
         string newName)
     {
-        if (string.IsNullOrWhiteSpace(newName) || _segments.Count == 0 || _audio is not { } audio)
+        // Not mid-run. Listening to the parts takes the busy state for itself and hands it
+        // back when done — which, during a transcription, would declare the run finished while
+        // it was still going. Renaming this part or every part is free and works throughout;
+        // comparing voices waits for the finished transcript, as the windows say.
+        if (string.IsNullOrWhiteSpace(newName) || _segments.Count == 0 || _audio is not { } audio || IsBusy)
         {
             return -1;
         }
@@ -2270,10 +2305,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         double progressFloor = 0)
     {
         // Before the refiner is built from it, so a backend that restarted since discovery is
-        // rediscovered instead of failing every cleanup window one notice deep.
+        // rediscovered instead of failing every cleanup window one notice deep. The check
+        // started with this run's transcription, when there was one; a cleanup retry or a
+        // recording asks here, as before.
         if (_cleanupEnabled)
         {
-            await EnsureCleanupBackendAnswersAsync();
+            var check = _cleanupCheck ?? EnsureCleanupBackendAnswersAsync();
+            _cleanupCheck = null;
+            Stage(check.IsCompleted ? "cleanup check: already answered" : "cleanup check: waiting");
+            await check;
+            Stage("cleanup check: finished");
         }
 
         var refiner = BuildRefiner();
@@ -3201,10 +3242,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             Transcript transcript;
 
+            _labelsLogged = false;
+            _clickableLogged = false;
+
+            // Asked now, beside transcription, rather than when transcription ends. When the
+            // cached backend no longer answers, finding it again means asking Foundry's CLI,
+            // and on the Snapdragon that took twelve seconds during which the finish stages —
+            // the timed preview, and the speakers when they are not found early — had not
+            // started. Collected by the finish stages, by which time it is long done.
+            _cleanupCheck = _cleanupEnabled ? EnsureCleanupBackendAnswersAsync() : null;
+            Stage($"transcription started: {SourceName}, {audio.DurationSeconds:F0} s, "
+                + $"{_plan?.CpuBudget.IntraOpThreads} threads, diarize early {DiarizeEarly}, scan after {ScanAfterTranscription}");
+
             using (Working(ModelRoles.Transcription))
             {
                 transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
             }
+
+            Stage("transcription ended");
 
             // The last window's words, which the final progress update may not have carried,
             // and taken now because the transcriber may be released before the finish stages.
@@ -3224,6 +3279,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 transcript.Segments, audio, _cancellation.Token, TranscriptionShare);
 
             Status = DoneStatus();
+            Stage("done");
         }
         catch (OperationCanceledException exception)
             when (_cancellation?.IsCancellationRequested != true)
@@ -3256,6 +3312,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _cancellation?.Cancel();
             _scanInFlight = null;
             _turnsInFlight = null;
+            _cleanupCheck = null;
 
             IsBusy = false;
             _cancellation?.Dispose();
@@ -3654,6 +3711,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 await FinishTranscriptAsync(committed, _audio, _cancellation?.Token ?? default);
                 Status = DoneStatus();
+            Stage("done");
             }
             finally
             {
@@ -3732,10 +3790,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// once per run; rediscovery — asking the CLI where the service lives now — runs only
     /// when the ping fails.
     /// </summary>
+    /// <summary>The cleanup backend check started beside transcription, or null when none was.</summary>
+    private Task? _cleanupCheck;
+
     private async Task EnsureCleanupBackendAnswersAsync()
     {
         if (_languageModel is { } cached && !await AnswersAsync(cached))
         {
+            Stage("cleanup backend did not answer; asking Foundry where it is");
             (cached as IDisposable)?.Dispose();
             _languageModel = await LocalLanguageModel.ResolveAsync();
             AnnounceHardware();
@@ -4028,7 +4090,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// slows transcription a fifth here because Whisper's decoder shares the CPU with it, and
     /// with heard words every line is clickable without it. Windows keeps the overlap: its
     /// transcriber is on the NPU, the CPU is idle beside it, and with no heard words the scan
-    /// is what makes its transcript clickable at all.
+    /// is what makes its transcript clickable at all. Measured there too: with the scan held
+    /// back, labels and the first clickable words came at 89 s instead of 32–40, and the run
+    /// finished at 204 s instead of about 150.
     /// </para>
     /// <para>LOCALSCRIBE_SCAN_AFTER=1 or 0 overrides, so the order can be measured on any machine.</para>
     /// </summary>
