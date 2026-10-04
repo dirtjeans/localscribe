@@ -14,6 +14,10 @@ public class ResilientTranscriberTests
         public SpeechTask? BeganWith { get; private set; }
         public bool Disposed { get; private set; }
 
+        public List<WordTimings.Word> Heard { get; } = [];
+
+        public IReadOnlyList<WordTimings.Word> HeardWords => Heard;
+
         public void BeginRecording(SpeechTask task = SpeechTask.Transcribe) => BeganWith = task;
 
         public Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
@@ -115,5 +119,30 @@ public class ResilientTranscriberTests
 
         Assert.True(built[0].Disposed);
         Assert.Equal(SpeechTask.TranslateToEnglish, built[1].BeganWith);
+    }
+
+    /// <summary>
+    /// What the failed engine heard is still true of the recording. Losing it would turn the
+    /// windows before a restart grey again mid-stream, which reads as the app going backwards.
+    /// </summary>
+    [Fact]
+    public async Task WordsHeardBeforeARestartAreKept()
+    {
+        var first = new FlakyEngine(1);
+        first.Heard.Add(new WordTimings.Word("earlier", 1, 1));
+
+        var second = new FlakyEngine(0);
+        second.Heard.Add(new WordTimings.Word("later", 31, 31));
+
+        var engines = new Queue<FlakyEngine>([first, second]);
+        var transcriber = new ResilientTranscriber(engines.Dequeue);
+
+        await transcriber.TranscribeChunkAsync(Chunk());
+
+        Assert.Equal(["earlier", "later"], transcriber.HeardWords.Select(w => w.Text));
+
+        transcriber.BeginRecording();
+
+        Assert.Equal(["later"], transcriber.HeardWords.Select(w => w.Text));
     }
 }

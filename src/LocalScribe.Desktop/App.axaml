@@ -7,4 +7,11 @@
   <Application.Styles>
     <FluentTheme />
   </Application.Styles>
+
+  <!-- Replaces the default app menu, whose first line introduced us as "About Avalonia". -->
+  <NativeMenu.Menu>
+    <NativeMenu>
+      <NativeMenuItem Header="About LocalScribe" Click="OnAboutClicked" />
+    </NativeMenu>
+  </NativeMenu.Menu>
 </Application>

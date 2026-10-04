@@ -20,11 +20,13 @@
     <StreamGeometry x:Key="IconOpen">M2,6 C2,4.9 2.9,4 4,4 L9,4 L11,6 L20,6 C21.1,6 22,6.9 22,8 L22,18 C22,19.1 21.1,20 20,20 L4,20 C2.9,20 2,19.1 2,18 Z</StreamGeometry>
     <StreamGeometry x:Key="IconMic">M12,3 A3,3 0 0 1 15,6 L15,11 A3,3 0 0 1 9,11 L9,6 A3,3 0 0 1 12,3 Z M7,11 A5,5 0 0 0 17,11 L19,11 A7,7 0 0 1 13,17.93 L13,21 L11,21 L11,17.93 A7,7 0 0 1 5,11 Z</StreamGeometry>
     <StreamGeometry x:Key="IconPlay">M8,5 L19,12 L8,19 Z</StreamGeometry>
+    <StreamGeometry x:Key="IconPause">M7,5 L10.5,5 L10.5,19 L7,19 Z M13.5,5 L17,5 L17,19 L13.5,19 Z</StreamGeometry>
     <StreamGeometry x:Key="IconStop">M7,7 L17,7 L17,17 L7,17 Z</StreamGeometry>
     <StreamGeometry x:Key="IconSave">M11,3 L13,3 L13,11 L16,11 L12,15 L8,11 L11,11 Z M4,17 L20,17 L20,19 L4,19 Z</StreamGeometry>
     <StreamGeometry x:Key="IconExport">M11,15 L13,15 L13,7 L16,7 L12,3 L8,7 L11,7 Z M4,17 L20,17 L20,19 L4,19 Z</StreamGeometry>
     <StreamGeometry x:Key="IconPeople">M9,4 A3,3 0 0 1 9,10 A3,3 0 0 1 9,4 Z M2,19 C2,15 5,13 9,13 C13,13 16,15 16,19 Z M16.5,5.5 A2.5,2.5 0 0 1 16.5,10.5 A2.5,2.5 0 0 1 16.5,5.5 Z M17.5,13.2 C20.2,13.8 22,15.6 22,19 L17.8,19 C17.8,16.9 17.3,14.9 16.2,13.4 C16.6,13.3 17,13.2 17.5,13.2 Z</StreamGeometry>
     <StreamGeometry x:Key="IconTrash">M9,3 L15,3 L15,5 L20,5 L20,7 L4,7 L4,5 L9,5 Z M6,9 L18,9 L17,21 L7,21 Z</StreamGeometry>
+    <StreamGeometry x:Key="IconGauge">M12,5 A8,8 0 0 0 4,13 L6.5,13 A5.5,5.5 0 0 1 17.5,13 L20,13 A8,8 0 0 0 12,5 Z M15.8,8.7 L12.6,13.2 A1.6,1.6 0 1 1 11.2,12.2 Z M4,15 L20,15 L20,17 L4,17 Z</StreamGeometry>
   </Window.Resources>
 
   <Window.Styles>
@@ -158,12 +160,6 @@
           <TextBlock x:Name="RecordLabel" Text="Record" />
         </StackPanel>
       </Button>
-      <Button x:Name="PlayButton" Classes="toolbar" Click="OnPlayClicked" ToolTip.Tip="Play the recording">
-        <StackPanel>
-          <PathIcon x:Name="PlayIcon" Data="{StaticResource IconPlay}" />
-          <TextBlock x:Name="PlayLabel" Text="Play" />
-        </StackPanel>
-      </Button>
       <Border Width="1" Height="18" Background="#30808080" Margin="6,0" />
       <Button x:Name="SaveButton" Classes="toolbar" Click="OnSaveClicked" ToolTip.Tip="Save transcript and audio together">
         <StackPanel>
@@ -195,6 +191,28 @@
         <StackPanel>
           <PathIcon Data="{StaticResource IconPeople}" />
           <TextBlock Text="Speakers" />
+        </StackPanel>
+      </Button>
+      <Button x:Name="PaceButton" Classes="toolbar" ToolTip.Tip="How much of the machine to spend">
+        <Button.Flyout>
+          <Flyout Placement="Bottom">
+            <StackPanel Spacing="8" Width="280">
+              <RadioButton x:Name="PaceLight" Content="Light" Tag="Light" FontSize="13" Click="OnPaceChosen" />
+              <RadioButton x:Name="PaceBalanced" Content="Balanced" Tag="Balanced" FontSize="13" Click="OnPaceChosen" />
+              <RadioButton x:Name="PaceFast" Content="Fast" Tag="Fast" FontSize="13" Click="OnPaceChosen" />
+              <RadioButton x:Name="PaceFastest" Content="Fastest" Tag="Full" FontSize="13" Click="OnPaceChosen" />
+              <TextBlock x:Name="PaceDetail" FontSize="12" Opacity="0.6" TextWrapping="Wrap" />
+              <Border Height="1" Background="#25808080" Margin="0,4" />
+              <CheckBox x:Name="CleanupToggle" FontSize="13" Click="OnCleanupToggled"
+                        Content="Polish punctuation with a language model" />
+              <TextBlock FontSize="12" Opacity="0.6" TextWrapping="Wrap"
+                         Text="Whisper's own punctuation is usually good. Polishing reworks it with a local model after the words are timed, and adds roughly half the recording's length to each transcription on this Mac." />
+            </StackPanel>
+          </Flyout>
+        </Button.Flyout>
+        <StackPanel>
+          <PathIcon Data="{StaticResource IconGauge}" />
+          <TextBlock Text="Pace" />
         </StackPanel>
       </Button>
       <Button x:Name="DiscardButton" Classes="toolbar" Click="OnDiscardClicked" ToolTip.Tip="Throw the transcript away">
@@ -254,19 +272,42 @@
     </ScrollViewer>
 
     <StackPanel Grid.Row="3" Margin="20,0,20,0">
-      <ContentControl x:Name="WaveformHost" Height="56" Margin="0,0,0,8" IsVisible="False" />
+      <!-- The transport lives with the thing it transports: a player-shaped strip, not a
+           toolbar verb. -->
+      <Grid x:Name="TransportRow" ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,8" IsVisible="False">
+        <Button Grid.Column="0" x:Name="PlayPauseButton" Click="OnPlayPauseClicked"
+                Width="36" Height="36" CornerRadius="18" Padding="0"
+                VerticalAlignment="Center" Margin="0,0,10,0"
+                ToolTip.Tip="Play or pause">
+          <PathIcon x:Name="PlayPauseIcon" Data="{StaticResource IconPlay}" Width="15" Height="15" />
+        </Button>
+        <ContentControl Grid.Column="1" x:Name="WaveformHost" Height="56" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="2" x:Name="TimeReadout" VerticalAlignment="Center"
+                   Margin="10,0,0,0" FontSize="12" Opacity="0.6"
+                   FontFamily="Menlo, monospace" Text="0:00 / 0:00" />
+      </Grid>
       <ProgressBar x:Name="WorkProgress" Minimum="0" Maximum="1" Height="4"
                    Margin="0,0,0,6" IsVisible="False" />
     </StackPanel>
 
-    <!-- Status on the left, the running models on the right: "is it using the Neural
-         Engine?" is the question everyone asks, and the answer lives where status lives. -->
-    <Border Grid.Row="4" BorderBrush="#20808080" BorderThickness="0,1,0,0" Padding="20,7">
+    <!-- The status gets the line; the models get a chip. Two full sentences side by side
+         left neither readable, and the model roster is a question asked now and then — "is
+         it on the Neural Engine?" — while the status is read constantly. The chip names the
+         three models in a word each and opens the full roster on click. -->
+    <Border Grid.Row="4" BorderBrush="#20808080" BorderThickness="0,1,0,0" Padding="20,6">
       <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Grid.Column="0" x:Name="StatusText" Opacity="0.7" FontSize="12.5"
-                   TextTrimming="CharacterEllipsis" Margin="0,0,16,0" />
-        <TextBlock Grid.Column="1" x:Name="HardwareText" Opacity="0.45" FontSize="12"
-                   TextTrimming="CharacterEllipsis" HorizontalAlignment="Right" />
+        <TextBlock Grid.Column="0" x:Name="StatusText" Opacity="0.75" FontSize="12.5"
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
+        <Button Grid.Column="1" x:Name="ModelsChip" Classes="toolbar" Padding="8,3"
+                FontSize="11.5" Opacity="0.7" IsVisible="False"
+                ToolTip.Tip="The models doing the work, and where each runs">
+          <Button.Flyout>
+            <Flyout Placement="TopEdgeAlignedRight">
+              <StackPanel x:Name="ModelsPanel" Spacing="10" Width="340" />
+            </Flyout>
+          </Button.Flyout>
+          <StackPanel x:Name="ModelsChipRow" Orientation="Horizontal" />
+        </Button>
       </Grid>
     </Border>
 

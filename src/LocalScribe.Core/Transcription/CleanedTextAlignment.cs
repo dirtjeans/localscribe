@@ -25,6 +25,16 @@ public static class CleanedTextAlignment
     /// <param name="cleaned">The same window as the model returned it.</param>
     public static IReadOnlyList<TranscriptSegment> Apply(
         IReadOnlyList<TranscriptSegment> segments,
+        string cleaned) =>
+        TryApply(segments, cleaned) ?? segments;
+
+    /// <summary>
+    /// Like <see cref="Apply"/>, but null when the cleaned text cannot be walked back onto the
+    /// segments without writing some of it twice — so the caller can count the window as
+    /// failed and keep it raw, instead of shipping a transcript with a window in it twice.
+    /// </summary>
+    public static IReadOnlyList<TranscriptSegment>? TryApply(
+        IReadOnlyList<TranscriptSegment> segments,
         string cleaned)
     {
         ArgumentNullException.ThrowIfNull(segments);
@@ -68,8 +78,9 @@ public static class CleanedTextAlignment
         var at = 0;
         var current = 0;
 
-        foreach (var word in words)
+        for (var i = 0; i < words.Length; i++)
         {
+            var word = words[i];
             var normalised = Normalise(word);
             var found = -1;
 
@@ -80,6 +91,16 @@ public static class CleanedTextAlignment
                     found = at + ahead;
                     break;
                 }
+            }
+
+            // Lost the place: the model dropped or reworded more than the lookahead covers.
+            // Without recovery the walk never moves again and every remaining word lands in
+            // the segment it is stuck in. A run of consecutive matches further on is strong
+            // enough evidence to jump to — one matching word alone could be a "the" from the
+            // middle of the next sentence.
+            if (found < 0)
+            {
+                found = Resynchronise(spoken, at, words, i);
             }
 
             if (found >= 0)
@@ -95,16 +116,63 @@ public static class CleanedTextAlignment
         }
 
         var rewritten = new TranscriptSegment[segments.Count];
+        var keptRaw = 0;
+
         for (var s = 0; s < segments.Count; s++)
         {
             // A segment that came out empty keeps what it had. Losing its words would lose a
             // seekable line from the transcript, which is worse than leaving one unpunctuated.
-            rewritten[s] = assigned[s].Count == 0
-                ? segments[s]
-                : segments[s] with { Text = string.Join(" ", assigned[s]) };
+            if (assigned[s].Count == 0)
+            {
+                rewritten[s] = segments[s];
+                keptRaw += Split(segments[s].Text).Length;
+            }
+            else
+            {
+                rewritten[s] = segments[s] with { Text = string.Join(" ", assigned[s]) };
+            }
         }
 
-        return rewritten;
+        // Kept-raw words sit beside cleaned words covering the same speech. A stray "um uh"
+        // emptied by cleanup is the legitimate case and costs a couple of words; whole
+        // sentences kept raw mean the walk lost its place and the window is in the transcript
+        // twice — which no amount of punctuation is worth.
+        return keptRaw > Math.Max(KeptRawAllowance, spoken.Count * KeptRawShare) ? null : rewritten;
+    }
+
+    /// <summary>How far past its place the walk will search for a run to resume from.</summary>
+    private const int ResyncReach = 64;
+
+    /// <summary>Consecutive matching words needed to trust a jump.</summary>
+    private const int ResyncRun = 3;
+
+    /// <summary>Raw words a mapping may keep beside cleaned text: a filler segment's worth.</summary>
+    private const int KeptRawAllowance = 4;
+
+    /// <summary>...or this share of the window, on a long one.</summary>
+    private const double KeptRawShare = 0.15;
+
+    private static int Resynchronise(
+        List<(string Word, int Segment)> spoken, int at, string[] words, int from)
+    {
+        var run = Math.Min(ResyncRun, words.Length - from);
+
+        for (var p = at; p < Math.Min(spoken.Count - run + 1, at + ResyncReach); p++)
+        {
+            var matches = true;
+
+            for (var k = 0; k < run && matches; k++)
+            {
+                matches = spoken[p + k].Word == Normalise(words[from + k]);
+            }
+
+            if (matches)
+            {
+                return p;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>

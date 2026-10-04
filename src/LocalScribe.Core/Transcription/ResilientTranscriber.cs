@@ -47,8 +47,14 @@ public sealed class ResilientTranscriber : ITranscriber
         // Remembered as well as forwarded: a replacement engine mid-recording must resume
         // the same task, or the transcript would change convention partway through.
         _task = task;
+        _heardBefore.Clear();
         _inner.BeginRecording(task);
     }
+
+    private readonly List<WordTimings.Word> _heardBefore = [];
+
+    public IReadOnlyList<WordTimings.Word> HeardWords =>
+        _heardBefore.Count == 0 ? _inner.HeardWords : [.. _heardBefore, .. _inner.HeardWords];
 
     public async Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
         AudioChunk chunk,
@@ -77,6 +83,18 @@ public sealed class ResilientTranscriber : ITranscriber
 
     private void Restart()
     {
+        // The words the failed engine heard are still true of the recording; the fresh
+        // engine starts with none, and without these the windows before the failure would
+        // lose their times mid-stream.
+        try
+        {
+            _heardBefore.AddRange(_inner.HeardWords);
+        }
+        catch (Exception)
+        {
+            // A failed engine may not answer at all; its words are a convenience.
+        }
+
         try
         {
             _inner.Dispose();

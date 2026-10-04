@@ -52,12 +52,18 @@ public sealed class ForcedAligner : IDisposable
     }
 
     /// <summary>Loads the aligner from a directory, or throws saying what is missing.</summary>
-    public static ForcedAligner Load(string directory, ExecutionPlan? plan = null)
+    /// <param name="modelFileName">
+    /// A specific build to load, for the doctor's trials, which must compare against fp16 even
+    /// on a machine that prefers the 4-bit build. Null picks this machine's preference.
+    /// </param>
+    public static ForcedAligner Load(string directory, ExecutionPlan? plan = null, string? modelFileName = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(directory);
 
-        var model = ModelIn(directory)
-            ?? throw new FileNotFoundException($"No alignment model under {directory}.");
+        var model = (modelFileName is null ? ModelIn(directory) : Path.Combine(directory, modelFileName)) is { } found
+            && File.Exists(found)
+                ? found
+                : throw new FileNotFoundException($"No alignment model under {directory}.");
 
         var vocabulary = Path.Combine(directory, "vocab.json");
         if (!File.Exists(vocabulary))
@@ -893,7 +899,14 @@ public sealed class ForcedAligner : IDisposable
         // Whichever export is present. The half-precision one is preferred: the quantised builds
         // use ConvInteger, which ONNX Runtime has no ARM64 implementation for, so a machine that
         // downloaded one would fail at load rather than run slowly.
-        foreach (var name in new[] { "model_fp16.onnx", "model.onnx", "model_fp32.onnx" })
+        // The 4-bit build quantises only the MatMuls (MatMulNBits, which has ARM64 kernels) and
+        // so loads where the int8 builds do not. It leads on macOS, where --aligner-trial
+        // graded it equal to fp16 and faster; elsewhere fp16 leads until the trial is run there.
+        string[] names = Core.Models.AlignmentModelSource.PreferQuantised
+            ? ["model_q4.onnx", "model_fp16.onnx", "model.onnx", "model_fp32.onnx", "model_q4f16.onnx"]
+            : ["model_fp16.onnx", "model.onnx", "model_fp32.onnx", "model_q4.onnx", "model_q4f16.onnx"];
+
+        foreach (var name in names)
         {
             var path = Path.Combine(directory, name);
             if (File.Exists(path))

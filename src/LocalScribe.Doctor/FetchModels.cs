@@ -186,7 +186,7 @@ internal static class FetchModels
         Console.WriteLine();
         Console.WriteLine($"Fetching the word aligner into {directory}");
         Console.WriteLine(
-            $"About {Mib(AlignmentModelSource.ApproximateBytes)}. Without it, word times are "
+            $"About {Mib(AlignmentModelSource.ApproximateBytesForThisMachine)}. Without it, word times are "
             + "estimated from loudness rather than measured.");
         Console.WriteLine();
 
@@ -195,7 +195,7 @@ internal static class FetchModels
         try
         {
             var results = await fetcher
-                .FetchAsync(directory, AlignmentModelSource.Files, progress, force)
+                .FetchAsync(directory, AlignmentModelSource.FilesForThisMachine, progress, force)
                 .ConfigureAwait(false);
 
             progress.Finish();

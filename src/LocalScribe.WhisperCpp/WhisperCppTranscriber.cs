@@ -23,11 +23,15 @@ public sealed class WhisperCppTranscriber : ITranscriber
     private WhisperProcessor? _processor;
     private SpeechTask _task = SpeechTask.Transcribe;
     private string? _language;
+    private readonly bool _hearsWords;
+    private readonly object _heardGate = new();
+    private List<WordTimings.Word> _heard = [];
 
-    private WhisperCppTranscriber(WhisperFactory factory, string modelName, int threads)
+    private WhisperCppTranscriber(WhisperFactory factory, string modelName, int threads, bool hearsWords)
     {
         _factory = factory;
         _threads = threads;
+        _hearsWords = hearsWords;
 
         // The loaded native library is named so a Core ML build that quietly fell back to the
         // CPU runtime is visible in every report. Silent fallback to the wrong processor is
@@ -84,10 +88,64 @@ public sealed class WhisperCppTranscriber : ITranscriber
             ];
         }
 
+        // Word times from the decoder's cross-attention need the alignment heads of the exact
+        // model, which whisper.cpp publishes per size; a model with no preset transcribes as
+        // before and leaves its words to the aligner.
+        // Measured on the podcast at Balanced: 68-70 s to transcribe against 60 s without,
+        // because the timed decode ends its segments differently and the chunker takes two
+        // more windows; each window costs the same. The scan finishing a few seconds later is
+        // the price of every line being clickable as it lands. LOCALSCRIBE_HEARD_WORDS=0 turns
+        // it off so that cost can be measured again rather than argued. The DTW times arrive
+        // without WithTokenTimestamps, which was tried and changed nothing but the work.
+        var heads = Environment.GetEnvironmentVariable("LOCALSCRIBE_HEARD_WORDS") == "0"
+            ? WhisperAlignmentHeadsPreset.None
+            : HeadsFor(name);
+        var options = heads == WhisperAlignmentHeadsPreset.None
+            ? new WhisperFactoryOptions()
+            : new WhisperFactoryOptions { UseDtwTimeStamps = true, HeadsPreset = heads };
+
         return new WhisperCppTranscriber(
-            WhisperFactory.FromPath(modelPath),
+            WhisperFactory.FromPath(modelPath, options),
             name,
-            plan.CpuBudget.IntraOpThreads);
+            plan.CpuBudget.IntraOpThreads,
+            heads != WhisperAlignmentHeadsPreset.None);
+    }
+
+    /// <summary>The alignment-heads preset for a model by its published name.</summary>
+    internal static WhisperAlignmentHeadsPreset HeadsFor(string name) => name switch
+    {
+        "large-v3-turbo" or "large-v3-turbo-q5_0" or "large-v3-turbo-q8_0" => WhisperAlignmentHeadsPreset.LargeV3Turbo,
+        "large-v3" or "large-v3-q5_0" => WhisperAlignmentHeadsPreset.LargeV3,
+        "large-v2" or "large-v2-q5_0" => WhisperAlignmentHeadsPreset.LargeV2,
+        "large-v1" or "large" => WhisperAlignmentHeadsPreset.LargeV1,
+        "medium" or "medium-q5_0" => WhisperAlignmentHeadsPreset.Medium,
+        "medium.en" or "medium.en-q5_0" => WhisperAlignmentHeadsPreset.MediumEn,
+        "small" or "small-q5_1" => WhisperAlignmentHeadsPreset.Small,
+        "small.en" or "small.en-q5_1" => WhisperAlignmentHeadsPreset.SmallEn,
+        "base" or "base-q5_1" => WhisperAlignmentHeadsPreset.Base,
+        "base.en" or "base.en-q5_1" => WhisperAlignmentHeadsPreset.BaseEn,
+        "tiny" or "tiny-q5_1" => WhisperAlignmentHeadsPreset.Tiny,
+        "tiny.en" or "tiny.en-q5_1" => WhisperAlignmentHeadsPreset.TinyEn,
+        _ => WhisperAlignmentHeadsPreset.None,
+    };
+
+    /// <summary>
+    /// How late Whisper's cross-attention places a word, against the aligner that
+    /// --check-words verified on the audio: +0.12 to +0.18 s on the two reference recordings,
+    /// constant across each with no drift (doctor --aligner-trial). Taken off so a highlight
+    /// driven by these times lands on the word rather than just after it.
+    /// </summary>
+    private const double CrossAttentionLagSeconds = 0.15;
+
+    public IReadOnlyList<WordTimings.Word> HeardWords
+    {
+        get
+        {
+            lock (_heardGate)
+            {
+                return _heard;
+            }
+        }
     }
 
     public void BeginRecording(SpeechTask task = SpeechTask.Transcribe)
@@ -101,6 +159,11 @@ public sealed class WhisperCppTranscriber : ITranscriber
         _language = null;
         _processor?.Dispose();
         _processor = null;
+
+        lock (_heardGate)
+        {
+            _heard = [];
+        }
     }
 
     public async Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkAsync(
@@ -126,6 +189,7 @@ public sealed class WhisperCppTranscriber : ITranscriber
 
         var processor = _processor ??= BuildProcessor();
         var segments = new List<TranscriptSegment>();
+        var heard = new List<WordTimings.Word>();
 
         await foreach (var segment in processor
             .ProcessAsync(samples, cancellationToken)
@@ -161,9 +225,80 @@ public sealed class WhisperCppTranscriber : ITranscriber
                 chunk.StartSeconds + startInWindow,
                 chunk.StartSeconds + Math.Min(endInWindow, chunk.ContentSeconds),
                 confidence));
+
+            if (_hearsWords)
+            {
+                HearWords(segment, chunk, heard);
+            }
+        }
+
+        if (heard.Count > 0)
+        {
+            // Replaced rather than appended in place: readers hold the previous list, and a
+            // list never changes after it is handed out.
+            lock (_heardGate)
+            {
+                _heard = [.. _heard, .. heard];
+            }
         }
 
         return segments;
+    }
+
+    /// <summary>
+    /// Joins a segment's BPE tokens into words, each stamped where its first token was heard.
+    /// </summary>
+    private static void HearWords(SegmentData segment, AudioChunk chunk, List<WordTimings.Word> heard)
+    {
+        var building = string.Empty;
+        var start = 0.0;
+
+        void Flush()
+        {
+            if (building.Trim().Length > 0)
+            {
+                heard.Add(new WordTimings.Word(building.Trim(), start, start));
+            }
+
+            building = string.Empty;
+        }
+
+        foreach (var token in segment.Tokens)
+        {
+            var text = token.Text ?? string.Empty;
+
+            // Special tokens ([_BEG_], [_TT_123], <|en|>) carry no word; a token whisper.cpp
+            // could not place reports a negative time.
+            if (text.StartsWith("[_", StringComparison.Ordinal)
+                || text.StartsWith("<|", StringComparison.Ordinal)
+                || token.DtwTimestamp < 0)
+            {
+                continue;
+            }
+
+            // A leading space starts a word; BPE pieces without one continue it.
+            if (text.StartsWith(' ') && building.Length > 0)
+            {
+                Flush();
+            }
+
+            if (building.Length == 0)
+            {
+                var inWindow = (token.DtwTimestamp / 100.0) - CrossAttentionLagSeconds;
+
+                // Padding past the window's real audio is not speech, whatever was heard there.
+                if (inWindow > chunk.ContentSeconds)
+                {
+                    continue;
+                }
+
+                start = chunk.StartSeconds + Math.Max(0, inWindow);
+            }
+
+            building += text;
+        }
+
+        Flush();
     }
 
     private WhisperProcessor BuildProcessor()

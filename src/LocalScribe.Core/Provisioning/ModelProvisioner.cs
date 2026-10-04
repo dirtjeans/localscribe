@@ -106,7 +106,8 @@ public sealed class ModelProvisioner(
     }
 
     private static bool HasAligner(string modelRoot) =>
-        File.Exists(Path.Combine(modelRoot, AlignmentModelSource.DirectoryName, "model_fp16.onnx"));
+        File.Exists(Path.Combine(
+            modelRoot, AlignmentModelSource.DirectoryName, AlignmentModelSource.ModelFileNameForThisMachine));
 
     private async Task<bool> FetchWhisperCppAsync(
         string modelRoot,
@@ -149,8 +150,8 @@ public sealed class ModelProvisioner(
         {
             await _fetcher.FetchAsync(
                     Path.Combine(modelRoot, AlignmentModelSource.DirectoryName),
-                    AlignmentModelSource.Files,
-                    Staged(progress, "the word aligner", AlignmentModelSource.ApproximateBytes),
+                    AlignmentModelSource.FilesForThisMachine,
+                    Staged(progress, "the word aligner", AlignmentModelSource.ApproximateBytesForThisMachine),
                     force: false,
                     cancellationToken)
                 .ConfigureAwait(false);

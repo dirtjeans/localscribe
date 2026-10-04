@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Interactivity;
@@ -7,6 +8,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using LocalScribe.App;
+using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
 using LocalScribe.Core.Provisioning;
@@ -81,15 +83,6 @@ public sealed partial class MainWindow : Window
         };
         WaveformHost.Content = _waveform;
 
-        // Scrolls that arrive outside the window we granted our own BringIntoView are the
-        // user's, and the marker stops steering until they ask for playback again.
-        TranscriptScroll.ScrollChanged += (_, _) =>
-        {
-            if (DateTime.UtcNow > _autoScrollUntil && _viewModel.Player.IsPlaying)
-            {
-                _followPlayback = false;
-            }
-        };
 
         RefreshControls();
 
@@ -108,6 +101,12 @@ public sealed partial class MainWindow : Window
         // Only now is the offer honest: before initialisation, "no cleanup model" would just
         // mean "not looked yet".
         _initialised = true;
+        SyncPaceControls();
+
+        // Nemotron tells eight people apart and the pipeline ten; offering the stepper more
+        // than this machine's engine can deliver would be a promise the models cannot keep.
+        SpeakerCountBox.Maximum = SpeakerEngines.MostSpeakers(SpeakerEngines.Current);
+
         RefreshControls();
 
         await _viewModel.PreloadAsync();
@@ -205,7 +204,7 @@ public sealed partial class MainWindow : Window
     /// than costing the transcript. One hiccup is invisible but counted; a window that fails
     /// a fresh engine too still fails honestly.
     /// </summary>
-    private static ITranscriber OpenEngine(ExecutionPlan plan, string? onnxDirectory) =>
+    internal static ITranscriber OpenEngine(ExecutionPlan plan, string? onnxDirectory) =>
         new ResilientTranscriber(() => OpenRawEngine(plan, onnxDirectory));
 
     /// <summary>whisper.cpp whenever its model is on disk, the ONNX layout otherwise.</summary>
@@ -290,31 +289,51 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnPlayClicked(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Where a pause left off, so play resumes there. Null once playback starts anywhere
+    /// else or reaches the end — a finished recording plays again from the top.
+    /// </summary>
+    private double? _pausedAtSeconds;
+
+    private void OnPlayPauseClicked(object? sender, RoutedEventArgs e)
     {
         if (_viewModel.Player.IsPlaying)
         {
+            // Pause is a stop that remembers: the player itself only stops, and the newest
+            // marker position is the honest place to resume from.
+            _pausedAtSeconds = Volatile.Read(ref _latestPositionSeconds);
             _viewModel.Player.Stop();
         }
         else if (_viewModel.Player.HasAudio)
         {
-            StartPlayback(0);
+            var resumeAt = _pausedAtSeconds ?? 0;
+            _pausedAtSeconds = null;
+            StartPlayback(resumeAt);
         }
     }
 
     /// <summary>
-    /// Whether the transcript follows the marker. True until the user scrolls away during
-    /// playback — reading back is a decision, and yanking the view away from it made the
-    /// transcript unreadable while anything played. Asking to hear something re-engages it.
+    /// Whether the transcript follows the marker. Re-engaged by asking to hear something;
+    /// surrendered the moment the highlight is scrolled out of view — the follow is for a
+    /// reader who was already there, and detecting "the user scrolled" by timing windows
+    /// failed whenever the marker itself was scrolling.
     /// </summary>
     private bool _followPlayback = true;
     private bool _scrubWasPlaying;
-    private DateTime _autoScrollUntil = DateTime.MinValue;
 
     private void StartPlayback(double seconds)
     {
         _followPlayback = true;
+        _pausedAtSeconds = null;
         _viewModel.Player.PlayFrom(seconds);
+
+        // The button reflects the player, not the marker: gating the pause glyph on a
+        // highlighted paragraph left it reading "play" whenever sound came from the untimed
+        // tail, where no paragraph is highlighted at all.
+        if (_viewModel.Player.IsPlaying)
+        {
+            PlayPauseIcon.Data = (Geometry)this.FindResource("IconPause")!;
+        }
     }
 
     private async void OnSaveClicked(object? sender, RoutedEventArgs e) => await SaveAsync();
@@ -420,6 +439,47 @@ public sealed partial class MainWindow : Window
         await _viewModel.FindSpeakersAsync(null);
     }
 
+    /// <summary>
+    /// The pace is the planner's budget with the user's hand on it. The default stop is the
+    /// planner's own answer, unchanged — the invariant — and the detail line names exactly
+    /// what each stop spends on this machine, so the choice is informed rather than vibes.
+    /// </summary>
+    private void OnPaceChosen(object? sender, RoutedEventArgs e)
+    {
+        if (sender is RadioButton { Tag: string name })
+        {
+            _viewModel.Pace = WorkPaces.Parse(name);
+            PaceDetail.Text = _viewModel.PaceDescription;
+        }
+    }
+
+    private void OnCleanupToggled(object? sender, RoutedEventArgs e)
+    {
+        _viewModel.CleanupEnabled = CleanupToggle.IsChecked == true;
+        RefreshControls();
+    }
+
+    private void SyncPaceControls()
+    {
+        if (CleanupToggle is not null)
+        {
+            CleanupToggle.IsChecked = _viewModel.CleanupEnabled;
+        }
+
+        // Flyout content can be wired lazily; a launch must never die over a pace label.
+        if (PaceLight is null || PaceDetail is null)
+        {
+            return;
+        }
+
+        var pace = _viewModel.Pace;
+        PaceLight.IsChecked = pace == WorkPace.Light;
+        PaceBalanced.IsChecked = pace == WorkPace.Balanced;
+        PaceFast.IsChecked = pace == WorkPace.Fast;
+        PaceFastest.IsChecked = pace == WorkPace.Full;
+        PaceDetail.Text = _viewModel.PaceDescription;
+    }
+
     /* ---- the close gate ---------------------------------------------------------------- */
 
     /// <summary>
@@ -483,10 +543,13 @@ public sealed partial class MainWindow : Window
         {
             case nameof(MainViewModel.Status):
                 StatusText.Text = _viewModel.Status;
+
+                // The ellipsis keeps layouts honest; the tooltip keeps the words available.
+                ToolTip.SetTip(StatusText, _viewModel.Status);
                 break;
 
             case nameof(MainViewModel.HardwareSummary):
-                HardwareText.Text = _viewModel.HardwareSummary;
+                ShowModels(_viewModel.HardwareSummary);
                 break;
 
             case nameof(MainViewModel.Progress):
@@ -502,7 +565,7 @@ public sealed partial class MainWindow : Window
                 // rebuild happens once, when the work settles.
                 if (_viewModel.IsBusy)
                 {
-                    RebuildParagraphsLight();
+                    ScheduleStreamingRebuild();
                 }
                 else
                 {
@@ -548,25 +611,276 @@ public sealed partial class MainWindow : Window
         UpdateGlow((_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing);
         // The offer waits its turn: advertising setup mid-transcription reads as "something
         // is wrong right now", which is not what an absent optional model means.
-        Reveal(CleanupOffer, _initialised && !_provisioningFoundry && !_viewModel.IsBusy
-            && !_viewModel.IsRecording && _viewModel.CleanupModel is null);
+        Reveal(CleanupOffer, _initialised && _viewModel.CleanupEnabled && !_provisioningFoundry
+            && !_viewModel.IsBusy && !_viewModel.IsRecording && _viewModel.CleanupModel is null);
         OpenButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsRecording;
         RecordButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsPreparing;
         RecordLabel.Text = _viewModel.IsRecording ? "Stop" : "Record";
         RecordIcon.Data = (Geometry)this.FindResource(_viewModel.IsRecording ? "IconStop" : "IconMic")!;
         RecordingDot.IsVisible = _viewModel.IsRecording;
-        PlayButton.IsEnabled = _viewModel.Player.HasAudio && !_viewModel.IsRecording;
+        PlayPauseButton.IsEnabled = _viewModel.Player.HasAudio && !_viewModel.IsRecording;
         SaveButton.IsEnabled = _viewModel.CanSaveArchive;
         ExportButton.IsEnabled = _viewModel.HasTranscript;
         SpeakersButton.IsEnabled = _viewModel.CanFindSpeakers && !_viewModel.IsBusy;
         DiscardButton.IsEnabled = _viewModel.HasTranscript;
 
-        Reveal(WaveformHost, _viewModel.Player.HasAudio);
+        Reveal(TransportRow, _viewModel.Player.HasAudio);
+
+        if (_viewModel.ActiveModels != _shownActive)
+        {
+            RenderModels();
+        }
 
         if (_viewModel.Player.HasAudio)
         {
             _waveform.SetAudio(_viewModel.Player.DurationSeconds);
         }
+    }
+
+    /* ---- the models chip ------------------------------------------------------------- */
+
+    /// <summary>
+    /// Turns the view model's one-line roster into a chip and a panel. The roster is one string
+    /// in the shared view model — the WinUI window shows it whole — so it is taken apart here
+    /// by its separator rather than changing what Windows reads.
+    /// </summary>
+    private string[] _rosterParts = [];
+    private MainViewModel.ModelRoles _shownActive = MainViewModel.ModelRoles.None;
+
+    private static readonly IBrush WorkingBrush = new SolidColorBrush(Color.FromRgb(168, 85, 247));
+
+    private void ShowModels(string roster)
+    {
+        var parts = roster.Split(" · ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+        // The aligner is not in the shared roster — the WinUI window prints that line whole,
+        // and Windows has not been asked to make room for it — but it is the stage that runs
+        // longest, so a chip that lights up what is working cannot leave it out.
+        if (parts.Count > 0 && AlignerPart() is { } aligner)
+        {
+            parts.Insert(1, aligner);
+        }
+
+        _rosterParts = [.. parts];
+        RenderModels();
+    }
+
+    private static string? AlignerPart()
+    {
+        if (ForcedAligner.Find(FindModelRoot()) is not { } directory)
+        {
+            return null;
+        }
+
+        var quantised = File.Exists(Path.Combine(directory, AlignmentModelSource.QuantisedModelFileName))
+            && AlignmentModelSource.PreferQuantised;
+        return quantised ? "MMS word aligner, 4-bit" : "MMS word aligner, fp16";
+    }
+
+    /// <summary>
+    /// Draws the chip and the panel, lighting whichever models are running inference now.
+    /// Rebuilt only at stage boundaries — a handful of times a run — so building it whole is
+    /// simpler than keeping controls to toggle.
+    /// </summary>
+    private void RenderModels()
+    {
+        var active = _viewModel.ActiveModels;
+        _shownActive = active;
+
+        if (_rosterParts.Length == 0)
+        {
+            ModelsChip.IsVisible = false;
+            return;
+        }
+
+        ModelsChip.IsVisible = true;
+
+        // The chip sits faded at rest so it never competes with the status line; while a
+        // model works it comes up to full strength, which is the point of looking at it.
+        ModelsChip.Opacity = active == MainViewModel.ModelRoles.None ? 0.7 : 1;
+        ModelsChipRow.Children.Clear();
+
+        for (var i = 0; i < _rosterParts.Length; i++)
+        {
+            var part = _rosterParts[i];
+            var working = (RoleOf(part) & active) != 0;
+
+            if (i > 0)
+            {
+                ModelsChipRow.Children.Add(new TextBlock { Text = " · ", Opacity = 0.6 });
+            }
+
+            if (working)
+            {
+                ModelsChipRow.Children.Add(new Avalonia.Controls.Shapes.Ellipse
+                {
+                    Width = 6,
+                    Height = 6,
+                    Fill = WorkingBrush,
+                    Margin = new Thickness(0, 0, 4, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Classes = { "pulse" },
+                });
+            }
+
+            ModelsChipRow.Children.Add(new TextBlock
+            {
+                Text = Nickname(part),
+                FontWeight = working ? FontWeight.SemiBold : FontWeight.Normal,
+                Foreground = working ? WorkingBrush : null,
+                Opacity = working || active == MainViewModel.ModelRoles.None ? 1 : 0.6,
+            });
+        }
+
+        ToolTip.SetTip(ModelsChip, active == MainViewModel.ModelRoles.None
+            ? "The models doing the work, and where each runs"
+            : "Lit: the models working right now. Click for detail.");
+
+        ModelsPanel.Children.Clear();
+        ModelsPanel.Children.Add(new TextBlock
+        {
+            Text = "Models in use",
+            FontWeight = FontWeight.SemiBold,
+            FontSize = 13,
+        });
+
+        foreach (var part in _rosterParts)
+        {
+            var (role, detail) = Describe(part);
+            var working = (RoleOf(part) & active) != 0;
+
+            ModelsPanel.Children.Add(new StackPanel
+            {
+                Spacing = 1,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = working ? $"{role} — working now" : role,
+                        FontSize = 11.5,
+                        Opacity = working ? 1 : 0.6,
+                        Foreground = working ? WorkingBrush : null,
+                        FontWeight = working ? FontWeight.SemiBold : FontWeight.Normal,
+                    },
+                    new TextBlock { Text = detail, FontSize = 12.5, TextWrapping = TextWrapping.Wrap },
+                },
+            });
+        }
+    }
+
+    private static MainViewModel.ModelRoles RoleOf(string part)
+    {
+        var p = part.ToLowerInvariant();
+
+        if (p.Contains("aligner"))
+        {
+            return MainViewModel.ModelRoles.Words;
+        }
+
+        if (p.Contains("whisper") || p.StartsWith("encoder", StringComparison.Ordinal))
+        {
+            return MainViewModel.ModelRoles.Transcription;
+        }
+
+        if (p.Contains("speakers"))
+        {
+            return MainViewModel.ModelRoles.Speakers;
+        }
+
+        if (p.Contains("cleanup off") || p.Contains("no cleanup"))
+        {
+            return MainViewModel.ModelRoles.None;
+        }
+
+        return p.Contains("qwen") || p.Contains("cleanup")
+            ? MainViewModel.ModelRoles.Cleanup
+            : MainViewModel.ModelRoles.None;
+    }
+
+    /// <summary>A word or two per model, for the chip.</summary>
+    private static string Nickname(string part)
+    {
+        var p = part.ToLowerInvariant();
+
+        if (p.Contains("aligner"))
+        {
+            return "MMS aligner";
+        }
+
+        if (p.Contains("whisper"))
+        {
+            return p.Contains("turbo") ? "Whisper turbo" : "Whisper";
+        }
+
+        if (p.Contains("nemotron"))
+        {
+            return "Nemotron";
+        }
+
+        if (p.Contains("pyannote"))
+        {
+            return "pyannote";
+        }
+
+        if (p.Contains("no cleanup"))
+        {
+            return "no cleanup";
+        }
+
+        if (p.Contains("cleanup off"))
+        {
+            return "cleanup off";
+        }
+
+        if (p.Contains("qwen"))
+        {
+            var size = System.Text.RegularExpressions.Regex.Match(p, @"(\d+(\.\d+)?)b");
+            return size.Success ? $"Qwen {size.Groups[1].Value}B" : "Qwen";
+        }
+
+        if (p.StartsWith("cleanup:", StringComparison.Ordinal))
+        {
+            return "cleanup";
+        }
+
+        // Unknown shapes (the ONNX encoder/decoder line, a new model) fall back to their
+        // first few words rather than to nothing.
+        return string.Join(' ', part.Split(' ').Take(3));
+    }
+
+    /// <summary>The role and the full description, for the panel.</summary>
+    private static (string Role, string Detail) Describe(string part)
+    {
+        var p = part.ToLowerInvariant();
+
+        if (p.Contains("aligner"))
+        {
+            return ("Word timing", part + " — on the CPU; places each word against the audio");
+        }
+
+        if (p.Contains("whisper") || p.StartsWith("encoder", StringComparison.Ordinal))
+        {
+            var where = p.Contains("coreml") ? " — encoder on the Neural Engine" : string.Empty;
+            return ("Transcription", part + where);
+        }
+
+        if (p.Contains("speakers"))
+        {
+            return ("Who spoke", part.Replace(" speakers", string.Empty, StringComparison.Ordinal) + " — on the CPU");
+        }
+
+        if (p.Contains("cleanup off"))
+        {
+            return ("Punctuation cleanup",
+                "Off — Whisper's own punctuation is used. Turn it on under Pace (adds time).");
+        }
+
+        if (p.StartsWith("cleanup:", StringComparison.Ordinal) || p.Contains("cleanup"))
+        {
+            return ("Punctuation cleanup", part.Replace("cleanup: ", string.Empty, StringComparison.Ordinal));
+        }
+
+        return ("Model", part);
     }
 
     /* ---- the working glow -------------------------------------------------------------- */
@@ -592,6 +906,10 @@ public sealed partial class MainWindow : Window
 
     private void UpdateGlow(bool working)
     {
+        // The glow and the sleep assertion are the same statement in two audiences: something
+        // is working, so the person sees a sweep and the machine holds off idle sleep.
+        SleepAssertion.While(working || _viewModel.IsRecording);
+
         if (working && _glowTimer is null)
         {
             // One brush feeds both rings, so the halo's bloom and the crisp edge sweep as a
@@ -650,17 +968,75 @@ public sealed partial class MainWindow : Window
 
     private readonly List<IReadOnlyList<WordRun>> _paragraphWordRuns = [];
 
-    /// <summary>True while the panel holds the streaming placeholder rather than word runs.</summary>
+    /// <summary>True while the panel holds the streaming shape rather than the final build.</summary>
     private bool _lightParagraphs;
 
+    private bool _streamRebuildQueued;
+
+    /// <summary>Whether the last streaming build rendered any clickable rows yet.</summary>
+    private bool _streamHasTimedRows;
+
     /// <summary>
-    /// The streaming shape of the transcript: plain text, no word runs, no timings priced.
-    /// Clicking and the marker want the full build, and get it the moment the run finishes.
+    /// Coalesces streaming rebuilds, latest-wins: cleanup windows and head-timing passes both
+    /// replace the transcript every few seconds, and rebuilding per update was the hog. One
+    /// rebuild per interval reads identically and the final build lands when the run ends.
     /// </summary>
-    private void RebuildParagraphsLight()
+    /// <summary>Whether this run already spent its one unthrottled rebuild.</summary>
+    private bool _streamPrimeAttempted;
+
+    private void ScheduleStreamingRebuild()
     {
+        // The moment the first words graduate to measured, render now: the status bar
+        // announces "clickable through…" the instant the view model times them, and a
+        // coalescing delay right then is a status line telling a small lie. ONE attempt,
+        // whatever it finds: the measured table is keyed by segment value, and when its
+        // records do not match the rows on screen this condition stays true forever — as a
+        // standing bypass it rebuilt a 950-row transcript on every streamed update, and the
+        // window spent the whole transcription painting instead of showing words.
+        if (!_streamPrimeAttempted && !_streamHasTimedRows && _viewModel.HasMeasuredWords)
+        {
+            _streamPrimeAttempted = true;
+            RebuildParagraphsStreaming();
+            return;
+        }
+
+        if (_streamRebuildQueued)
+        {
+            return;
+        }
+
+        _streamRebuildQueued = true;
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            _streamRebuildQueued = false;
+
+            if (_speakerMenuOpen)
+            {
+                // The menu's Closed handler schedules the rebuild this skipped.
+                return;
+            }
+
+            if (_viewModel.IsBusy)
+            {
+                RebuildParagraphsStreaming();
+            }
+        }, TimeSpan.FromMilliseconds(400));
+    }
+
+    /// <summary>
+    /// The streaming shape of the transcript, matching the Windows window: the timed head is
+    /// full clickable word runs — its words carry measured times already, so building them
+    /// prices nothing against the audio — and the untimed tail is quiet plain text, offered
+    /// no click on purpose: a click on unmeasured stamps lands unpredictably, which is worse
+    /// than a click that plainly is not on offer yet.
+    /// </summary>
+    private void RebuildParagraphsStreaming()
+    {
+        var offset = TranscriptScroll.Offset;
+
         _lightParagraphs = true;
-        _shownParagraphs = [];
+        _shownParagraphs = _viewModel.Paragraphs;
         _paragraphBorders.Clear();
         _paragraphWordRuns.Clear();
         _highlightedRuns.Clear();
@@ -668,22 +1044,82 @@ public sealed partial class MainWindow : Window
         _searchMatches.Clear();
         ParagraphsPanel.Children.Clear();
 
-        foreach (var paragraph in _viewModel.Paragraphs)
+        _streamHasTimedRows = false;
+
+        foreach (var paragraph in _shownParagraphs)
         {
-            ParagraphsPanel.Children.Add(new TextBlock
+            // Any timed segment makes the row worth the full build: its timed stretch is
+            // clickable now, its grey rest fills in as timing reaches it. All-segments was
+            // the first gate here, and one long opening paragraph held the whole head
+            // hostage — "clickable through 0:58" on screen, nothing clickable under it.
+            var timed = paragraph.Segments.Any(_viewModel.IsTimed);
+
+            _streamHasTimedRows |= timed;
+
+            if (timed)
             {
-                Text = paragraph.Text,
-                TextWrapping = TextWrapping.Wrap,
-                FontSize = 15,
-                LineHeight = 24,
-                Margin = new Avalonia.Thickness(12, 7),
-            });
+                var lines = new StackPanel { Spacing = 2 };
+
+                if (paragraph.Speaker is { Length: > 0 } speaker)
+                {
+                    // Renameable the moment it appears: the view model keeps the name against
+                    // the voice, so the windows still to come arrive already carrying it.
+                    lines.Children.Add(new TextBlock
+                    {
+                        Text = speaker,
+                        FontWeight = FontWeight.Bold,
+                        FontSize = 13,
+                        Opacity = 0.8,
+                        ContextMenu = BuildSpeakerMenu(paragraph),
+                    });
+                }
+
+                lines.Children.Add(BuildWordBlock(paragraph, streaming: true));
+
+                var border = new Border
+                {
+                    Child = lines,
+                    Padding = new Avalonia.Thickness(12, 7),
+                    CornerRadius = new Avalonia.CornerRadius(8),
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    Classes = { "paragraph" },
+                };
+
+                _paragraphBorders.Add(border);
+                ParagraphsPanel.Children.Add(border);
+            }
+            else
+            {
+                // Indexes stay aligned with the timed rows so the marker and search maths
+                // hold; the empty run list makes this row invisible to both.
+                _paragraphWordRuns.Add([]);
+                var placeholder = new Border
+                {
+                    Child = new TextBlock
+                    {
+                        Text = paragraph.Text,
+                        TextWrapping = TextWrapping.Wrap,
+                        FontSize = 15,
+                        LineHeight = 24,
+                        Opacity = 0.75,
+                    },
+                    Padding = new Avalonia.Thickness(12, 7),
+                };
+
+                _paragraphBorders.Add(placeholder);
+                ParagraphsPanel.Children.Add(placeholder);
+            }
         }
+
+        // The reader's place survives the swap; following the tail is the marker's job, and
+        // only for a reader who was already there.
+        TranscriptScroll.Offset = offset;
     }
 
     private void RebuildParagraphs()
     {
         _lightParagraphs = false;
+        _streamPrimeAttempted = false;
         _shownParagraphs = _viewModel.Paragraphs;
         _paragraphBorders.Clear();
         _paragraphWordRuns.Clear();
@@ -768,8 +1204,30 @@ public sealed partial class MainWindow : Window
             }
         };
 
-        return new ContextMenu { Items = { thisPart, everywhere, byVoice } };
+        // By voice compares this paragraph against the finished transcript's others, which
+        // mid-run do not exist yet; the two renames that are kept against voice and time work
+        // from the first label on.
+        var menu = _viewModel.IsBusy
+            ? new ContextMenu { Items = { thisPart, everywhere } }
+            : new ContextMenu { Items = { thisPart, everywhere, byVoice } };
+
+        // A streamed update rebuilds every row, and the menu with it — closing it under the
+        // pointer. Rebuilds wait while one is open; see ScheduleStreamingRebuild.
+        menu.Opened += (_, _) => _speakerMenuOpen = true;
+        menu.Closed += (_, _) =>
+        {
+            _speakerMenuOpen = false;
+
+            if (_viewModel.IsBusy)
+            {
+                ScheduleStreamingRebuild();
+            }
+        };
+
+        return menu;
     }
+
+    private bool _speakerMenuOpen;
 
     private async Task<string?> AskForName(string? current)
     {
@@ -779,16 +1237,18 @@ public sealed partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
     }
 
-    /// <summary>
-    /// A paragraph as one run per word, so a word can be lit and a click can be mapped back to
-    /// a time. The display text is built from the words themselves rather than from the
-    /// paragraph's own string: the two agree except over stray whitespace, and it is the words
-    /// that carry the times.
-    /// </summary>
-    private Control BuildWordBlock(TranscriptParagraph paragraph)
-    {
-        var words = _viewModel.WordsIn(paragraph.Segments);
+    private static readonly IBrush UntimedBrush = new SolidColorBrush(Color.FromArgb(130, 128, 128, 128));
 
+    /// <summary>
+    /// A paragraph as one run per word, so a word can be lit and a click can be mapped back
+    /// to a time — at segment grain: while a run streams, a paragraph can be half measured,
+    /// and its timed segments are clickable now while the untimed rest waits in grey. That is
+    /// the Windows behaviour ("the grey lines follow as timing reaches them"), and it is what
+    /// keeps a long opening paragraph from holding the whole head hostage. The display text
+    /// is built from the words themselves; it is the words that carry the times.
+    /// </summary>
+    private Control BuildWordBlock(TranscriptParagraph paragraph, bool streaming = false)
+    {
         var block = new TextBlock
         {
             TextWrapping = TextWrapping.Wrap,
@@ -796,32 +1256,54 @@ public sealed partial class MainWindow : Window
             LineHeight = 24,
         };
 
-        if (words.Count == 0)
+        var runs = new List<WordRun>();
+        var at = 0;
+
+        foreach (var segment in paragraph.Segments)
         {
-            // Nothing timed — a transcript with no audio behind it. Plain text, and a click
-            // starts at the paragraph, which is the best time anybody has.
+            var timed = !streaming || _viewModel.IsTimed(segment);
+
+            if (!timed)
+            {
+                // Untimed while streaming: shown, grey, inert — and never priced against the
+                // audio, which is what made streaming rebuilds quadratic once before.
+                if (at > 0)
+                {
+                    block.Inlines!.Add(new Run(" "));
+                    at++;
+                }
+
+                var grey = new Run(segment.Text.Trim()) { Foreground = UntimedBrush };
+                block.Inlines!.Add(grey);
+                at += grey.Text!.Length;
+                continue;
+            }
+
+            foreach (var word in _viewModel.WordsIn([segment]))
+            {
+                if (at > 0)
+                {
+                    block.Inlines!.Add(new Run(" "));
+                    at++;
+                }
+
+                var run = new Run(word.Text);
+                block.Inlines!.Add(run);
+                runs.Add(new WordRun(run, word, at, at + word.Text.Length));
+                at += word.Text.Length;
+            }
+        }
+
+        if (runs.Count == 0 && !streaming)
+        {
+            // Nothing timed at all — a transcript with no audio behind it. Plain text, and a
+            // click starts at the paragraph, which is the best time anybody has.
+            block.Inlines!.Clear();
             block.Text = paragraph.Text;
             var start = paragraph.StartSeconds;
             block.PointerPressed += (_, _) => StartPlayback(start);
             _paragraphWordRuns.Add([]);
             return block;
-        }
-
-        var runs = new List<WordRun>(words.Count);
-        var at = 0;
-
-        foreach (var word in words)
-        {
-            if (at > 0)
-            {
-                block.Inlines!.Add(new Run(" "));
-                at++;
-            }
-
-            var run = new Run(word.Text);
-            block.Inlines!.Add(run);
-            runs.Add(new WordRun(run, word, at, at + word.Text.Length));
-            at += word.Text.Length;
         }
 
         _paragraphWordRuns.Add(runs);
@@ -836,8 +1318,17 @@ public sealed partial class MainWindow : Window
             var hit = block.TextLayout.HitTestPoint(point);
             var index = hit.TextPosition;
 
-            var word = mine.FirstOrDefault(r => index >= r.CharStart && index < r.CharEnd)
-                ?? mine.LastOrDefault(r => r.CharStart <= index);
+            // A direct hit plays; a click in the space between two timed words plays from the
+            // word on its left. A click beyond the timed words — in a grey untimed stretch —
+            // does nothing, because the honest time for it does not exist yet.
+            var word = mine.FirstOrDefault(r => index >= r.CharStart && index < r.CharEnd);
+
+            if (word is null
+                && mine.LastOrDefault(r => r.CharEnd <= index) is { } left
+                && mine.Any(r => r.CharStart > index))
+            {
+                word = left;
+            }
 
             if (word is not null)
             {
@@ -875,9 +1366,15 @@ public sealed partial class MainWindow : Window
     {
         PaintMarker(double.NegativeInfinity);
         RefreshControls();
-        PlayLabel.Text = "Play";
-        PlayIcon.Data = (Geometry)this.FindResource("IconPlay")!;
+        PlayPauseIcon.Data = (Geometry)this.FindResource("IconPlay")!;
+
+        TimeReadout.Text = _pausedAtSeconds is { } paused
+            ? $"{Clock(paused)} / {Clock(_viewModel.Player.DurationSeconds)}"
+            : $"0:00 / {Clock(_viewModel.Player.DurationSeconds)}";
     });
+
+    private static string Clock(double seconds) =>
+        TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"h\:mm\:ss" : @"m\:ss");
 
     /// <summary>Every run this window has ever lit, so a clear can never be missed.</summary>
     private readonly HashSet<Run> _highlightedRuns = [];
@@ -958,24 +1455,36 @@ public sealed partial class MainWindow : Window
 
         if (currentParagraph >= 0)
         {
-            // Only while sound is actually coming out: a scrub with playback stopped moves
-            // the marker too, and must not dress the play button as a stop button.
-            if (_viewModel.Player.IsPlaying)
+            if (_followPlayback && !IsVisibleInTranscript(_paragraphBorders[currentParagraph]))
             {
-                PlayLabel.Text = "Stop";
-                PlayIcon.Data = (Geometry)this.FindResource("IconStop")!;
+                // The highlight left the viewport without us moving it: the reader scrolled
+                // away, and the view is theirs until they ask to hear something again.
+                _followPlayback = false;
             }
 
             if (_followPlayback)
             {
-                // The grace window is how the ScrollChanged handler tells our scroll from
-                // the user's: BringIntoView reports asynchronously, on the same event.
-                _autoScrollUntil = DateTime.UtcNow.AddMilliseconds(400);
                 _paragraphBorders[currentParagraph].BringIntoView();
             }
         }
 
+        if (_viewModel.Player.IsPlaying || seconds >= 0)
+        {
+            TimeReadout.Text = $"{Clock(seconds)} / {Clock(_viewModel.Player.DurationSeconds)}";
+        }
+
         _waveform.SetPosition(seconds);
+    }
+
+    /// <summary>Whether any part of a row is inside the transcript's viewport.</summary>
+    private bool IsVisibleInTranscript(Control row)
+    {
+        if (row.TranslatePoint(new Avalonia.Point(0, 0), TranscriptScroll) is not { } top)
+        {
+            return false;
+        }
+
+        return top.Y + row.Bounds.Height > 0 && top.Y < TranscriptScroll.Bounds.Height;
     }
 
     /* ---- search ------------------------------------------------------------------------ */
@@ -1141,7 +1650,7 @@ public sealed partial class MainWindow : Window
     /// Finds the model root: beside the executable in a published app, or up the tree in a
     /// development run, where the binary sits four directories below the repository.
     /// </summary>
-    private static string FindModelRoot()
+    internal static string FindModelRoot()
     {
         // Trimmed first: BaseDirectory carries a trailing separator, and GetDirectoryName
         // spends its first call removing it rather than hopping — which once left this walk

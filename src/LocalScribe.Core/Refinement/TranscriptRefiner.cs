@@ -195,9 +195,13 @@ public sealed class TranscriptRefiner
         // Checked, not trusted. The instructions already say to keep every word and add no
         // notes, and small models disregard both often enough that a transcript cleaned without
         // verification is a transcript that has quietly lost sentences.
-        if (cleaned is not null && TranscriptQuality.IsFaithfulCleanup(spoken, cleaned))
+        // Mapped back, too: a faithful reply that cannot be walked onto the segments without
+        // doubling is as unusable as an unfaithful one, and is counted the same way.
+        if (cleaned is not null
+            && TranscriptQuality.IsFaithfulCleanup(spoken, cleaned)
+            && CleanedTextAlignment.TryApply(window, cleaned) is { } mapped)
         {
-            return CleanedTextAlignment.Apply(window, cleaned);
+            return mapped;
         }
 
         // Split only when the window was too much to swallow — refused outright, or answered

@@ -161,4 +161,72 @@ public class CleanedTextAlignmentTests
         var all = string.Join(" ", result.Select(segment => segment.Text));
         Assert.Equal("One, two, three. Four, five, six.", all);
     }
+
+    /// <summary>
+    /// The case that broke a whole recording's word timing. The model dropped more leading
+    /// words than the walk looks ahead, the walk never found its place, and every cleaned word
+    /// poured into the first segment while the rest kept their raw text — the window, twice.
+    /// Recovering on a run of matching words puts each sentence back where it was spoken.
+    /// </summary>
+    [Fact]
+    public void LosingThePlaceAtTheStartIsRecovered()
+    {
+        IReadOnlyList<TranscriptSegment> segments =
+        [
+            Segment("um so like basically you know the first thing to say", 0, 4),
+            Segment("second segment has its own words here", 4, 8),
+            Segment("third segment has different words now", 8, 12),
+        ];
+
+        var result = CleanedTextAlignment.TryApply(
+            segments,
+            "The first thing to say. Second segment has its own words here. "
+            + "Third segment has different words now.");
+
+        Assert.NotNull(result);
+        Assert.Equal("The first thing to say.", result[0].Text);
+        Assert.Equal("Second segment has its own words here.", result[1].Text);
+        Assert.Equal("Third segment has different words now.", result[2].Text);
+    }
+
+    /// <summary>
+    /// When the cleaned text cannot be walked back onto the segments at all, the honest answer
+    /// is "could not map" — not a window with its cleaned text in one segment and its raw text
+    /// still in the others. A doubled window is not a cosmetic flaw: every letter of it has to
+    /// be funded with real audio, and the whole recording's word placement fails on it.
+    /// </summary>
+    [Fact]
+    public void AWindowIsNeverWrittenTwice()
+    {
+        IReadOnlyList<TranscriptSegment> segments =
+        [
+            Segment("the meeting started with the budget numbers", 0, 4),
+            Segment("then we talked about hiring plans for spring", 4, 8),
+            Segment("and finally the release schedule was agreed", 8, 12),
+        ];
+
+        var result = CleanedTextAlignment.TryApply(
+            segments,
+            "Everyone arrived on time, coffee was served, and introductions went around the table.");
+
+        Assert.Null(result);
+    }
+
+    /// <summary>Apply keeps its old promise for callers that want an answer either way: the input back.</summary>
+    [Fact]
+    public void ApplyFallsBackToTheRawSegmentsRatherThanDoubling()
+    {
+        IReadOnlyList<TranscriptSegment> segments =
+        [
+            Segment("the meeting started with the budget numbers", 0, 4),
+            Segment("then we talked about hiring plans for spring", 4, 8),
+        ];
+
+        var result = CleanedTextAlignment.Apply(
+            segments,
+            "Everyone arrived on time, coffee was served, and introductions went around.");
+
+        Assert.Equal(segments[0].Text, result[0].Text);
+        Assert.Equal(segments[1].Text, result[1].Text);
+    }
 }

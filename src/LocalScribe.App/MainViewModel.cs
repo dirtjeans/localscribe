@@ -125,7 +125,108 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private int Cores => Math.Max(1, _capabilities?.PerformanceCoreCount ?? Environment.ProcessorCount);
 
-    private ExecutionPlan Paced(ExecutionPlan plan) => WorkPaces.Apply(plan, _pace, Cores);
+    /// <summary>
+    /// At or below this much memory, the cleanup model waits for the word-timing scan
+    /// instead of running beside it.
+    /// <para>
+    /// Measured on a 16 GB M2 with an hour-long recording: Foundry held 7.2 GB for a 7B cleanup
+    /// model while the app held 3.1 GB, macOS swapped 6.7 GB, and a scan that finishes in under
+    /// forty minutes alone was still crawling at an hour and forty-eight — with the
+    /// transcript's word times riding Whisper's raw stamps meanwhile. Run in sequence, each
+    /// gets the memory to itself. Larger machines keep the overlap, which is faster when it
+    /// fits.
+    /// </para>
+    /// </summary>
+    private const int SequenceCleanupAtOrBelowGib = 16;
+
+    private bool MemoryIsTight =>
+        _capabilities is { TotalMemoryGib: > 0 and <= SequenceCleanupAtOrBelowGib };
+
+        /// <summary>
+    /// Whether a local language model polishes the transcript's punctuation after timing.
+    /// <para>
+    /// Optional because it is expensive and, with Whisper large-v3-turbo, mostly polish:
+    /// measured on a seven-minute podcast it changed about one token in eleven — a comma made
+    /// a colon, a missing capital — while costing roughly half the recording's length with a 7B
+    /// model on a 16 GB Mac, and 7 GB of memory. Off by default on macOS, where that trade was
+    /// measured; on by default elsewhere, so the Windows app keeps the behaviour it was tuned
+    /// with. The choice persists beside the pace.
+    /// </para>
+    /// </summary>
+    public bool CleanupEnabled
+    {
+        get => _cleanupEnabled;
+        set
+        {
+            if (_cleanupEnabled == value)
+            {
+                return;
+            }
+
+            _cleanupEnabled = value;
+            WriteCleanupPreference(value);
+            Raise(nameof(CleanupEnabled));
+            RefreshRoster();
+
+            // Turned on mid-session: the backend was never started, because a disabled stage
+            // has no business taking 7 GB at launch. Start it now, in the background.
+            if (value && _languageModel is null)
+            {
+                _ = TryResumeCleanupBackendAsync().ContinueWith(
+                    _ => RefreshRoster(), TaskScheduler.FromCurrentSynchronizationContext());
+            }
+        }
+    }
+
+    private bool _cleanupEnabled = ReadCleanupPreference();
+
+    private static string CleanupPreferencePath =>
+        Path.Combine(Path.GetDirectoryName(WorkPaces.DefaultPath)!, "cleanup.txt");
+
+    private static bool ReadCleanupPreference()
+    {
+        try
+        {
+            if (File.Exists(CleanupPreferencePath))
+            {
+                return File.ReadAllText(CleanupPreferencePath).Trim() == "on";
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Unreadable falls through to the platform default.
+        }
+
+        return !OperatingSystem.IsMacOS();
+    }
+
+    private static void WriteCleanupPreference(bool enabled)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(CleanupPreferencePath)!);
+            File.WriteAllText(CleanupPreferencePath, enabled ? "on" : "off");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A preference that cannot be written still holds for this session.
+        }
+    }
+
+    /// <summary>The roster line, rebuilt from whatever is currently loaded.</summary>
+    private void RefreshRoster()
+    {
+        if (_transcriber is { } loaded)
+        {
+            HardwareSummary = RosterSummary(loaded.Description);
+        }
+        else
+        {
+            AnnounceHardware();
+        }
+    }
+
+        private ExecutionPlan Paced(ExecutionPlan plan) => WorkPaces.Apply(plan, _pace, Cores);
 
     /// <summary>
     /// The most speakers the "How many speakers?" question should offer. Nemotron has eight
@@ -332,9 +433,191 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         lock (_alignedGate)
         {
-            return _alignedFor.TryGetValue(segment, out var measured)
-                ? MeasuredWords.Pair(measured, own)
-                : null;
+            if (_alignedFor.TryGetValue(segment, out var measured))
+            {
+                return MeasuredWords.Pair(measured, own);
+            }
+
+            return _interimFor.TryGetValue(segment, out var divided)
+                ? MeasuredWords.Pair(divided, own)
+                : HeardLocked(segment);
+        }
+    }
+
+    /// <summary>Every word the transcriber heard this run, with its own times; see HeardWordPlacement.</summary>
+    private IReadOnlyList<WordTimings.Word> _heardWords = [];
+
+    /// <summary>
+    /// Heard-word placements already worked out, for the heard list they were worked out
+    /// from. The window asks for a segment's words every time a paragraph scrolls into view;
+    /// a match is cheap, but not free over an hour of heard words.
+    /// </summary>
+    private readonly Dictionary<TranscriptSegment, IReadOnlyList<WordTimings.Word>?> _heardFor = [];
+
+    /// <summary>
+    /// The transcriber's own word times for a segment the scan has not measured, or null.
+    /// These are what make the transcript clickable as it streams; the scan's words replace
+    /// them segment by segment as it reaches each one, because measured always wins above.
+    /// </summary>
+    private IReadOnlyList<WordTimings.Word>? HeardLocked(TranscriptSegment segment)
+    {
+        if (_heardWords.Count == 0)
+        {
+            return null;
+        }
+
+        if (!_heardFor.TryGetValue(segment, out var placed))
+        {
+            placed = HeardWordPlacement.Place(segment, _heardWords);
+            _heardFor[segment] = placed;
+        }
+
+        return placed;
+    }
+
+    /// <summary>Adopts the transcriber's latest heard words, dropping placements made from older ones.</summary>
+    private void HearFrom(ITranscriber transcriber)
+    {
+        var heard = transcriber.HeardWords;
+
+        lock (_alignedGate)
+        {
+            if (ReferenceEquals(heard, _heardWords))
+            {
+                return;
+            }
+
+            _heardWords = heard;
+            _heardFor.Clear();
+        }
+    }
+
+    private void ForgetHeard()
+    {
+        lock (_alignedGate)
+        {
+            _heardWords = [];
+            _heardFor.Clear();
+        }
+    }
+
+    private readonly object _interimGate = new();
+
+    /// <summary>The user's names for this run's voices; guarded by the interim gate.</summary>
+    private readonly SpeakerNames _names = new();
+
+    private void ForgetNames()
+    {
+        lock (_interimGate)
+        {
+            _names.Clear();
+        }
+    }
+
+    /// <summary>What the interim publishers last put up, before any speakers were attached.</summary>
+    private IReadOnlyList<TranscriptSegment> _interimBase = [];
+
+    /// <summary>Speaker turns found while the scan is still running, or null until then.</summary>
+    private IReadOnlyList<SpeakerTurn>? _interimTurns;
+
+    /// <summary>
+    /// The words of segments the interim labelling divided between speakers. The pieces are
+    /// new records, so neither the scan's table nor the heard placements know them by value.
+    /// </summary>
+    private readonly Dictionary<TranscriptSegment, IReadOnlyList<WordTimings.Word>> _interimFor = [];
+
+    /// <summary>
+    /// Publishes a transcript that is not final yet — the stream, the progressive head, the
+    /// timed preview — with speakers attached if the diarizer has already answered.
+    /// <para>
+    /// The diarizer finishes in seconds and the scan takes minutes, and the speakers used to
+    /// wait for the scan because the final assembly divides segments on its measured words.
+    /// Heard words are good enough to divide on for a preview: a cut a word early or late is
+    /// visible for a minute, then the final assembly replaces it with the measured one.
+    /// </para>
+    /// </summary>
+    private void PublishInterim(IReadOnlyList<TranscriptSegment> segments)
+    {
+        lock (_interimGate)
+        {
+            _interimBase = segments;
+            SetTranscript(_interimTurns is { } turns ? WithInterimSpeakers(segments, turns) : segments);
+        }
+    }
+
+    /// <summary>Adopts the diarizer's turns and relabels what is on screen at once.</summary>
+    private void ShowInterimSpeakers(IReadOnlyList<SpeakerTurn> turns)
+    {
+        lock (_interimGate)
+        {
+            _interimTurns = turns;
+
+            if (_interimBase.Count > 0)
+            {
+                SetTranscript(WithInterimSpeakers(_interimBase, turns));
+            }
+        }
+    }
+
+    /// <summary>The final assembly owns the transcript from here; nothing interim may publish over it.</summary>
+    private void EndInterim()
+    {
+        lock (_interimGate)
+        {
+            _interimBase = [];
+            _interimTurns = null;
+
+            lock (_alignedGate)
+            {
+                _interimFor.Clear();
+            }
+        }
+    }
+
+    private IReadOnlyList<TranscriptSegment> WithInterimSpeakers(
+        IReadOnlyList<TranscriptSegment> segments,
+        IReadOnlyList<SpeakerTurn> turns)
+    {
+        var timed = segments.Select(segment => new TimedSegment(segment, Aligned(segment) ?? [])).ToList();
+
+        // Nothing timed means nothing to cut on — the Windows transcriber hears no words, and
+        // its raw stream is whole thirty-second windows. Labelling a window by whoever held
+        // most of it would put one name on a conversation; it waits for the scan instead.
+        if (!timed.Any(t => t.Words.Count > 0))
+        {
+            return segments;
+        }
+
+        try
+        {
+            var pieces = WordLevelAttribution.Apply(timed, turns);
+
+            // The same reasoning segment by segment: an untimed one stays unlabelled rather
+            // than handed whole to the loudest voice.
+            pieces = [.. pieces.Select(p => p.Words.Count > 0 ? p : p with { Segment = p.Segment with { Speaker = null } })];
+            pieces = CrosstalkMarks.Apply(pieces, _overlaps);
+
+            var byVoice = pieces.Select(p => p.Segment).ToList();
+            var named = _names.Apply(byVoice, SpeakerLabels.RenumberByAppearance(byVoice));
+            pieces = [.. pieces.Select((p, i) => p with { Segment = named[i] })];
+
+            lock (_alignedGate)
+            {
+                _interimFor.Clear();
+
+                foreach (var piece in pieces.Where(p => p.Words.Count > 0))
+                {
+                    _interimFor[piece.Segment] = piece.Words;
+                }
+            }
+
+            return [.. pieces.Select(p => p.Segment)];
+        }
+        catch (Exception exception)
+        {
+            // A preview that cannot be labelled is still a preview.
+            LogError(exception);
+            return segments;
         }
     }
 
@@ -359,10 +642,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             foreach (var segment in segments)
             {
+                bool scanned;
+
+                lock (_alignedGate)
+                {
+                    scanned = _alignedFor.ContainsKey(segment);
+                }
+
                 var aligned = Aligned(segment);
                 var words = aligned ?? WordTimings.For(audio, segment);
 
-                if (aligned is not null)
+                if (scanned)
                 {
                     measured++;
                 }
@@ -375,7 +665,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 var head = segment.Text.Length <= 40 ? segment.Text : segment.Text[..37] + "…";
 
                 text.AppendLine(FormattableString.Invariant(
-                    $"{(aligned is not null ? "measured" : "ESTIMATE")} {segment.StartSeconds,7:F2}-{segment.EndSeconds,-7:F2} {span} \"{head}\""));
+                    $"{(scanned ? "measured" : aligned is not null ? "heard   " : "ESTIMATE")} {segment.StartSeconds,7:F2}-{segment.EndSeconds,-7:F2} {span} \"{head}\""));
             }
 
             var header = FormattableString.Invariant(
@@ -396,7 +686,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         lock (_alignedGate)
         {
-            return _alignedFor.ContainsKey(segment);
+            return _alignedFor.ContainsKey(segment)
+                || _interimFor.ContainsKey(segment)
+                || (Split(segment.Text).Count > 0 && HeardLocked(segment) is not null);
         }
     }
 
@@ -593,7 +885,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 _timedHead = timed;
                 _timedHeadCovers = eligible.Count;
 
-                SetTranscript([.. timed, .. raws.Skip(eligible.Count)]);
+                PublishInterim([.. timed, .. raws.Skip(eligible.Count)]);
 
                 timedThrough = timed[^1].EndSeconds;
                 frontierUsed = frontier;
@@ -622,7 +914,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        ForgetAlignment();
+        ForgetAlignment("a new scan is starting");
+        _scanStartedThisRun = true;
+
+        using var working = Working(ModelRoles.Words);
 
         try
         {
@@ -646,6 +941,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                             _scanFrontierSeconds = seconds;
                         }
                     });
+
+                    // The model goes the moment the scan ends: everything after — placing
+                    // words, reading a stretch back, the duplicate-line trials — works from
+                    // the scores alone. Held, it was ONNX Runtime's fp32 repack of the weights
+                    // (1.1 GB) plus a working arena that grows and never shrinks (1.6 GB):
+                    // 2.7 GB parked beside the cleanup model on a 16 GB machine, measured by
+                    // malloc_history on a seven-minute file.
+                    aligner.ReleaseModel();
                 }
                 catch
                 {
@@ -678,9 +981,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </para>
     /// </summary>
     /// <param name="keepAligner">
-    /// Holds on to the model afterwards. The preview pass runs while cleanup is still
-    /// rewriting the text, and the final pass over the cleaned text would otherwise pay a
-    /// full reload for the release in between.
+    /// Holds on to the aligner object afterwards, for the final pass over the cleaned text.
+    /// The model inside it is already gone — released when the scan ended, since placing
+    /// words needs only the scores.
     /// </param>
     private async Task<IReadOnlyList<TimedSegment>> AlignWordsAsync(
         IReadOnlyList<TranscriptSegment> segments,
@@ -695,6 +998,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         if (_aligner is not { } aligner || _scores is not { } scores)
         {
+            // Silent only on a machine that never had a scan: there, estimates are simply
+            // what the app does. A run that HAD a scan arriving here is the sync-drift bug
+            // wearing its quietest costume, and it gets a named stack instead of a shrug.
+            if (_scanStartedThisRun)
+            {
+                Status = "Transcribed, but the word times were lost before placement; "
+                    + "word times are estimates.";
+                LogError(new InvalidOperationException(
+                    $"Alignment state missing at placement: aligner={_aligner is not null}, "
+                    + $"scores={_scores is not null}, last forgotten: {_alignmentForgottenBy ?? "never"}"));
+            }
+
             return untimed();
         }
 
@@ -1043,9 +1358,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void ReleaseAlignmentModel() => _aligner?.ReleaseModel();
 
+
+
     /// <summary>Lets go of the scores as well, when there is no transcript they belong to.</summary>
-    private void ForgetAlignment()
+    /// <summary>Who last forgot the alignment, and when — testimony for the early-out below.</summary>
+    private string? _alignmentForgottenBy;
+
+    /// <summary>True once this run started a scan, so losing it later is reportable.</summary>
+    private bool _scanStartedThisRun;
+
+    private void ForgetAlignment(string reason = "unrecorded")
     {
+        _alignmentForgottenBy = $"{DateTime.Now:HH:mm:ss} {reason}";
         _aligner?.Dispose();
         _aligner = null;
         _scores = null;
@@ -1057,6 +1381,33 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// ScanForWordsAsync reports its own failures, and the next run's scan forgets its state.
     /// </summary>
     private Task? _scanInFlight;
+
+    /// <summary>Where the early scan has got to, and who wants to hear about it next.</summary>
+    private double _scanFraction;
+    private Action<double>? _scanProgressTarget;
+
+    /// <summary>
+    /// Speaker finding started beside transcription, collected by the finish stages the way
+    /// the early scan is. Already wrapped to put its answer on screen the moment it lands —
+    /// mid-stream if it beats the transcriber, labelling each window as it arrives.
+    /// </summary>
+    private Task<IReadOnlyList<SpeakerTurn>?>? _turnsInFlight;
+
+    private double _turnsFraction;
+    private Action<double>? _turnsProgressTarget;
+
+    /// <summary>
+    /// Whether speaker finding starts when the audio loads rather than when transcription
+    /// ends. Measured on the Mac (see <see cref="ScanAfterTranscription"/>); on Windows it
+    /// would share the CPU with the scan, which has not been measured there, so it waits for
+    /// that trial. LOCALSCRIBE_DIARIZE_EARLY=1 or 0 overrides.
+    /// </summary>
+    private static bool DiarizeEarly => Environment.GetEnvironmentVariable("LOCALSCRIBE_DIARIZE_EARLY") switch
+    {
+        "1" => true,
+        "0" => false,
+        _ => OperatingSystem.IsMacOS(),
+    };
 
     /// <summary>The alignment model, held only between the scan and the placing.</summary>
     private ForcedAligner? _aligner;
@@ -1129,6 +1480,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         int? speakers,
         IProgress<double>? progress)
     {
+        using var working = Working(ModelRoles.Speakers);
+
         if (SpeakerEngines.Current == SpeakerEngine.Sortformer)
         {
             return await FindTurnsWithNemotronAsync(audio, speakers, progress).ConfigureAwait(true);
@@ -1437,7 +1790,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Renumbering rewrites the records too, so it obeys the same law: before the
             // table is keyed. Cluster order is not speaking order, and a transcript that
             // opens with "Speaker 2" reads as a bug even when the separation is right.
-            var relabelled = SpeakerLabels.RenumberByAppearance([.. pieces.Select(p => p.Segment)]);
+            var byVoice = pieces.Select(p => p.Segment).ToList();
+            IReadOnlyList<TranscriptSegment> relabelled;
+
+            // Names given while the run was still going are put back here, before keying, by
+            // the same law as the renumbering.
+            lock (_interimGate)
+            {
+                relabelled = _names.Apply(byVoice, SpeakerLabels.RenumberByAppearance(byVoice));
+            }
+
             pieces = [.. pieces.Select((p, i) => p with { Segment = relabelled[i] })];
 
             // Here rather than after aligning. Aligning is not the last thing that moves a
@@ -1463,8 +1825,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var attributed = SpeakerDiarizer.Attribute([.. timed.Select(t => t.Segment)], turns);
 
         // No measured words on this path, so the bounds-based mark is the honest one.
-        return SpeakerLabels.RenumberByAppearance(SpeakerAttribution.MarkOverlaps(
-            SpeakerAttribution.KeepSentencesWhole(attributed), _overlaps));
+        var voiced = SpeakerAttribution.MarkOverlaps(
+            SpeakerAttribution.KeepSentencesWhole(attributed), _overlaps);
+
+        lock (_interimGate)
+        {
+            return _names.Apply(voiced, SpeakerLabels.RenumberByAppearance(voiced));
+        }
     }
 
     /// <summary>Says what cleanup left undone, or takes the notice away when it did not.</summary>
@@ -1543,12 +1910,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         at++;
                     }
 
-                    var part = await refiner.RefineAsync(
-                        new Transcript(run),
-                        Glossary,
-                        RefinementOutputs.Default,
-                        new Progress<double>(stages.Cleanup),
-                        cancellationToken: cancellationToken).ConfigureAwait(true);
+                    RefinementResult part;
+
+                    using (Working(ModelRoles.Cleanup))
+                    {
+                        part = await refiner.RefineAsync(
+                            new Transcript(run),
+                            Glossary,
+                            RefinementOutputs.Default,
+                            new Progress<double>(stages.Cleanup),
+                            cancellationToken: cancellationToken).ConfigureAwait(true);
+                    }
 
                     repaired.AddRange(part.CleanedSegments ?? run);
                 }
@@ -1609,6 +1981,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         Status = speakers is { } n ? $"Finding {n} speakers…" : "Working out who spoke…";
         _speakerShortfall = null;
+
+        // A fresh search finds fresh voices; names kept against the old ones would land on
+        // whoever the new labels happen to share a key with.
+        ForgetNames();
 
         IsBusy = true;
 
@@ -1680,6 +2056,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         var name = newName.Trim();
+
+        // Kept as well as written, so the name survives every rebuild still to come: the
+        // windows not yet transcribed, the scan's re-division, the final assembly, and a
+        // cleanup retry after that.
+        lock (_interimGate)
+        {
+            var kept = !everywhere || _names.NameVoice(currentName ?? string.Empty, name);
+
+            if (!everywhere)
+            {
+                _names.NamePart(startSeconds, endSeconds, name);
+            }
+
+            if (kept && _interimTurns is { } turns && _interimBase.Count > 0)
+            {
+                // Mid-run, the next publish rebuilds from the base anyway; relabelling from it
+                // now is the same answer that publish will give, not a second opinion.
+                SetTranscript(WithInterimSpeakers(_interimBase, turns));
+                return;
+            }
+        }
 
         var updated = _segments.Select(segment =>
         {
@@ -1874,7 +2271,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         // Before the refiner is built from it, so a backend that restarted since discovery is
         // rediscovered instead of failing every cleanup window one notice deep.
-        await EnsureCleanupBackendAnswersAsync();
+        if (_cleanupEnabled)
+        {
+            await EnsureCleanupBackendAnswersAsync();
+        }
 
         var refiner = BuildRefiner();
 
@@ -1890,20 +2290,51 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var stages = new SharedBar(this, progressFloor);
         var transcript = new Transcript(spoken);
 
-        // Cleanup waits for warm weights inside its own lane, so the diarizer and the scan —
-        // which need no language model — never wait behind a cold Foundry.
-        var cleaning = refiner is null
-            ? Task.FromResult<RefinementResult?>(null)
-            : CleanWhenAwakeAsync(refiner, transcript, stages, cancellationToken);
+        // With the transcriber's own word times every line is clickable already; the stages
+        // below refine it rather than unlock it, and the status line should say so.
+        var speech = spoken.Where(segment => segment.Text.Any(char.IsLetterOrDigit)).ToList();
 
-        var listening = audio is null
-            ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
-            : FindTurnsAsync(audio, speakers: null, new Progress<double>(stages.Speakers));
+        if (speech.Count > 0 && speech.All(IsTimed))
+        {
+            stages.PreviewReady();
+        }
+
+        // The recording path publishes nothing interim before this, so what it shows is
+        // the base the speakers will be attached to.
+        lock (_interimGate)
+        {
+            if (_interimBase.Count == 0)
+            {
+                _interimBase = _segments;
+            }
+        }
+
+        if (_turnsInFlight is { IsCompleted: false })
+        {
+            _turnsProgressTarget = stages.Speakers;
+            stages.Speakers(_turnsFraction);
+        }
+
+        var listening = _turnsInFlight
+            ?? (audio is null
+                ? Task.FromResult<IReadOnlyList<SpeakerTurn>?>(null)
+                : ShowSpeakersWhenFoundAsync(FindTurnsAsync(audio, speakers: null, new Progress<double>(stages.Speakers))));
+
+        _turnsInFlight = null;
 
         // A third stage beside the other two, and this time one that can genuinely run there. It
         // reads the audio and writes nothing the others touch.
         // A scan already started beside transcription is collected rather than restarted;
         // the recording path, which has no audio until the microphone stops, starts one here.
+        // An early scan has been reporting into a relay since transcription began; the bar
+        // adopts it here and hears where it already is. Without this the bar knew nothing of
+        // the scan, called the run "Finishing… 100%", and sat there twenty-two minutes.
+        if (_scanInFlight is { IsCompleted: false })
+        {
+            _scanProgressTarget = stages.Words;
+            stages.Words(_scanFraction);
+        }
+
         var scanning = _scanInFlight
             ?? (audio is null
                 ? Task.CompletedTask
@@ -1920,7 +2351,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // transcript is still being finished; the final assembly replaces it in place.
         var previewing = PreviewTimedAsync(spoken, scanning, stages, cancellationToken);
 
+        // Cleanup waits for warm weights inside its own lane, so the diarizer and the scan —
+        // which need no language model — never wait behind a cold Foundry. On a machine that
+        // cannot hold a language model and the scan at once, it also waits for the scan and
+        // the timed preview: the reader gets synced words first, punctuation second, instead
+        // of neither finishing while both swap.
+        var cleaning = refiner is null
+            ? Task.FromResult<RefinementResult?>(null)
+            : CleanWhenAwakeAsync(
+                refiner,
+                transcript,
+                stages,
+                cancellationToken,
+                after: MemoryIsTight ? Task.WhenAll(scanning, previewing) : null);
+
+        // Each lane says when it ends. A run whose final assembly never came had all four
+        // lanes looking healthy from outside, and nothing could say which one never finished.
+        Stage("finish stages started");
+        _ = cleaning.ContinueWith(t => Stage($"cleanup ended: {t.Status}"), TaskScheduler.Default);
+        _ = listening.ContinueWith(t => Stage($"speakers ended: {t.Status}"), TaskScheduler.Default);
+        _ = scanning.ContinueWith(t => Stage($"scan ended: {t.Status}"), TaskScheduler.Default);
+        _ = previewing.ContinueWith(t => Stage($"preview ended: {t.Status}"), TaskScheduler.Default);
+
         await Task.WhenAll(cleaning, listening, scanning, previewing);
+
+        Stage("all lanes ended; assembling");
 
         var refinement = await cleaning;
         var turns = await listening;
@@ -1931,6 +2386,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // that was missing for a long time: the cleaned text used to be computed and dropped,
         // and what the user read was always the raw transcript.
         await AssembleAsync(refinement?.CleanedSegments ?? spoken, refiner, stages, cancellationToken);
+    }
+
+    /// <summary>
+    /// Passes the diarizer's answer through, putting it on screen the moment it lands rather
+    /// than when the scan finishes.
+    /// </summary>
+    private async Task<IReadOnlyList<SpeakerTurn>?> ShowSpeakersWhenFoundAsync(
+        Task<IReadOnlyList<SpeakerTurn>?> finding)
+    {
+        var turns = await finding.ConfigureAwait(true);
+
+        // Shown whether or not the scan has finished: with cleanup running, the timed
+        // preview can sit unlabelled for minutes after it. The final assembly ends the
+        // interim and replaces all of this with the measured division.
+        if (turns is { Count: > 0 })
+        {
+            ShowInterimSpeakers(turns);
+        }
+
+        return turns;
     }
 
     /// <summary>
@@ -1972,7 +2447,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             }
 
-            SetTranscript([.. timed.Select(t => t.Segment)]);
+            PublishInterim([.. timed.Select(t => t.Segment)]);
             UsableThroughSeconds = 0;
             stages.PreviewReady();
         }
@@ -2039,6 +2514,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             ? [.. timed.Select(t => t.Segment)]
             : Attribute(timed, _lastTurns);
 
+        EndInterim();
         SetTranscript(finished);
         RecordSpans(finished);
 
@@ -2054,10 +2530,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         TranscriptRefiner refiner,
         Transcript transcript,
         SharedBar stages,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Task? after = null)
     {
+        if (after is not null)
+        {
+            // Waited on, never thrown from: a scan that failed has its own report, and
+            // cleanup is still worth running over the words either way.
+            await after.ContinueWith(_ => { }, TaskScheduler.Default)
+                .WaitAsync(cancellationToken).ConfigureAwait(true);
+        }
+
+        Stage("cleanup: waiting for the model to wake");
         await EnsureCleanupAwakeAsync().WaitAsync(cancellationToken).ConfigureAwait(true);
 
+        Stage("cleanup: model awake, cleaning");
         return await CleanAsync(refiner, transcript, stages, cancellationToken).ConfigureAwait(true);
     }
 
@@ -2065,8 +2552,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         TranscriptRefiner refiner,
         Transcript transcript,
         SharedBar stages,
-        CancellationToken cancellationToken) =>
-        await refiner.RefineAsync(
+        CancellationToken cancellationToken)
+    {
+        using var working = Working(ModelRoles.Cleanup);
+
+        return await refiner.RefineAsync(
             transcript,
             Glossary,
             RefinementOutputs.Default,
@@ -2080,6 +2570,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // timed and whole.
             cleanedSoFar: null,
             cancellationToken: cancellationToken).ConfigureAwait(true);
+    }
 
     /// <summary>
     /// One progress bar shared by two stages running at once.
@@ -2106,6 +2597,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private bool _timingWords;
         private bool _usable;
 
+        // The clock the whole estimate hangs off: each stage's observed rate implies how long
+        // its remainder needs, and the run is over when the slowest stage is.
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+        private double _cleanupT0 = -1;
+        private double _speakersT0 = -1;
+        private double _wordsT0 = -1;
+        private double _shown;
+        private double? _left;
+
         /// <summary>
         /// The timed preview is on screen: from here on, every progress line leads with the
         /// part the user can act on. "Working out who spoke… 43%" reads as "wait"; the same
@@ -2125,6 +2625,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             lock (_gate)
             {
+                if (!_cleaningUp)
+                {
+                    _cleanupT0 = _clock.Elapsed.TotalSeconds;
+                }
+
                 _cleaningUp = true;
                 _cleanup = fraction;
             }
@@ -2136,6 +2641,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             lock (_gate)
             {
+                if (!_findingSpeakers)
+                {
+                    _speakersT0 = _clock.Elapsed.TotalSeconds;
+                }
+
                 _findingSpeakers = true;
                 _speakers = fraction;
             }
@@ -2147,6 +2657,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             lock (_gate)
             {
+                if (!_timingWords)
+                {
+                    _wordsT0 = _clock.Elapsed.TotalSeconds;
+                }
+
                 _timingWords = true;
                 _words = fraction;
             }
@@ -2157,6 +2672,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         private void Publish()
         {
             double fraction;
+            double? overall = null;
             string what;
 
             lock (_gate)
@@ -2167,11 +2683,86 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     return;
                 }
 
-                fraction = ((_cleaningUp ? _cleanup : 0)
-                    + (_findingSpeakers ? _speakers : 0)
-                    + (_timingWords ? _words : 0)) / running;
+                // Time remaining, not fraction done: the stages are parallel and wildly
+                // uneven — the diarizer finishes in seconds while cleanup takes minutes — so
+                // the mean of their fractions leapt early and then crawled, which read as
+                // stuck. Each stage's own rate says how long its remainder needs; the slowest
+                // one is the wait; elapsed over elapsed-plus-remainder is the bar. Until
+                // every running stage has shown enough to be rated, the mean stands in.
+                double Remaining(bool on, double f, double t0)
+                {
+                    if (!on || f >= 1)
+                    {
+                        return 0;
+                    }
 
-                what = (_cleaningUp, _findingSpeakers, _timingWords) switch
+                    if (f < 0.02 || t0 < 0)
+                    {
+                        return double.NaN;
+                    }
+
+                    return (_clock.Elapsed.TotalSeconds - t0) * (1 - f) / f;
+                }
+
+                var remainders = new[]
+                {
+                    Remaining(_cleaningUp, _cleanup, _cleanupT0),
+                    Remaining(_findingSpeakers, _speakers, _speakersT0),
+                    Remaining(_timingWords, _words, _wordsT0),
+                };
+
+                var fractions = new[] { _cleanup, _speakers, _words };
+                var worst = 0.0;
+                var worstFraction = 1.0;
+                var unrated = false;
+
+                for (var i = 0; i < remainders.Length; i++)
+                {
+                    if (double.IsNaN(remainders[i]))
+                    {
+                        unrated = true;
+                    }
+                    else if (remainders[i] > worst)
+                    {
+                        worst = remainders[i];
+                        worstFraction = fractions[i];
+                    }
+                }
+
+                if (unrated)
+                {
+                    fraction = ((_cleaningUp ? _cleanup : 0)
+                        + (_findingSpeakers ? _speakers : 0)
+                        + (_timingWords ? _words : 0)) / running;
+                }
+                else
+                {
+                    // Two answers to two questions. The bar is the whole run — elapsed over
+                    // elapsed-plus-remainder, which only ever grows. The number is the stage
+                    // being waited on, in its own terms: the run's ratio read 99% the moment
+                    // cleanup began once cleanup ran last, because all the history before it
+                    // counted as done.
+                    var elapsed = _clock.Elapsed.TotalSeconds;
+                    overall = elapsed / Math.Max(0.001, elapsed + worst);
+                    fraction = worstFraction;
+
+                    if (worst >= 10)
+                    {
+                        _left = worst;
+                    }
+                }
+
+                _left = unrated || worst < 10 ? null : worst;
+
+                // Named by what is STILL working, not what has ever worked: the flags are
+                // sticky, and a stage that finished in seconds used to headline the label for
+                // the whole run — "working out who spoke" over minutes of a language model
+                // grinding read as a stuck diarizer.
+                var cleaning = _cleaningUp && _cleanup < 1;
+                var speaking = _findingSpeakers && _speakers < 1;
+                var timing = _timingWords && _words < 1;
+
+                what = (cleaning, speaking, timing) switch
                 {
                     (true, true, true) => "Cleaning up, working out who spoke, and timing the words",
                     (true, true, false) => "Cleaning up and working out who spoke",
@@ -2179,7 +2770,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     (false, true, true) => "Working out who spoke and timing the words",
                     (true, false, false) => "Cleaning up the transcript",
                     (false, true, false) => "Working out who spoke",
-                    _ => "Timing the words",
+                    (false, false, true) => "Timing the words",
+                    _ => "Finishing",
                 };
 
                 if (_usable)
@@ -2196,11 +2788,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 }
             }
 
-            // Mapped above the floor the earlier phase already earned: the bar once jumped
-            // from full back to nearly empty when the finish stages began, which read as the
-            // run going backwards — and was the landmark users learned to dread.
-            owner.Progress = floor + (fraction * (1 - floor));
-            owner.Status = $"{what}… {(int)(fraction * 100)}%";
+            // Mapped above the floor the earlier phase already earned, and never backwards:
+            // the bar once jumped from full back to nearly empty when the finish stages
+            // began, which read as the run going backwards — and was the landmark users
+            // learned to dread.
+            _shown = Math.Max(_shown, floor + ((overall ?? fraction) * (1 - floor)));
+            owner.Progress = _shown;
+            owner.Status = _left is { } left
+                ? $"{what}… {(int)(fraction * 100)}% — about {TranscriptFormatter.Clock(left)} left"
+                : $"{what}… {(int)(fraction * 100)}%";
         }
     }
 
@@ -2220,9 +2816,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _alignedFor.Clear();
         }
 
+        ForgetHeard();
+        ForgetNames();
+        EndInterim();
+
         // A run abandoned between the scan and the placing would otherwise leave six hundred
         // megabytes of model loaded with nothing left to do with it.
-        ForgetAlignment();
+        ForgetAlignment("the transcript was discarded");
 
         _rawSegments = [];
         _lastTurns = null;
@@ -2338,7 +2938,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // on "Starting Foundry Local…" with the model unready and a dropped file waiting
         // behind it. An optional backend never gates the microphone or a transcription; it
         // announces itself when it arrives.
-        if (_languageModel is null)
+        if (_languageModel is null && _cleanupEnabled)
         {
             _ = TryResumeCleanupBackendAsync();
         }
@@ -2360,7 +2960,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         // Fire-and-forget on purpose: the weights load while the user opens a file or the
         // first transcription runs. Only the cleanup stage ever waits on this task.
-        _ = EnsureCleanupAwakeAsync();
+        if (_cleanupEnabled && !MemoryIsTight)
+        {
+            _ = EnsureCleanupAwakeAsync();
+        }
 
         if (_waitingFor is { Length: > 0 } held)
         {
@@ -2492,6 +3095,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _timedHead = [];
         _timedHeadCovers = 0;
         UsableThroughSeconds = 0;
+        ForgetHeard();
+        ForgetNames();
+        EndInterim();
 
         lock (_frontierGate)
         {
@@ -2514,12 +3120,36 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // these samples, not to the file, which is why the decoded audio is what is kept.
             Player.Load(audio);
 
-            // The scan is the pipeline's long pole and needs only the audio, while the
-            // transcriber's heavy half runs on the accelerator with the CPU near idle — so
-            // the two overlap from here, and the finish stages collect a scan that is
-            // usually already done. Measured on a 63-second file: the scan alone was 41
-            // seconds, transcription 12, and running them in sequence spent both.
-            _scanInFlight = ScanForWordsAsync(audio, progress: null, _cancellation.Token);
+            // The scan is the pipeline's long pole and needs only the audio. Where the
+            // transcriber's heavy half runs on the accelerator with the CPU near idle, the two
+            // overlap from here, and the finish stages collect a scan that is usually already
+            // done — measured on a 63-second file on Windows: the scan alone was 41 seconds,
+            // transcription 12. On the Mac the scan waits; see ScanAfterTranscription.
+            _scanFraction = 0;
+            _scanProgressTarget = null;
+            _scanInFlight = ScanAfterTranscription
+                ? null
+                : ScanForWordsAsync(
+                    audio,
+                    new Progress<double>(fraction =>
+                    {
+                        _scanFraction = fraction;
+                        _scanProgressTarget?.Invoke(fraction);
+                    }),
+                    _cancellation.Token);
+
+            _turnsFraction = 0;
+            _turnsProgressTarget = null;
+            _turnsInFlight = DiarizeEarly
+                ? ShowSpeakersWhenFoundAsync(FindTurnsAsync(
+                    audio,
+                    speakers: null,
+                    new Progress<double>(fraction =>
+                    {
+                        _turnsFraction = fraction;
+                        _turnsProgressTarget?.Invoke(fraction);
+                    })))
+                : null;
 
             // Beside the scan, the lane that makes its progress usable: the head of the
             // transcript gains real word times while the tail is still being scanned.
@@ -2561,11 +3191,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     var raws = streamed.ToList();
                     _rawSoFar = raws;
 
-                    SetTranscript([.. _timedHead, .. raws.Skip(_timedHeadCovers)]);
+                    // Before publishing, so the window drawing this update already finds the
+                    // window's words timed and clickable.
+                    HearFrom(transcriber);
+
+                    PublishInterim([.. _timedHead, .. raws.Skip(_timedHeadCovers)]);
                 }
             });
 
-            var transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
+            Transcript transcript;
+
+            using (Working(ModelRoles.Transcription))
+            {
+                transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
+            }
+
+            // The last window's words, which the final progress update may not have carried,
+            // and taken now because the transcriber may be released before the finish stages.
+            HearFrom(transcriber);
 
             // Now, rather than before: what language this is could not be known until it had been
             // listened to, and offering to translate before that would have been a guess.
@@ -2612,10 +3255,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // been collected and the cancel touches nothing.
             _cancellation?.Cancel();
             _scanInFlight = null;
+            _turnsInFlight = null;
 
             IsBusy = false;
             _cancellation?.Dispose();
             _cancellation = null;
+        }
+    }
+
+    /// <summary>One line per finishing-stage event, so a run that never assembles says which lane it waited on.</summary>
+    public static string StageLogPath { get; } =
+        Path.Combine(Path.GetTempPath(), "localscribe-stages.txt");
+
+    private static readonly object StageGate = new();
+
+    private static void Stage(string what)
+    {
+        try
+        {
+            // Serialised: lanes end on different threads, sometimes in the same instant, and
+            // two unguarded appends once interleaved into a line that read "to wake".
+            lock (StageGate)
+            {
+                File.AppendAllText(StageLogPath, $"{DateTime.Now:HH:mm:ss} {what}{Environment.NewLine}");
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // A diagnostic that cannot be written is not worth failing anything over.
         }
     }
 
@@ -2695,9 +3362,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _alignedFor.Clear();
         }
 
+        ForgetHeard();
+        ForgetNames();
+        EndInterim();
+
         // A run abandoned between the scan and the placing would otherwise leave six hundred
         // megabytes of model loaded with nothing left to do with it.
-        ForgetAlignment();
+        ForgetAlignment("a recording is starting");
 
         _rawSegments = [];
         _lastTurns = null;
@@ -2802,7 +3473,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             // Said here rather than only after a preload, so the line is right however the model
             // came to be loaded.
-            HardwareSummary = opened.Description;
+            HardwareSummary = RosterSummary(opened.Description);
 
             return opened;
         }
@@ -3082,13 +3753,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Naming the cleanup backend, not just its device. Which model is doing the punctuation
         // decides how good the punctuation is, and this is the line people read when the answer
         // is "not very".
-        var cleanup = _languageModel is { } model
-            ? model.Description
-            : "no cleanup model found";
+        var cleanup = !_cleanupEnabled
+            ? "off"
+            : _languageModel is { } model
+                ? model.Description
+                : "no cleanup model found";
 
-        HardwareSummary = $"encoder on {plan.Encoder.Device}, decoder on {plan.Decoder.Device}, "
-            + $"cleanup: {cleanup}";
+        HardwareSummary = $"encoder on {plan.Encoder.Device}, decoder on {plan.Decoder.Device} · "
+            + $"{SpeakerEngineName()} · cleanup: {cleanup}";
     }
+
+    /// <summary>
+    /// The whole roster, not just the transcriber: the line people read to ask "what is doing
+    /// this work" now answers for the speakers and the cleanup too.
+    /// </summary>
+    private string RosterSummary(string transcriber)
+    {
+        var cleanup = !_cleanupEnabled
+            ? "cleanup off"
+            : _languageModel is { } model
+                ? $"cleanup: {model.Description}"
+                : "no cleanup model";
+
+        return $"{transcriber} · {SpeakerEngineName()} · {cleanup}";
+    }
+
+    private static string SpeakerEngineName() =>
+        SpeakerEngines.Current == SpeakerEngine.Sortformer
+            ? "Nemotron 3 speakers"
+            : "pyannote speakers";
 
     /// <summary>
     /// Gets a cleanup model running, from wherever the machine currently is: installs Foundry
@@ -3219,7 +3912,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool _provisioningCleanup;
 
     private TranscriptRefiner? BuildRefiner() =>
-        _languageModel is null ? null : new TranscriptRefiner(_languageModel);
+        _languageModel is null || !_cleanupEnabled ? null : new TranscriptRefiner(_languageModel);
 
     /// <summary>
     /// True once the cleanup backend has answered a completion this session.
@@ -3321,6 +4014,85 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         (_languageModel as IDisposable)?.Dispose();
         _languageModel = null;
+    }
+
+    /// <summary>
+    /// Whether the scan waits for transcription to end (the finish stages start it when none
+    /// is in flight) rather than starting with the audio.
+    /// <para>
+    /// The order is set by what makes the transcript usable first: speakers, then sync. On
+    /// the M2 at Balanced, two runs each on the podcast, from the start of transcription —
+    /// scan at load, speakers after transcription: labels at 120 and 92 s, done at 205 and
+    /// 155 s. Speakers and scan both at load: labels at 80 and 39 s. Speakers at load, scan
+    /// after transcription: labels at 18 and 11 s, done at 219 and 180 s. The scan on its own
+    /// slows transcription a fifth here because Whisper's decoder shares the CPU with it, and
+    /// with heard words every line is clickable without it. Windows keeps the overlap: its
+    /// transcriber is on the NPU, the CPU is idle beside it, and with no heard words the scan
+    /// is what makes its transcript clickable at all.
+    /// </para>
+    /// <para>LOCALSCRIBE_SCAN_AFTER=1 or 0 overrides, so the order can be measured on any machine.</para>
+    /// </summary>
+    private static bool ScanAfterTranscription => Environment.GetEnvironmentVariable("LOCALSCRIBE_SCAN_AFTER") switch
+    {
+        "1" => true,
+        "0" => false,
+        _ => OperatingSystem.IsMacOS(),
+    };
+
+    /// <summary>The models a window can show as working.</summary>
+    [Flags]
+    public enum ModelRoles
+    {
+        None = 0,
+        Transcription = 1,
+        Speakers = 2,
+        Words = 4,
+        Cleanup = 8,
+    }
+
+    private readonly int[] _working = new int[4];
+
+    /// <summary>
+    /// Which models are running inference right now. Counted rather than flagged because
+    /// stages overlap — a retry can clean while the first run's cleanup is still unwinding —
+    /// and the first to finish must not switch off the other's light.
+    /// </summary>
+    public ModelRoles ActiveModels
+    {
+        get
+        {
+            var roles = IsRecording ? ModelRoles.Transcription : ModelRoles.None;
+
+            for (var i = 0; i < _working.Length; i++)
+            {
+                if (Volatile.Read(ref _working[i]) > 0)
+                {
+                    roles |= (ModelRoles)(1 << i);
+                }
+            }
+
+            return roles;
+        }
+    }
+
+    private IDisposable Working(ModelRoles role)
+    {
+        var slot = System.Numerics.BitOperations.Log2((uint)role);
+        Interlocked.Increment(ref _working[slot]);
+        Raise(nameof(ActiveModels));
+
+        return new Finished(() =>
+        {
+            Interlocked.Decrement(ref _working[slot]);
+            Raise(nameof(ActiveModels));
+        });
+    }
+
+    private sealed class Finished(Action onDispose) : IDisposable
+    {
+        private Action? _onDispose = onDispose;
+
+        public void Dispose() => Interlocked.Exchange(ref _onDispose, null)?.Invoke();
     }
 
     private void Raise(string name) =>

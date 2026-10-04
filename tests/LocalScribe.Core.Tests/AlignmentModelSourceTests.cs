@@ -55,4 +55,32 @@ public class AlignmentModelSourceTests
     [Fact]
     public void TheSizeWarnedAboutIsTheSizeItIs() =>
         Assert.InRange(AlignmentModelSource.ApproximateBytes, 500L * 1024 * 1024, 700L * 1024 * 1024);
+
+    /// <summary>
+    /// The 4-bit build keeps its published name — the aligner looks for it by that name — and
+    /// brings the vocabulary with it, which no build of the model can do without.
+    /// </summary>
+    [Fact]
+    public void TheQuantisedBuildKeepsItsNameAndItsVocabulary()
+    {
+        var required = AlignmentModelSource.QuantisedFiles.Where(f => !f.Optional).Select(f => f.FileName).ToList();
+
+        Assert.Equal(["model_q4.onnx", "vocab.json"], required);
+        Assert.EndsWith("model_q4.onnx", AlignmentModelSource.QuantisedFiles[0].Source.AbsolutePath, StringComparison.Ordinal);
+    }
+
+    /// <summary>The point of it: well under half the fp16 download.</summary>
+    [Fact]
+    public void TheQuantisedBuildIsTheSmallerDownload() =>
+        Assert.True(AlignmentModelSource.QuantisedApproximateBytes < AlignmentModelSource.ApproximateBytes / 2);
+
+    /// <summary>
+    /// What this machine fetches and what it checks for must name the same file, or setup
+    /// would download the 4-bit build and then report the aligner missing forever after.
+    /// </summary>
+    [Fact]
+    public void ThisMachineFetchesTheFileItLooksFor() =>
+        Assert.Contains(
+            AlignmentModelSource.FilesForThisMachine,
+            file => file.FileName == AlignmentModelSource.ModelFileNameForThisMachine);
 }

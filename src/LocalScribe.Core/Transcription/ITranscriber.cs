@@ -43,6 +43,17 @@ public interface ITranscriber : IDisposable
     {
     }
 
+    /// <summary>
+    /// Every word of this recording with the moment the engine itself placed it, recording-
+    /// absolute and in the order heard; empty from an engine that cannot say.
+    /// <para>
+    /// whisper.cpp can, from its cross-attention; the ONNX transcriber cannot, and there the
+    /// transcript waits for the aligner's scan as it always has. See
+    /// <see cref="HeardWordPlacement"/> for how these become a segment's word times.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<WordTimings.Word> HeardWords => [];
+
     /// <summary>Transcribes one encoder-sized window.</summary>
     /// <param name="chunk">A window produced by <see cref="AudioChunker"/>.</param>
     /// <param name="cancellationToken">Cancels a long-running window.</param>
