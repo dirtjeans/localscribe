@@ -411,6 +411,41 @@ on the Snapdragon X Elite (12 cores, 64 GB) with the podcast and debate fixtures
   "working now" in their accessible name, and the transcriber's device reads "on the Hexagon
   NPU" rather than the plan's "on Npu".
 
+### Reaching the Mac from the Windows session (2026-10-04, evening)
+
+Later changes to shared code. Each arrives with the next Mac build whether or not anything in
+`LocalScribe.Desktop` changes; none has run on the Mac.
+
+- **Lines one person spoke are labelled as soon as the diarizer answers** (`SoleVoice`, used in
+  `WithInterimSpeakers`). An untimed line used to stay unlabelled; now, if exactly one speaker
+  is heard across its span (others under half a second, at least a second of speech), it takes
+  that label at once. On Windows, where no line has word times until the scan reaches it,
+  this moved the first labels on the podcast from about 32 s into transcription to about 11 s,
+  covering about a third of the windows on the podcast and on Karl's recording and none on the
+  debate. On the Mac, heard words time nearly every streamed line already, so it should rarely
+  fire — only where `HeardWordPlacement` refuses a line.
+- **Interim labels keep Nemotron's own numbering** rather than renumbering by appearance among
+  the lines labelled so far. With lines labelled ahead of the timed head, renumbering would
+  have shifted every label as the gaps filled in; Nemotron already numbers voices in order of
+  first arrival, and the final assembly still renumbers by appearance, which almost always
+  gives the same numbers. Tracked through a whole podcast run on Windows, none of 32 paragraph
+  labels changed after first appearing. Worth repeating on the Mac with the headless rename
+  check (`LOCALSCRIBE_HEADLESS_RENAME`): names are keyed by the diarizer's labels, which this
+  does not change, but it is the code path they ride on.
+- **The progressive timing pass looks every two seconds until its first head is timed**, then
+  every eight. It measured no earlier on Windows, where the margin behind the scan gates the
+  first clickable words; harmless on the Mac, where the scan runs after transcription.
+- **Cleanup is off by default everywhere now**, so `ReadCleanupPreference` no longer
+  distinguishes platforms. Nothing changes on the Mac, where it was already off.
+- **The cleanup-backend check starts with transcription**, not at the finish (`_cleanupCheck`),
+  and only when cleanup is on. On Windows a stale Foundry endpoint cost twelve seconds at the
+  start of the finish stages.
+- **Rename by voice is refused mid-run** in the view model (listed above); the Mac menu already
+  hides it until the transcript is finished.
+- **The stage log has new marks**: "transcription started" with the pace and order switches,
+  "first words clickable", "labels on screen", "transcription ended" and "done". They are what
+  the Windows ordering trial was timed with, and the Mac's headless runs write them too.
+
 ### New instruments
 
 - `localscribe-doctor --aligner-trial <file.scrb>` — times each aligner build present and the
