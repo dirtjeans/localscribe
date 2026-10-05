@@ -601,25 +601,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         var timed = segments.Select(segment => new TimedSegment(segment, Aligned(segment) ?? [])).ToList();
 
-        // Nothing timed means nothing to cut on — the Windows transcriber hears no words, and
-        // its raw stream is whole thirty-second windows. Labelling a window by whoever held
-        // most of it would put one name on a conversation; it waits for the scan instead.
-        if (!timed.Any(t => t.Words.Count > 0))
-        {
-            return segments;
-        }
-
         try
         {
             var pieces = WordLevelAttribution.Apply(timed, turns);
 
-            // The same reasoning segment by segment: an untimed one stays unlabelled rather
-            // than handed whole to the loudest voice.
-            pieces = [.. pieces.Select(p => p.Words.Count > 0 ? p : p with { Segment = p.Segment with { Speaker = null } })];
+            // An untimed segment cannot be divided, and labelling it by whoever held most of it
+            // would put one name on a conversation — the Windows transcriber hears no words,
+            // and its raw stream is whole thirty-second windows. But one that only one person
+            // spoke needs no dividing, and gets its label the moment the diarizer answers:
+            // about a third of the windows on the podcast and on a long phone interview, so
+            // their labels no longer wait for the scan's timed head. The rest stay unlabelled
+            // until their words are timed, as before.
+            pieces = [.. pieces.Select(p => p.Words.Count > 0
+                ? p
+                : p with { Segment = p.Segment with { Speaker = SoleVoice.Of(turns, p.Segment.StartSeconds, p.Segment.EndSeconds) } })];
             pieces = CrosstalkMarks.Apply(pieces, _overlaps);
 
+            // Nemotron already numbers its speakers in order of first arrival in the audio.
+            // Renumbering by appearance among the lines labelled so far would not: with lines
+            // labelled ahead of the timed head, a voice first seen in one of them would take the
+            // next number, and every label would shift when the gap before it filled in. The
+            // final assembly renumbers by appearance as always, which almost always gives the
+            // same numbers.
             var byVoice = pieces.Select(p => p.Segment).ToList();
-            var named = _names.Apply(byVoice, SpeakerLabels.RenumberByAppearance(byVoice));
+            var named = _names.Apply(byVoice, SpeakerEngines.Current == SpeakerEngine.Sortformer
+                ? byVoice
+                : SpeakerLabels.RenumberByAppearance(byVoice));
             pieces = [.. pieces.Select((p, i) => p with { Segment = named[i] })];
 
             lock (_alignedGate)
@@ -826,7 +833,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             while (!cancellationToken.IsCancellationRequested && _scores is null)
             {
-                await Task.Delay(TimeSpan.FromSeconds(8), cancellationToken).ConfigureAwait(true);
+                // Every two seconds until the first head is timed, then every eight. The first
+                // timed lines are what make the transcript clickable — and, on Windows, what
+                // most of its speaker labels wait for — so finding them a few seconds sooner is
+                // worth the extra looks; after that the eight-second stride is the right cost.
+                await Task.Delay(TimeSpan.FromSeconds(timedThrough > 0 ? 8 : 2), cancellationToken).ConfigureAwait(true);
 
                 AlignmentScores? grid;
                 double frontier;
