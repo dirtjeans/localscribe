@@ -400,6 +400,15 @@ on the Snapdragon X Elite (12 cores, 64 GB) with the podcast and debate fixtures
   a press in another paragraph lets go of the last selection, since WinUI stops drawing an
   unfocused block's highlight but keeps its selection.
 
+- **The models chip is on Windows too, and its parsing is now shared.** The Mac window's
+  roster reading — splitting `HardwareSummary` on " · ", adding the aligner, the short names
+  and panel descriptions — moved into `src/LocalScribe.App/ModelRoster.cs` so the two windows
+  cannot drift. The Avalonia window still has its own copy: link the file in
+  `LocalScribe.Desktop.csproj` beside `MainViewModel.cs` and draw from `ModelRoster.From`. On
+  Windows the chip replaced the status bar's hardware sentence, lit names carry
+  "working now" in their accessible name, and the transcriber's device reads "on the Hexagon
+  NPU" rather than the plan's "on Npu".
+
 ### New instruments
 
 - `localscribe-doctor --aligner-trial <file.scrb>` — times each aligner build present and the

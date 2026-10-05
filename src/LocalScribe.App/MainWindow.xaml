@@ -595,15 +595,15 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <!--
-                Shares rather than an automatic width. The hardware line grew to name the speaker
-                and cleanup models as well, and in an automatic column a wrapping caption claims
-                the whole row: the status went to nothing and the hardware line wrapped to five
-                lines, taking the height the transcript should have had. Each now keeps to one
-                line, trimmed, and the status — what the app is doing — gets the larger share.
+                The status takes what the models chip leaves. The chip sizes to its content —
+                a handful of one-word names on one line, which cannot wrap — so an automatic
+                column is safe for it in a way it was not for the full hardware sentence that
+                stood here before: that one wrapped to five lines in an automatic column and
+                took the height the transcript should have had. The status trims to fit.
             -->
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2*" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <ProgressBar
@@ -640,16 +640,32 @@
                 Click="OnToggleTranslate"
                 ToolTipService.ToolTip="Transcribes the recording again, in English. Turning it off transcribes it again as spoken." />
 
-            <TextBlock
-                x:Name="HardwareText"
+            <!--
+                The models, a word each, lit while they work: the question people ask of this
+                corner is "what is it doing right now, and where?", and a line of hardware
+                detail answered only the second half. Faded at rest so it never competes with
+                the status; the full roster opens on click. Built in code (see RenderModels),
+                because which models there are, and which are lit, changes a few times a run.
+            -->
+            <Button
+                x:Name="ModelsChip"
                 Grid.Row="1"
                 Grid.Column="1"
-                Text="Checking…"
                 HorizontalAlignment="Right"
-                Style="{ThemeResource CaptionTextBlockStyle}"
-                TextWrapping="NoWrap"
-                TextTrimming="CharacterEllipsis"
-                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                Padding="8,2"
+                MinHeight="0"
+                Background="Transparent"
+                BorderThickness="0"
+                Opacity="0.7"
+                Visibility="Collapsed"
+                ToolTipService.ToolTip="The models doing the work, and where each runs">
+                <Button.Flyout>
+                    <Flyout Placement="TopEdgeAlignedRight">
+                        <StackPanel x:Name="ModelsPanel" Spacing="12" Width="380" />
+                    </Flyout>
+                </Button.Flyout>
+                <StackPanel x:Name="ModelsChipRow" Orientation="Horizontal" />
+            </Button>
         </Grid>
     </Grid>
 </Window>

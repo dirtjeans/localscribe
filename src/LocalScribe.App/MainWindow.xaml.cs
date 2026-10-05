@@ -253,10 +253,11 @@ public sealed partial class MainWindow : Window
                     StatusText.Text = _viewModel.Status;
                     break;
                 case nameof(MainViewModel.HardwareSummary):
-                    HardwareText.Text = _viewModel.HardwareSummary;
-
-                    // Trimmed to one line in the corner; the whole of it on hover.
-                    ToolTipService.SetToolTip(HardwareText, _viewModel.HardwareSummary);
+                    _models = ModelRoster.From(_viewModel.HardwareSummary, ModelRoot);
+                    RenderModels();
+                    break;
+                case nameof(MainViewModel.ActiveModels):
+                    RenderModels();
                     break;
                 case nameof(MainViewModel.Paragraphs):
                     ShowParagraphs();
@@ -294,9 +295,195 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.IsModelReady):
                     UpdateRecordButton();
                     UpdateGlow();
+
+                    // Recording lights the transcriber without a working-role change of its
+                    // own: the microphone is the transcriber working.
+                    RenderModels();
                     break;
             }
         });
+    }
+
+    /* ---- the models chip ------------------------------------------------------------- */
+
+    private IReadOnlyList<ModelEntry> _models = [];
+
+    /// <summary>The roles lit when the chip was last drawn, so an unchanged state draws nothing.</summary>
+    private MainViewModel.ModelRoles? _shownActive;
+
+    private IReadOnlyList<ModelEntry> _shownModels = [];
+
+    private readonly List<Microsoft.UI.Xaml.Media.Animation.Storyboard> _pulses = [];
+
+    /// <summary>The glow's purple, so the chip and the border say "working" in the same colour.</summary>
+    private static readonly SolidColorBrush WorkingBrush =
+        new(Windows.UI.Color.FromArgb(255, 0x8B, 0x5C, 0xF6));
+
+    private static string ModelRoot => Path.Combine(AppContext.BaseDirectory, "models");
+
+    /// <summary>
+    /// Draws the chip and its panel, lighting whichever models are running inference now.
+    /// Rebuilt whole at stage boundaries — a handful of times a run — which is simpler than
+    /// keeping controls to toggle and costs nothing at that rate.
+    /// </summary>
+    private void RenderModels()
+    {
+        var active = _viewModel.ActiveModels;
+
+        if (active == _shownActive && ReferenceEquals(_models, _shownModels))
+        {
+            return;
+        }
+
+        _shownActive = active;
+        _shownModels = _models;
+
+        foreach (var pulse in _pulses)
+        {
+            pulse.Stop();
+        }
+
+        _pulses.Clear();
+        ModelsChipRow.Children.Clear();
+        ModelsPanel.Children.Clear();
+
+        if (_models.Count == 0)
+        {
+            ModelsChip.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ModelsChip.Visibility = Visibility.Visible;
+
+        // Faded at rest so it never competes with the status line; while a model works the
+        // chip comes up to full strength, which is the moment it is worth looking at.
+        var resting = active == MainViewModel.ModelRoles.None;
+        ModelsChip.Opacity = resting ? 0.7 : 1;
+
+        var quiet = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+        var animate = new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+
+        for (var i = 0; i < _models.Count; i++)
+        {
+            var model = _models[i];
+            var working = (model.Role & active) != 0;
+
+            if (i > 0)
+            {
+                // Spaced by margin: a caption's surrounding spaces do not survive layout, and
+                // the names ran into the dots.
+                ModelsChipRow.Children.Add(new TextBlock
+                {
+                    Text = "·",
+                    FontSize = 12,
+                    Foreground = quiet,
+                    Opacity = 0.6,
+                    Margin = new Thickness(6, 0, 6, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+            }
+
+            if (working)
+            {
+                var dot = new Microsoft.UI.Xaml.Shapes.Ellipse
+                {
+                    Width = 6,
+                    Height = 6,
+                    Fill = WorkingBrush,
+                    Margin = new Thickness(0, 0, 4, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                };
+
+                ModelsChipRow.Children.Add(dot);
+
+                // The breathing dot says "still going" where a static one only says "was".
+                // Still for anyone who has turned animations off.
+                if (animate)
+                {
+                    _pulses.Add(Pulse(dot));
+                }
+            }
+
+            var label = new TextBlock
+            {
+                Text = model.Name,
+                FontSize = 12,
+                FontWeight = working ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
+                Foreground = working ? WorkingBrush : quiet,
+                Opacity = working || resting ? 1 : 0.6,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            // Said as well as shown: colour and a dot mean nothing to a screen reader.
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(
+                label, working ? $"{model.Name}, working now" : model.Name);
+
+            ModelsChipRow.Children.Add(label);
+        }
+
+        ToolTipService.SetToolTip(ModelsChip, resting
+            ? "The models doing the work, and where each runs"
+            : "Lit: the models working right now. Click for detail.");
+
+        var lit = _models.Where(model => (model.Role & active) != 0).Select(model => model.Name).ToList();
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ModelsChip, lit.Count == 0
+            ? "Models in use: " + string.Join(", ", _models.Select(model => model.Name))
+            : "Working now: " + string.Join(", ", lit));
+
+        ModelsPanel.Children.Add(new TextBlock
+        {
+            Text = "Models in use",
+            Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
+        });
+
+        foreach (var model in _models)
+        {
+            var working = (model.Role & active) != 0;
+
+            ModelsPanel.Children.Add(new StackPanel
+            {
+                Spacing = 2,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = working ? $"{model.Title} — working now" : model.Title,
+                        Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
+                        FontWeight = working ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
+                        Foreground = working ? WorkingBrush : quiet,
+                    },
+                    new TextBlock
+                    {
+                        Text = model.Detail,
+                        TextWrapping = TextWrapping.Wrap,
+                        IsTextSelectionEnabled = true,
+                    },
+                },
+            });
+        }
+    }
+
+    private static Microsoft.UI.Xaml.Media.Animation.Storyboard Pulse(UIElement dot)
+    {
+        var fade = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+        {
+            From = 1,
+            To = 0.25,
+            Duration = new Duration(TimeSpan.FromMilliseconds(750)),
+        };
+
+        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(fade, dot);
+        Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(fade, "Opacity");
+
+        var pulse = new Microsoft.UI.Xaml.Media.Animation.Storyboard
+        {
+            AutoReverse = true,
+            RepeatBehavior = Microsoft.UI.Xaml.Media.Animation.RepeatBehavior.Forever,
+        };
+
+        pulse.Children.Add(fade);
+        pulse.Begin();
+        return pulse;
     }
 
     /// <summary>
