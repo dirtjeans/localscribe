@@ -35,7 +35,9 @@ here reports no word times of its own, so a line becomes clickable when the scan
 reaches it, and speaker labels attach to lines as they become timed. Measured on the 7-minute
 podcast at Balanced, from the start of transcription: labels and the first clickable words at
 about 32 s, transcription done at about 45 s, the scan and the run done at about 150 s, or
-about 236 s with cleanup on. Text is selectable and copyable as soon as it appears; a click
+about 236 s with cleanup on. Cleanup is off by default, as on the Mac; the switch is under the
+processing-speed slider. Windows where one person speaks throughout are labelled as soon as
+Nemotron answers, about 11 s in on the podcast, ahead of their word times. Text is selectable and copyable as soon as it appears; a click
 plays the word, a drag selects.
 
 The order was chosen by measurement against the Mac's (see the macOS handoff's "Next Windows

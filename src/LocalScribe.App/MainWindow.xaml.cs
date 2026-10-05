@@ -2636,7 +2636,32 @@ public sealed partial class MainWindow : Window
             DefaultButton = ContentDialogButton.Primary,
         };
 
-        if (_viewModel.CleanupModel is null)
+        if (!_viewModel.CleanupEnabled)
+        {
+            // Off by choice, not missing: offering to download a model would answer the wrong
+            // question. The glossary only works through cleanup, so the way back is one click.
+            var enable = new Button { Content = "Turn cleanup on" };
+
+            enable.Click += (_, _) =>
+            {
+                _viewModel.CleanupEnabled = true;
+                dialog.Hide();
+                StatusText.Text = "Cleanup is on from the next transcription.";
+            };
+
+            content.Children.Add(new InfoBar
+            {
+                IsOpen = true,
+                IsClosable = false,
+                Severity = InfoBarSeverity.Informational,
+                Title = "Cleanup is off",
+                Message = "The glossary is applied by the cleanup model, so it has no effect "
+                    + "while cleanup is off. Cleanup also repairs punctuation, and adds time to "
+                    + "each transcription. It can be switched on here or under processing speed.",
+                ActionButton = enable,
+            });
+        }
+        else if (_viewModel.CleanupModel is null)
         {
             // The one-click way out, not just the diagnosis. Everything the button does is
             // named in the message, runs on this machine, and reports into the status line —

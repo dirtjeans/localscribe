@@ -148,9 +148,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// Optional because it is expensive and, with Whisper large-v3-turbo, mostly polish:
     /// measured on a seven-minute podcast it changed about one token in eleven — a comma made
     /// a colon, a missing capital — while costing roughly half the recording's length with a 7B
-    /// model on a 16 GB Mac, and 7 GB of memory. Off by default on macOS, where that trade was
-    /// measured; on by default elsewhere, so the Windows app keeps the behaviour it was tuned
-    /// with. The choice persists beside the pace.
+    /// model on a 16 GB Mac, and 7 GB of memory. Off by default everywhere: first on macOS,
+    /// where that trade was measured, then on Windows, where it added about a minute and a
+    /// half to the seven-minute podcast — the run done at 236 s rather than about 150. The
+    /// choice persists beside the pace, and a machine that saved one keeps it.
     /// </para>
     /// </summary>
     public bool CleanupEnabled
@@ -197,7 +198,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Unreadable falls through to the platform default.
         }
 
-        return !OperatingSystem.IsMacOS();
+        return false;
     }
 
     private static void WriteCleanupPreference(bool enabled)

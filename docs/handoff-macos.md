@@ -263,7 +263,7 @@ instruments to do it with are named against each item.
   `work-pace.txt`). Measured on the Mac with Whisper large-v3-turbo, cleanup changed about one
   token in eleven — mostly a comma made a colon or a missing capital — for roughly half the
   recording's length in time and 7 GB of memory with a 7B model. **Off by default on macOS,
-  on by default on Windows**, so the laptop keeps the behaviour it was tuned with. With it off,
+  and since 2026-10-04 on Windows too** (see the Snapdragon results below). With it off,
   Foundry is never started and no model is loaded. The WinUI window has no control for it
   yet; it reads the same preference file. On the Snapdragon, where cleanup runs on a small
   NPU model, the time it costs may be small enough that on stays the right default — measure
@@ -376,9 +376,11 @@ on the Snapdragon X Elite (12 cores, 64 GB) with the podcast and debate fixtures
   with cross-attention outputs. Until then the scan's speed is what decides how soon a Windows
   transcript is clickable, which is why the 4-bit aligner matters more here than on the Mac.
 - **Memory is not tight here** (64 GB), so cleanup keeps running beside the scan.
-- **Cleanup stays on by default on Windows.** Measured on the podcast: about 150 s to done
-  without it, 236 s with it — roughly a minute and a half past the scan. The WinUI window now
-  has the switch, under the processing-speed slider, worded as on the Mac.
+- **Cleanup is off by default on Windows too**, at the owner's call after this measurement: on
+  the podcast, about 150 s to done without it and 236 s with it — roughly a minute and a half
+  past the scan. The WinUI window has the switch under the processing-speed slider, worded as
+  on the Mac, and its glossary dialog says cleanup is off, with a button to turn it on, rather
+  than offering to download a model.
 - **A Windows-only wait found on the way.** The finish stages began by checking the cleanup
   backend still answered, and when the cached client did not, asking Foundry's CLI where it
   was took about twelve seconds, during which the timed preview — and the speakers, when
