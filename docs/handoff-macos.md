@@ -453,6 +453,11 @@ Later changes to shared code. Each arrives with the next Mac build whether or no
   path uses to take turns with Whisper. With the scan after transcription on the Mac, the
   flag is already down when the scan starts, so neither should change anything there.
   `ModelRoster` names the aligner "fp16 on the NPU" only when the compiled graph is on disk.
+- **Streamed windows are trimmed before they are shown** (`StreamedText.Trim` in the progress
+  handler): the seam overlap and looped phrases, by the stitcher's rules, so a reader no longer
+  sees each seam doubled until the end. Unmeasured on the Mac, where heard words time the
+  streamed lines: worth checking that a trimmed line still finds its words. The stage log's
+  "streamed text against the finished" line measures what is left.
 - **The stage log has new marks**: "transcription started" with the pace and order switches,
   "first words clickable", "labels on screen", "transcription ended" and "done". They are what
   the Windows ordering trial was timed with, and the Mac's headless runs write them too.

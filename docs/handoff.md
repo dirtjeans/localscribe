@@ -19,7 +19,7 @@ embeddings elsewhere), cleans up
 with a local language model through Foundry Local or GenieX, and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
 segments, and a readable text copy — that reopen instantly and are byte-portable across
-machines. The core library's 707 tests pass; the published app is self-contained and carries
+machines. The core library's 713 tests pass; the published app is self-contained and carries
 its own .NET runtime.
 
 The reference recordings are a seven-minute studio podcast with five speakers, an interview
@@ -273,6 +273,18 @@ too, once compiled — `NpuAligner`, `ForcedAligner.LoadNpu`. What it took, and 
 
 No NPU model needs unloading for this: idle sessions cost memory, not NPU time, and the aligner's
 session is released the moment its scan ends.
+
+## Streamed text is trimmed like the finished transcript (2026-10-05)
+
+Each window's streamed text is trimmed of the seam it shares with the window before and of any
+looped phrase (`StreamedText.Trim`, the stitcher's own rules) before it is shown or timed. The
+stage log compares the streamed text with the finished transcript at "transcription ended":
+words shown that later vanished went from 76 to 0 on the podcast and 50 to 7 on the debate.
+The debate's 7 are one sentence the stream has in the right place and the finished transcript
+does not: Whisper stamped "That's why I'm trying to define it." at 112 s although it was said
+near 82 s, and the stitcher sorts by stamp, so the finished transcript prints it 30 s late.
+That is a stitcher ordering issue, open. Seams the two windows worded differently ("You don't"
+against "You did") are kept twice in both, as before.
 
 ## Evaluated and not taken
 

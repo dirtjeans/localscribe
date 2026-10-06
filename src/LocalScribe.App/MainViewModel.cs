@@ -3373,6 +3373,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // otherwise several minutes of a progress bar and nothing to read.
             var streamed = new List<TranscriptSegment>();
 
+            // What the transcriber wrote, untrimmed, only so the stage log can say what the
+            // trim saved a reader from seeing vanish.
+            var asWritten = new List<string>();
+
             var progress = new Progress<TranscriptionProgress>(update =>
             {
                 Progress = update.Fraction * TranscriptionShare;
@@ -3387,8 +3391,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     // end of a long recording — every streamed anchor beyond the aligner's
                     // reach, which is why the in-progress sync was so much worse than the
                     // finished one.
+                    // Trimmed of the seam it shares with the window before and of any loop, by
+                    // the stitcher's own rules, so a reader does not watch every seam doubled
+                    // until the end and the progressive pass does not time words twice.
+                    asWritten.Add(update.LatestText);
+                    var text = StreamedText.Trim(streamed.Count > 0 ? streamed[^1].Text : null, update.LatestText);
+
+                    if (text.Length == 0)
+                    {
+                        return;
+                    }
+
                     streamed.Add(new TranscriptSegment(
-                        update.LatestText,
+                        text,
                         update.LatestStartSeconds,
                         update.LatestEndSeconds));
 
@@ -3434,6 +3449,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
 
             Stage("transcription ended");
+
+            {
+                var finished = transcript.FullText;
+                var (before, _) = StreamedText.Compare(string.Join(" ", asWritten), finished);
+                var (after, missing) = StreamedText.Compare(string.Join(" ", streamed.Select(s => s.Text)), finished);
+                Stage($"streamed text against the finished: {after} words extra and {missing} missing, "
+                    + $"{before} extra untrimmed");
+            }
 
             // The last window's words, which the final progress update may not have carried,
             // and taken now because the transcriber may be released before the finish stages.
