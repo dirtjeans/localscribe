@@ -133,7 +133,11 @@ public sealed class TranscriptionPipeline
                 ? []
                 : await _transcriber.TranscribeChunkAsync(chunk, cancellationToken).ConfigureAwait(false);
 
-            perChunkSegments.Add(segments);
+            // Stamps repaired to agree with the decoder's order for the transcript. Where the next
+            // window starts is still read from the raw stamps below, which already ignores any
+            // past the window's audio.
+            perChunkSegments.Add(TranscriptStitcher.InDecoderOrder(
+                segments, chunk.StartSeconds, chunk.StartSeconds + chunk.ContentSeconds));
             completed++;
 
             // Once a window has reached the end of the audio there is nothing after it but

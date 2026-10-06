@@ -57,6 +57,19 @@ public sealed class TranscriptStitcher
                     ? segment with { Text = TrimLeadingOverlap(merged[^1].Text, segment.Text) }
                     : segment;
 
+                // What is left begins where the words it repeated ended. Kept where it was, the
+                // stamp still claimed those words' seconds — and before them: on the debate a
+                // window trimmed of "That's why I'm trying to define it." still started half a
+                // second before that sentence did.
+                if (trimmed.Text != segment.Text && merged[^1].EndSeconds > trimmed.StartSeconds)
+                {
+                    trimmed = trimmed with
+                    {
+                        StartSeconds = merged[^1].EndSeconds,
+                        EndSeconds = Math.Max(trimmed.EndSeconds, merged[^1].EndSeconds),
+                    };
+                }
+
                 // And a repeat wholly inside this segment, which is the other way the same words
                 // arrive twice: not two windows transcribing one stretch of audio, but the
                 // decoder looping within a single window. Every check above compares the end of
@@ -73,9 +86,72 @@ public sealed class TranscriptStitcher
             }
         }
 
-        merged.Sort((left, right) => left.StartSeconds.CompareTo(right.StartSeconds));
-
+        // In the order they were written — window by window, and within each in the decoder's
+        // order — which is the order they were said. Not re-sorted by stamp: stamps are the
+        // weaker evidence, and a sort let one wrong stamp carry a sentence thirty seconds out of
+        // place on the debate. Stamps that disagree are pushed into line instead.
         return NoTwoAtOnce(merged);
+    }
+
+    /// <summary>
+    /// Repairs one window's stamps so they agree with the order the decoder wrote its segments
+    /// in, which is the order they were said.
+    /// <para>
+    /// Whisper sometimes stamps a segment where it cannot be: past the end of the audio the
+    /// window held — the timestamps describing its own padding, which is why where the next
+    /// window starts already ignores them — or later than the segment it wrote next. The words
+    /// are real; only the stamp is wrong. But the stitch sorts by stamp, and on the debate the
+    /// window covering 82–112 s wrote "That's why I'm trying to define it." first, stamped it
+    /// 112.3 s, and the finished transcript printed it thirty seconds late, after the window's
+    /// own next sentence.
+    /// </para>
+    /// <para>
+    /// So a segment that runs past the window is cut at its end, or, begun past it, moved to end
+    /// there with the length it was given. Then, last to first, a segment stamped later than the
+    /// one after it is moved to start where that one does, keeping its length; the stitch keeps
+    /// equal stamps in decoder order and pushes what follows clear of it. Where exactly the
+    /// words fall is the aligner's job. What the stamps must get right is the order.
+    /// </para>
+    /// </summary>
+    /// <param name="windowEndSeconds">Where the window's real audio ends, before any padding.</param>
+    public static IReadOnlyList<TranscriptSegment> InDecoderOrder(
+        IReadOnlyList<TranscriptSegment> segments,
+        double windowStartSeconds,
+        double windowEndSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+
+        var repaired = segments.Select(segment =>
+        {
+            if (segment.EndSeconds <= windowEndSeconds)
+            {
+                return segment;
+            }
+
+            // Begun inside the window and running past it: only the end was invented.
+            if (segment.StartSeconds < windowEndSeconds)
+            {
+                return segment with { EndSeconds = windowEndSeconds };
+            }
+
+            var length = Math.Max(0, segment.EndSeconds - segment.StartSeconds);
+            var start = Math.Max(windowStartSeconds, Math.Min(segment.StartSeconds, windowEndSeconds - length));
+
+            return segment with { StartSeconds = start, EndSeconds = windowEndSeconds };
+        }).ToList();
+
+        for (var i = repaired.Count - 2; i >= 0; i--)
+        {
+            var next = repaired[i + 1].StartSeconds;
+
+            if (repaired[i].StartSeconds > next)
+            {
+                var length = Math.Max(0, repaired[i].EndSeconds - repaired[i].StartSeconds);
+                repaired[i] = repaired[i] with { StartSeconds = next, EndSeconds = next + length };
+            }
+        }
+
+        return repaired;
     }
 
     /// <summary>

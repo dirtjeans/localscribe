@@ -19,7 +19,7 @@ embeddings elsewhere), cleans up
 with a local language model through Foundry Local or GenieX, and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
 segments, and a readable text copy — that reopen instantly and are byte-portable across
-machines. The core library's 713 tests pass; the published app is self-contained and carries
+machines. The core library's 721 tests pass; the published app is self-contained and carries
 its own .NET runtime.
 
 The reference recordings are a seven-minute studio podcast with five speakers, an interview
@@ -280,11 +280,26 @@ Each window's streamed text is trimmed of the seam it shares with the window bef
 looped phrase (`StreamedText.Trim`, the stitcher's own rules) before it is shown or timed. The
 stage log compares the streamed text with the finished transcript at "transcription ended":
 words shown that later vanished went from 76 to 0 on the podcast and 50 to 7 on the debate.
-The debate's 7 are one sentence the stream has in the right place and the finished transcript
-does not: Whisper stamped "That's why I'm trying to define it." at 112 s although it was said
-near 82 s, and the stitcher sorts by stamp, so the finished transcript prints it 30 s late.
-That is a stitcher ordering issue, open. Seams the two windows worded differently ("You don't"
-against "You did") are kept twice in both, as before.
+The debate's 7 were one sentence the finished transcript printed 30 s late; fixed below. Seams
+the two windows worded differently ("You don't" against "You did") are kept twice in both.
+
+## The stitcher keeps the order things were written in (2026-10-05)
+
+It used to sort segments by stamp. Stamps are the weaker evidence: windows arrive in order and
+the decoder writes in order, so the order written is the order said. On the debate, window 4
+began at 78.84 s, inside window 3, and opened by repeating window 3's last sentence. Trimmed of
+it, its text still claimed 78.84 s — before that sentence — so the sort put the whole window
+first and the no-overlap pass pushed the sentence after it. Now a trimmed segment starts where
+the words it repeated ended, nothing is re-sorted, and `InDecoderOrder` repairs a window's own
+stamps (past the window's audio, or later than the next segment) before stitching.
+
+Streamed against finished: debate 7/7 → 0/0, Karl 12/18 → 0/6, podcast 0/0 → 0/0 and its word
+spans identical. On Karl the old order had pushed the last minutes progressively late — stamps
+ran to 1314 s on a 1262 s file. Checked against fresh slice scans (`--align <slice> --window`):
+"Look, I don't think…" said at ~1098–1100 s, placed 1104.1 before and 1100.4 after; "…push me to
+say no" at ~702 s, before printed twice with the copy at 727 s, after once at 702.4; the closing
+"…I'm a sucker for alliteration" ends by 1200 s with silence after, placed up to 1262 s before
+and by 1200.6 after.
 
 ## Evaluated and not taken
 

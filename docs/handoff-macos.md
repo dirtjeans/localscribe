@@ -458,6 +458,11 @@ Later changes to shared code. Each arrives with the next Mac build whether or no
   sees each seam doubled until the end. Unmeasured on the Mac, where heard words time the
   streamed lines: worth checking that a trimmed line still finds its words. The stage log's
   "streamed text against the finished" line measures what is left.
+- **The stitcher no longer sorts by stamp** (`TranscriptStitcher`, `InDecoderOrder`): segments
+  keep the order they were written, a trimmed seam starts where its repeat ended, and a
+  window's out-of-order stamps are repaired first. Shared by the Mac's whisper.cpp path too, so
+  worth a Mac run of the debate and Karl's recording: on Windows it fixed a sentence printed
+  30 s late and a tail placed up to a minute late. See `docs/handoff.md`.
 - **The stage log has new marks**: "transcription started" with the pace and order switches,
   "first words clickable", "labels on screen", "transcription ended" and "done". They are what
   the Windows ordering trial was timed with, and the Mac's headless runs write them too.

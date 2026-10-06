@@ -175,17 +175,21 @@ public sealed class TranscriptStitcherTests
         Assert.Single(stitched);
     }
 
+    /// <summary>
+    /// Windows arrive in order and the decoder writes in order, so the order written is the
+    /// order said; a stamp that disagrees is the weaker evidence and is moved, not obeyed.
+    /// </summary>
     [Fact]
-    public void OutputIsOrderedByTime()
+    public void OutputKeepsTheOrderItWasWrittenIn()
     {
         var stitched = new TranscriptStitcher().Stitch(
         [
-            [new TranscriptSegment("second", 10, 12)],
-            [new TranscriptSegment("first", 0, 2)],
+            [new TranscriptSegment("first", 10, 12)],
+            [new TranscriptSegment("second", 9, 14)],
         ]);
 
-        Assert.Equal("first", stitched[0].Text);
-        Assert.Equal("second", stitched[1].Text);
+        Assert.Equal(["first", "second"], stitched.Select(s => s.Text));
+        Assert.True(stitched[1].StartSeconds >= stitched[0].EndSeconds);
     }
 
     [Fact]
