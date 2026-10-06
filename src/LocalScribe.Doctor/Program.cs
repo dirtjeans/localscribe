@@ -267,6 +267,25 @@ internal static class Program
             return AsrTrialCommand.Run(asrTrial, modelDirectory, plan);
         }
 
+        var npuTrial = ArgumentValue(args, "--aligner-npu");
+        if (npuTrial is not null && Core.Archive.TranscriptArchive.IsArchive(npuTrial))
+        {
+            return AlignerNpuCommand.Grade(
+                npuTrial,
+                modelDirectory,
+                plan,
+                double.TryParse(ArgumentValue(args, "--npu-window"), System.Globalization.CultureInfo.InvariantCulture, out var gradeSeconds) ? gradeSeconds : 30);
+        }
+
+        if (npuTrial is not null)
+        {
+            return AlignerNpuCommand.Run(
+                npuTrial,
+                modelDirectory,
+                plan.CpuBudget.IntraOpThreads,
+                double.TryParse(ArgumentValue(args, "--npu-window"), System.Globalization.CultureInfo.InvariantCulture, out var seconds) ? seconds : 30);
+        }
+
         var trial = ArgumentValue(args, "--aligner-trial");
         if (trial is not null)
         {
