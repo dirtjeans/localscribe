@@ -445,6 +445,14 @@ Later changes to shared code. Each arrives with the next Mac build whether or no
   start of the finish stages.
 - **Rename by voice is refused mid-run** in the view model (listed above); the Mac menu already
   hides it until the transcript is finished.
+- **The word aligner can scan on the Snapdragon's NPU** (2026-10-05; `NpuAligner`, see
+  `docs/handoff.md`). Gated on the QNN provider specifically, so a Mac never compiles or opens
+  it — the plan's "NPU" there means Core ML. What does reach the Mac's shared code: the
+  progressive pass now runs until transcription ends rather than stopping when the scan does
+  (`_streamingText`), and `ForcedAligner.Scan` takes an optional per-window callback the NPU
+  path uses to take turns with Whisper. With the scan after transcription on the Mac, the
+  flag is already down when the scan starts, so neither should change anything there.
+  `ModelRoster` names the aligner "fp16 on the NPU" only when the compiled graph is on disk.
 - **The stage log has new marks**: "transcription started" with the pace and order switches,
   "first words clickable", "labels on screen", "transcription ended" and "done". They are what
   the Windows ordering trial was timed with, and the Mac's headless runs write them too.

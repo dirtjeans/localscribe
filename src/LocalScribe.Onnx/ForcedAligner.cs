@@ -32,12 +32,19 @@ public sealed class ForcedAligner : IDisposable
     private readonly AlignmentAlphabet _alphabet;
     private readonly string _input;
 
-    private ForcedAligner(InferenceSession session, AlignmentAlphabet alphabet)
+    /// <summary>The one window length a compiled NPU graph accepts, or null on the CPU.</summary>
+    private readonly int? _fixedWindow;
+
+    private ForcedAligner(InferenceSession session, AlignmentAlphabet alphabet, int? fixedWindow = null)
     {
         _session = session;
         _alphabet = alphabet;
         _input = session.InputMetadata.Keys.First();
+        _fixedWindow = fixedWindow;
     }
+
+    /// <summary>True when this aligner scans on the NPU.</summary>
+    public bool OnNpu => _fixedWindow is not null;
 
     /// <summary>What the aligner needs on disk, or null when it is not installed.</summary>
     public static string? Find(string modelRoot)
@@ -83,6 +90,19 @@ public sealed class ForcedAligner : IDisposable
     }
 
     /// <summary>
+    /// Loads the aligner compiled for the NPU (<see cref="NpuAligner"/>), or throws when the NPU
+    /// will not open it. Placing words is the same code either way; only the scan differs.
+    /// </summary>
+    public static ForcedAligner LoadNpu(string directory, ExecutionPlan plan)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(directory);
+        ArgumentNullException.ThrowIfNull(plan);
+
+        var alphabet = AlignmentAlphabet.Load(Path.Combine(directory, "vocab.json"));
+        return new ForcedAligner(NpuAligner.Open(directory, plan), alphabet, NpuAligner.WindowSamples);
+    }
+
+    /// <summary>
     /// Runs the recogniser over the whole recording once and keeps what it made of every frame.
     /// <para>
     /// This is nearly all the cost of alignment and it depends on nothing but the audio, so it
@@ -100,17 +120,28 @@ public sealed class ForcedAligner : IDisposable
     /// The grid fills front to back, so a caller may align against a <see cref="AlignmentScores.Prefix"/>
     /// cut at or before the reported frontier while the scan keeps writing beyond it.
     /// </param>
+    /// <param name="beforeWindow">
+    /// On the NPU only: called before each window with the second its audio reaches, and may
+    /// block. The NPU runs one graph at a time and a scan's windows queue back to back, so left
+    /// alone the scan shuts Whisper out until it ends; this is how the caller takes turns.
+    /// </param>
     public AlignmentScores? Scan(
         PcmAudio audio,
         IProgress<double>? progress = null,
         CancellationToken cancellationToken = default,
-        Action<AlignmentScores, double>? onFrontier = null)
+        Action<AlignmentScores, double>? onFrontier = null,
+        Action<double>? beforeWindow = null)
     {
         ArgumentNullException.ThrowIfNull(audio);
 
         if (audio.Samples.Length < ShortestAlignableSamples)
         {
             return null;
+        }
+
+        if (_fixedWindow is { } fixedLength)
+        {
+            return ScanFixed(audio, fixedLength, progress, cancellationToken, onFrontier, beforeWindow);
         }
 
         // How much audio a frame covers, asked rather than assumed, and asked twice.
@@ -190,6 +221,75 @@ public sealed class ForcedAligner : IDisposable
 
             progress?.Report(until / (double)frames);
             onFrontier?.Invoke(scores, scores.SecondsAt(Math.Min(frames, at + rows)));
+        }
+
+        return scores;
+    }
+
+    /// <summary>
+    /// The scan for a graph compiled at one length, as on the NPU.
+    /// <para>
+    /// Every window is that length and all of it real audio: the first and last slide inward
+    /// rather than being padded, because the model normalises each window and attends across
+    /// the whole of it, so silence added to fill a window would change what it hears in the part
+    /// that is kept. The stride cannot be probed at two lengths here, as the CPU scan does, so it
+    /// is taken from the model's convolutions — 320 samples a frame, 400 for the first — and
+    /// checked against the frames the first window actually returns.
+    /// </para>
+    /// </summary>
+    private AlignmentScores? ScanFixed(
+        PcmAudio audio,
+        int length,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken,
+        Action<AlignmentScores, double>? onFrontier,
+        Action<double>? beforeWindow)
+    {
+        if (audio.Samples.Length < length)
+        {
+            return null;
+        }
+
+        const int samplesPerFrame = 320;
+        var expected = ((length - 400) / samplesPerFrame) + 1;
+
+        var frames = audio.Samples.Length / samplesPerFrame;
+        var core = (int)((length - (2 * MarginSeconds * audio.SampleRate)) / samplesPerFrame);
+        var margin = (int)(MarginSeconds * audio.SampleRate) / samplesPerFrame;
+        var lastStart = (audio.Samples.Length - length) / samplesPerFrame;
+        var scores = new AlignmentScores(frames, _alphabet.Size, samplesPerFrame / (double)audio.SampleRate);
+
+        for (var at = 0; at < frames; at += core)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var readFrom = Math.Clamp(at - margin, 0, lastStart);
+
+            beforeWindow?.Invoke(((readFrom * samplesPerFrame) + length) / (double)audio.SampleRate);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (Score(audio.Samples.AsSpan(readFrom * samplesPerFrame, length)) is not { } window)
+            {
+                return null;
+            }
+
+            if (window.Frames != expected)
+            {
+                throw new InvalidDataException(
+                    $"The NPU aligner returned {window.Frames} frames for a window that should have {expected}.");
+            }
+
+            var offset = at - readFrom;
+            var rows = Math.Min(Math.Min(core, frames - at), window.Frames - offset);
+
+            if (rows > 0)
+            {
+                scores.Fill(at, window.Scores.AsSpan(offset * window.Alphabet, rows * window.Alphabet));
+            }
+
+            var until = Math.Min(frames, at + Math.Max(rows, 0));
+            progress?.Report(until / (double)frames);
+            onFrontier?.Invoke(scores, scores.SecondsAt(until));
         }
 
         return scores;

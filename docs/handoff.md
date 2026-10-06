@@ -19,7 +19,7 @@ embeddings elsewhere), cleans up
 with a local language model through Foundry Local or GenieX, and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
 segments, and a readable text copy — that reopen instantly and are byte-portable across
-machines. The core library's 693 tests pass; the published app is self-contained and carries
+machines. The core library's 707 tests pass; the published app is self-contained and carries
 its own .NET runtime.
 
 The reference recordings are a seven-minute studio podcast with five speakers, an interview
@@ -239,6 +239,41 @@ runtime it happened to rely on.
 **`LocalScribe.App` stays out of `LocalScribe.sln`.** WinUI cannot restore on non-Windows and
 its presence would break `dotnet build` for every other contributor. Build it by path.
 
+## The word aligner on the NPU (2026-10-05)
+
+Where the planner put Whisper on the Hexagon NPU (QNN, not Core ML), the MMS aligner scans there
+too, once compiled — `NpuAligner`, `ForcedAligner.LoadNpu`. What it took, and why:
+
+- **`Erf`.** The QNN provider in ONNX Runtime 1.22 cannot run it, and the export uses it in all
+  32 GELUs, which split the graph so the NPU would not finalize it (`LOCALSCRIBE_QNN_VERBOSE=1`
+  shows why). `GeluRewrite` (Core, no dependencies, protobuf wire format) turns each
+  `Div → Erf → Add → Mul → Mul` chain into one `com.microsoft` `Gelu`. Its output is
+  byte-identical to the Python/onnx rewrite that was graded; `--gelu-rewrite <model>` writes one.
+  ONNX Runtime's own fusion does not run on the fp16 model.
+- **One window length.** The NPU compiles for exact shapes: 14 s (10 s kept, 2 s margins, ends
+  slid inward, never padded). 34 s grew to 33 GB of memory and never finished.
+- **Compiled once, in the background.** About 4 minutes and 8 GB at the peak, so only where
+  memory is not tight, at the lowest priority, from launch; until it exists the CPU scans as
+  before. It compiles into `models/alignment/npu/` and is trusted only once the `compiled` marker
+  is written — not compiled elsewhere and moved, because under OneDrive the folder move is what
+  failed. A graph the NPU later refuses (driver update) is forgotten and recompiled next launch.
+  Needs the fp16 build; fetched first if only the 4-bit one is installed. ~750 MB on disk.
+- **Taking turns.** The NPU runs one graph at a time and the scan's windows queue back to back:
+  unpaced, Whisper wrote nothing for the scan's whole minute. So the scan waits whenever it is
+  more than 60 s ahead of the streamed text (`NpuScanLeadSeconds`), and the progressive pass now
+  keeps timing streamed text after the scan finishes, until transcription ends.
+- **Measured** (podcast, 443 s): first clickable 18 s, done 101 s, against 32 s and 160 s with
+  the 4-bit CPU scan; the text itself takes 98 s to finish streaming instead of 45. Unpaced:
+  no text until 62 s, done 115 s. Word placement against the CPU fp16 reference
+  (`--aligner-npu <file.scrb> --app`, the app's own path): podcast 99% within 0.1 s, debate 93%
+  (97% within 0.25 s), no drift in any fifth — the same as the trial that preceded it. Scan
+  alone: podcast 58.5 s against 191 s for fp16 on the CPU.
+- **Switches.** `LOCALSCRIBE_NPU_ALIGNER=0` keeps the scan on the CPU. Recordings under 14 s
+  always use the CPU. The stage log says which ran (`word scan ended (NPU)`).
+
+No NPU model needs unloading for this: idle sessions cost memory, not NPU time, and the aligner's
+session is released the moment its scan ends.
+
 ## Evaluated and not taken
 
 - **WhisperX** — faster-whisper/CTranslate2 has no usable Windows ARM64 build. Its wav2vec2
@@ -246,21 +281,6 @@ its presence would break `dotnet build` for every other contributor. Build it by
 - **VibeVoice-ASR** — spiked on the real machine: the GenieX SDK on this laptop exposes no ASR
   API, so there is nothing to integrate against. Re-evaluate only if that changes.
 - **Parakeet** — deferred by choice; revisit only if asked.
-- **The MMS aligner on the NPU (2026-10-05)** — works, measured, not wired in yet. The QNN
-  provider in ONNX Runtime 1.22 cannot run `Erf`, which the export uses for every GELU (32 of
-  them), so the graph has to be rewritten first: each `Div → Erf → Add → Mul → Mul` chain becomes
-  one `com.microsoft` `Gelu` (agrees with the original on every frame on the CPU). ONNX Runtime's
-  own optimiser does not do this on the fp16 model, so shipping it means a small protobuf rewrite
-  in the app. Windows must be one fixed length: 14 s (10 s kept, 2 s margins) compiles in about
-  4 minutes into a 750 MB cache; 34 s grew to 33 GB of memory and was stopped. Word placement
-  against the CPU fp16 reference (`--aligner-npu <file.scrb>`): debate 93% within 0.1 s, podcast
-  99%, no drift — closer than the 4-bit build on the debate. Speed on the podcast: 58 s alone,
-  against about 110 s for the 4-bit build at two CPU threads. But the NPU is shared: run beside
-  Whisper, transcription went from 48 s to 93 s and the scan from 58 s to 81 s. So the choice is
-  scheduling — beside Whisper (everything done sooner, text streams in at half speed) or after it
-  (text as fast as today, clickable lines later) — and is open. `--aligner-npu <wav>` times it;
-  `LOCALSCRIBE_NPU_MODEL` points it at a rewritten model, `LOCALSCRIBE_NPU_ONLY` skips the CPU
-  comparison, `--npu-window` sets the kept length.
 - **`--install` as the app's provisioning path** — evaluated, kept unwired; the doctor's
   `--fetch-models` and the in-app cleanup provisioning cover the real flows.
 

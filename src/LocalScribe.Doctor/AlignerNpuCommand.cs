@@ -236,6 +236,72 @@ internal static class AlignerNpuCommand
         return 0;
     }
 
+    /// <summary>
+    /// Grades the app's own NPU path — <see cref="LocalScribe.Onnx.NpuAligner"/> preparing the
+    /// compiled graph if it is missing, then <see cref="LocalScribe.Onnx.ForcedAligner.LoadNpu"/>
+    /// scanning — against the CPU's fp16 reference, so what ships is what was measured.
+    /// </summary>
+    public static int GradeApp(string archivePath, string modelRoot, Core.Hardware.ExecutionPlan plan)
+    {
+        var contents = Core.Archive.TranscriptArchive.Load(archivePath);
+        var audio = contents.Audio;
+        var segments = contents.Segments;
+        var directory = Path.Combine(modelRoot, "alignment");
+
+        Console.WriteLine();
+        Console.WriteLine($"Aligner on the NPU, the app's path — {Path.GetFileName(archivePath)}, {audio.DurationSeconds:F0} s");
+        Console.WriteLine();
+
+        var watch = Stopwatch.StartNew();
+        if (!LocalScribe.Onnx.NpuAligner.IsReady(directory))
+        {
+            var ready = LocalScribe.Onnx.NpuAligner
+                .PrepareAsync(directory, plan, message => Console.WriteLine($"  {watch.Elapsed.TotalSeconds,6:F1} s  {message}"))
+                .GetAwaiter().GetResult();
+
+            if (!ready)
+            {
+                Console.Error.WriteLine("The aligner could not be compiled for the NPU.");
+                return 1;
+            }
+        }
+
+        var reference = AlignerTrialCommand.RunMms(directory, audio, segments, plan, out var referenceSeconds, "model_fp16.onnx");
+        if (reference is null)
+        {
+            Console.Error.WriteLine("The reference aligner produced no words.");
+            return 1;
+        }
+
+        Console.WriteLine($"  {"MMS fp16, CPU (reference)",-28} {referenceSeconds,6:F1} s   {reference.Count} words");
+
+        watch.Restart();
+        using var aligner = LocalScribe.Onnx.ForcedAligner.LoadNpu(directory, plan);
+        var opened = watch.Elapsed.TotalSeconds;
+        watch.Restart();
+
+        var scores = aligner.Scan(audio);
+        var scanned = watch.Elapsed.TotalSeconds;
+
+        if (scores is null)
+        {
+            Console.Error.WriteLine("The NPU scan returned nothing.");
+            return 1;
+        }
+
+        var words = aligner.AlignAll(scores, segments)
+            .Where(w => w is not null)
+            .SelectMany(w => w!)
+            .Where(w => w.EndSeconds > w.StartSeconds)
+            .Select(w => new AlignerTrialCommand.Timed(AlignerTrialCommand.Fold(w.Text), w.StartSeconds))
+            .Where(w => w.Word.Length > 0)
+            .ToList();
+
+        Console.WriteLine($"  NPU opened in {opened:F1} s; scanned in {scanned:F1} s");
+        AlignerTrialCommand.Report("MMS fp16, NPU (app)", scanned, words, reference);
+        return 0;
+    }
+
     /// <summary>Holds the grid being filled; a class so the loop can create it on first sight of the alphabet.</summary>
     private sealed class AlignmentScoresBuilder(int frames, int alphabet, double frameSeconds)
     {

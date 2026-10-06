@@ -51,6 +51,9 @@ Do not change these without reading the reasoning in `docs/handoff.md`:
 - **CPU threads are capped on purpose**, so the rest of Windows stays responsive. That is the
   product requirement, not a limitation to optimise away. The user can move the budget on the
   pace slider (`WorkPaces`); its default stop must stay exactly the planner's answer.
+- **The NPU aligner takes turns with Whisper.** The NPU runs one graph at a time; unpaced, the
+  scan shut Whisper out for its whole minute. It waits whenever it is 60 s ahead of the text.
+  Its compiled graph is trusted only with its `compiled` marker. See `docs/handoff.md`.
 
 ## Style
 

@@ -49,6 +49,13 @@ public static class ModelRoster
             return null;
         }
 
+        // Compiled for the NPU only where the planner put Whisper there, so this is the build
+        // that scans every recording longer than one window.
+        if (NpuAligner.IsReady(directory))
+        {
+            return "MMS word aligner, fp16 on the NPU";
+        }
+
         var quantised = AlignmentModelSource.PreferQuantised
             && File.Exists(Path.Combine(directory, AlignmentModelSource.QuantisedModelFileName));
 
@@ -58,6 +65,14 @@ public static class ModelRoster
     private static ModelEntry Entry(string part)
     {
         var p = part.ToLowerInvariant();
+
+        if (p.Contains("aligner") && p.Contains("on the npu"))
+        {
+            return new(MainViewModel.ModelRoles.Words, "MMS aligner", "Word timing",
+                part.Replace(" on the NPU", string.Empty, StringComparison.Ordinal)
+                + " — on the Hexagon NPU, beside Whisper; places each word against the audio. "
+                + $"Recordings under {NpuAligner.ShortestSeconds:F0} seconds are timed on the CPU");
+        }
 
         if (p.Contains("aligner"))
         {

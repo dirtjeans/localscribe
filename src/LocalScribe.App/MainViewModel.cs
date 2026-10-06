@@ -816,6 +816,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private const double ProgressiveMarginSeconds = 45;
 
     /// <summary>
+    /// True while the transcriber is still streaming windows. The progressive pass outlives the
+    /// scan for as long as this holds: on the NPU the scan finishes well before Whisper does,
+    /// and the full preview cannot start until the text is complete.
+    /// </summary>
+    private bool _streamingText;
+
+    /// <summary>
     /// Times the head of the transcript while the scan is still working on the tail.
     /// <para>
     /// The scan fills its grid front to back and the streamed windows arrive front to back, so
@@ -832,7 +839,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested && _scores is null)
+            while (!cancellationToken.IsCancellationRequested && (_scores is null || _streamingText))
             {
                 // Every two seconds until the first head is timed, then every eight. The first
                 // timed lines are what make the transcript clickable — and, on Windows, what
@@ -843,10 +850,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 AlignmentScores? grid;
                 double frontier;
 
+                // A finished scan while text still streams: everything streamed so far has its
+                // frames, so all of it is eligible and the whole grid is the prefix. Measured on
+                // the podcast with the NPU scan, the scan ended 45 s before transcription and,
+                // with the pass stopping at the scan's end, nothing was clickable until both had.
+                var complete = _scores;
+
                 lock (_frontierGate)
                 {
-                    grid = _scanPartial;
-                    frontier = _scanFrontierSeconds;
+                    grid = complete ?? _scanPartial;
+                    frontier = complete is not null ? double.PositiveInfinity : _scanFrontierSeconds;
                 }
 
                 if (_aligner is not { } aligner || grid is null || frontier < frontierUsed + 30)
@@ -856,7 +869,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 var raws = _rawSoFar;
                 var eligible = raws
-                    .TakeWhile(segment => segment.EndSeconds <= frontier - ProgressiveMarginSeconds)
+                    .TakeWhile(segment => complete is not null || segment.EndSeconds <= frontier - ProgressiveMarginSeconds)
                     .ToList();
 
                 if (eligible.Count == 0 || eligible[^1].EndSeconds <= timedThrough)
@@ -865,7 +878,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     continue;
                 }
 
-                var prefix = grid.Prefix(grid.FrameAt(frontier));
+                var prefix = complete ?? grid.Prefix(grid.FrameAt(frontier));
 
                 var placed = await Task.Run(
                     () => aligner.AlignAll(prefix, eligible, cancellationToken), cancellationToken)
@@ -873,9 +886,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (_scores is not null)
+                if (_scores is not null && !_streamingText)
                 {
-                    // The scan finished while this pass ran; the full preview owns it now.
+                    // The text is complete and the scan finished; the full preview owns it now.
+                    // Checked on the window's thread, where the flag is cleared, so no publish
+                    // below can land after the preview's.
                     break;
                 }
 
@@ -956,38 +971,66 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await Task.Run(() =>
             {
-                var aligner = ForcedAligner.Load(directory, _plan);
+                var aligner = OpenAligner(directory, audio);
 
-                try
+                while (true)
                 {
-                    // Handed over before the scan rather than after, so the progressive pass
-                    // can place words against the growing grid. Placing needs no model — it
-                    // is a Viterbi walk over scores already written — so it never contends
-                    // with the scan for the session.
-                    _aligner = aligner;
-
-                    _scores = aligner.Scan(audio, progress, cancellationToken, (grid, seconds) =>
+                    try
                     {
+                        // Handed over before the scan rather than after, so the progressive pass
+                        // can place words against the growing grid. Placing needs no model — it
+                        // is a Viterbi walk over scores already written — so it never contends
+                        // with the scan for the session.
+                        _aligner = aligner;
+
+                        _scores = aligner.Scan(
+                            audio,
+                            progress,
+                            cancellationToken,
+                            (grid, seconds) =>
+                            {
+                                lock (_frontierGate)
+                                {
+                                    _scanPartial = grid;
+                                    _scanFrontierSeconds = seconds;
+                                }
+                            },
+                            seconds => WaitForTextNear(seconds, cancellationToken));
+
+                        // The model goes the moment the scan ends: everything after — placing
+                        // words, reading a stretch back, the duplicate-line trials — works from
+                        // the scores alone. Held, it was ONNX Runtime's fp32 repack of the weights
+                        // (1.1 GB) plus a working arena that grows and never shrinks (1.6 GB):
+                        // 2.7 GB parked beside the cleanup model on a 16 GB machine, measured by
+                        // malloc_history on a seven-minute file. On the NPU it is the compiled
+                        // graph's context, and the NPU is Whisper's the rest of the time.
+                        aligner.ReleaseModel();
+                        Stage($"word scan ended ({(aligner.OnNpu ? "NPU" : "CPU")})");
+                        return;
+                    }
+                    catch (Exception exception) when (aligner.OnNpu && exception is not OperationCanceledException)
+                    {
+                        // An NPU that fails mid-scan costs the time already spent, not the
+                        // word times: the CPU starts over from the beginning.
+                        LogError(exception);
+                        Stage("word scan: the NPU failed, scanning on the CPU");
+                        _aligner = null;
+                        aligner.Dispose();
+
                         lock (_frontierGate)
                         {
-                            _scanPartial = grid;
-                            _scanFrontierSeconds = seconds;
+                            _scanPartial = null;
+                            _scanFrontierSeconds = 0;
                         }
-                    });
 
-                    // The model goes the moment the scan ends: everything after — placing
-                    // words, reading a stretch back, the duplicate-line trials — works from
-                    // the scores alone. Held, it was ONNX Runtime's fp32 repack of the weights
-                    // (1.1 GB) plus a working arena that grows and never shrinks (1.6 GB):
-                    // 2.7 GB parked beside the cleanup model on a 16 GB machine, measured by
-                    // malloc_history on a seven-minute file.
-                    aligner.ReleaseModel();
-                }
-                catch
-                {
-                    _aligner = null;
-                    aligner.Dispose();
-                    throw;
+                        aligner = ForcedAligner.Load(directory, _plan);
+                    }
+                    catch
+                    {
+                        _aligner = null;
+                        aligner.Dispose();
+                        throw;
+                    }
                 }
             }, cancellationToken).ConfigureAwait(true);
         }
@@ -1002,6 +1045,112 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // estimates presents as sync drift, and the status line alone was missable.
             Status = $"Transcribed, but the words could not be timed exactly: {exception.Message}";
             LogError(exception);
+        }
+    }
+
+    /// <summary>
+    /// How far the NPU scan may run ahead of the streamed text before it waits.
+    /// <para>
+    /// The NPU runs one graph at a time, and the scan's windows queue back to back: left to
+    /// itself, on the podcast it took the NPU for its whole minute and Whisper wrote nothing
+    /// until it was done. Holding the scan this close to the text hands the NPU back after
+    /// every few windows. Far enough ahead that each streamed window is already scanned past
+    /// the progressive pass's margin when it lands, so it is clickable at once.
+    /// </para>
+    /// </summary>
+    private const double NpuScanLeadSeconds = ProgressiveMarginSeconds + 15;
+
+    /// <summary>Blocks the NPU scan while it is too far ahead of the text; see <see cref="NpuScanLeadSeconds"/>.</summary>
+    private void WaitForTextNear(double seconds, CancellationToken cancellationToken)
+    {
+        while (_streamingText && !cancellationToken.IsCancellationRequested)
+        {
+            var written = _rawSoFar is { Count: > 0 } raws ? raws[^1].EndSeconds : 0;
+            if (seconds <= written + NpuScanLeadSeconds)
+            {
+                return;
+            }
+
+            cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(100));
+        }
+    }
+
+    /// <summary>
+    /// The aligner for this recording: on the NPU beside Whisper once it has been compiled for
+    /// it, on the CPU otherwise.
+    /// <para>
+    /// The NPU is shared, and sharing it was measured on the podcast: Whisper alone 48 s and
+    /// beside the scan 93 s, the scan alone 58 s and beside Whisper 81 s — against about 110 s
+    /// for the 4-bit scan on two CPU threads, which also contended with the speaker model for
+    /// cores. The transcript is clickable when the scan is done, so it is the scan's time that
+    /// counts. Shorter than one 14 s window, there is nothing to share, and the CPU is quicker
+    /// than opening the compiled graph.
+    /// </para>
+    /// </summary>
+    private ForcedAligner OpenAligner(string directory, PcmAudio audio)
+    {
+        if (_plan is { } plan
+            && NpuAligner.Applies(plan)
+            && NpuAligner.IsReady(directory)
+            && audio.DurationSeconds >= NpuAligner.ShortestSeconds)
+        {
+            try
+            {
+                var npu = ForcedAligner.LoadNpu(directory, plan);
+                Stage("word scan on the NPU");
+                return npu;
+            }
+            catch (Exception exception)
+            {
+                // Opened before and refused now: a driver update can do that to a compiled
+                // graph. Thrown away so the next launch compiles one this driver accepts.
+                LogError(exception);
+                Stage("word scan: the NPU refused the compiled aligner; forgetting it");
+                NpuAligner.Forget(directory);
+            }
+        }
+
+        return ForcedAligner.Load(directory, _plan);
+    }
+
+    /// <summary>The one compile per session; a second initialisation must not start another over it.</summary>
+    private Task? _npuAlignerPreparing;
+
+    /// <summary>
+    /// Compiles the word aligner for the NPU, once per machine, in the background.
+    /// <para>
+    /// Four to five minutes and about 8 GB at its peak, so only where memory is not tight, and
+    /// never in anyone's way: nothing waits on it, it runs at the lowest priority, and scans
+    /// stay on the CPU until it is done. A compile cut short leaves nothing behind and starts
+    /// over next launch.
+    /// </para>
+    /// </summary>
+    private async Task PrepareNpuAlignerAsync()
+    {
+        if (_plan is not { } plan
+            || !NpuAligner.Applies(plan)
+            || MemoryIsTight
+            || ForcedAligner.Find(_modelRoot) is not { } directory
+            || NpuAligner.IsReady(directory))
+        {
+            return;
+        }
+
+        try
+        {
+            Stage("NPU aligner: preparing");
+
+            if (await NpuAligner.PrepareAsync(directory, plan, message => Stage($"NPU aligner: {message}")).ConfigureAwait(true))
+            {
+                // The chip names the aligner by where it runs, read from disk when it renders.
+                Raise(nameof(HardwareSummary));
+            }
+        }
+        catch (Exception exception)
+        {
+            // Optional: the CPU scan is what every run used before, and it still works.
+            LogError(exception);
+            Stage($"NPU aligner: not compiled ({exception.Message})");
         }
     }
 
@@ -3018,6 +3167,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _ = EnsureCleanupAwakeAsync();
         }
 
+        _npuAlignerPreparing ??= PrepareNpuAlignerAsync();
+
         if (_waitingFor is { Length: > 0 } held)
         {
             _waitingFor = null;
@@ -3180,6 +3331,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // transcription 12. On the Mac the scan waits; see ScanAfterTranscription.
             _scanFraction = 0;
             _scanProgressTarget = null;
+
+            // Raised before the scan starts rather than with the transcriber, so the scan's
+            // first window already waits its turn on the NPU.
+            _streamingText = true;
             _scanInFlight = ScanAfterTranscription
                 ? null
                 : ScanForWordsAsync(
@@ -3266,9 +3421,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Stage($"transcription started: {SourceName}, {audio.DurationSeconds:F0} s, "
                 + $"{_plan?.CpuBudget.IntraOpThreads} threads, diarize early {DiarizeEarly}, scan after {ScanAfterTranscription}");
 
-            using (Working(ModelRoles.Transcription))
+            try
             {
-                transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
+                using (Working(ModelRoles.Transcription))
+                {
+                    transcript = await pipeline.TranscribeAsync(audio, progress, _cancellation.Token, RequestedTask);
+                }
+            }
+            finally
+            {
+                _streamingText = false;
             }
 
             Stage("transcription ended");
@@ -3322,6 +3484,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // state a new operation is building. After a successful run the scan has already
             // been collected and the cancel touches nothing.
             _cancellation?.Cancel();
+            _streamingText = false;
             _scanInFlight = null;
             _turnsInFlight = null;
             _cleanupCheck = null;

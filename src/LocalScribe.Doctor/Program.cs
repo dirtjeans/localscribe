@@ -267,7 +267,21 @@ internal static class Program
             return AsrTrialCommand.Run(asrTrial, modelDirectory, plan);
         }
 
+        var geluModel = ArgumentValue(args, "--gelu-rewrite");
+        if (geluModel is not null)
+        {
+            var rewritten = Path.ChangeExtension(geluModel, ".gelu.onnx");
+            var fused = Core.Models.GeluRewrite.RewriteFile(geluModel, rewritten);
+            Console.WriteLine(fused > 0 ? $"{fused} GELUs rewritten into {rewritten}" : "No Erf GELUs found; nothing written.");
+            return fused > 0 ? 0 : 1;
+        }
+
         var npuTrial = ArgumentValue(args, "--aligner-npu");
+        if (npuTrial is not null && Core.Archive.TranscriptArchive.IsArchive(npuTrial) && args.Contains("--app", StringComparer.Ordinal))
+        {
+            return AlignerNpuCommand.GradeApp(npuTrial, modelDirectory, plan);
+        }
+
         if (npuTrial is not null && Core.Archive.TranscriptArchive.IsArchive(npuTrial))
         {
             return AlignerNpuCommand.Grade(
