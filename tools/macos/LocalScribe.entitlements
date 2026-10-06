@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the hardened runtime has to allow for this app to work at all. Notarization requires the
+  hardened runtime, and the hardened runtime denies by default; each key here is a denial that
+  would break something, not a convenience.
+-->
+<plist version="1.0">
+<dict>
+    <!-- .NET compiles IL to machine code as it runs. Without these the runtime cannot start. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Recording. Under the hardened runtime the microphone is refused without this even
+         when the user has granted permission, and capture fails silently. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

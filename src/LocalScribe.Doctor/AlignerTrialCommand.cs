@@ -21,7 +21,7 @@ namespace LocalScribe.Doctor;
 /// </summary>
 internal static class AlignerTrialCommand
 {
-    private sealed record Timed(string Word, double Start);
+    internal sealed record Timed(string Word, double Start);
 
     public static int Run(string archivePath, string modelRoot, ExecutionPlan plan)
     {
@@ -87,7 +87,7 @@ internal static class AlignerTrialCommand
         return 0;
     }
 
-    private static List<Timed>? RunMms(
+    internal static List<Timed>? RunMms(
         string directory, Core.Audio.PcmAudio audio, IReadOnlyList<TranscriptSegment> segments,
         ExecutionPlan plan, out double seconds, string modelFileName)
     {
@@ -189,7 +189,7 @@ internal static class AlignerTrialCommand
         return words;
     }
 
-    private static void Report(string name, double seconds, List<Timed>? words, List<Timed> reference)
+    internal static void Report(string name, double seconds, List<Timed>? words, List<Timed> reference)
     {
         if (words is null || words.Count == 0)
         {
@@ -232,7 +232,7 @@ internal static class AlignerTrialCommand
     }
 
     /// <summary>Longest common subsequence over folded words: pairs the two readings in order.</summary>
-    private static List<(int Reference, int Candidate)> Match(List<Timed> a, List<Timed> b)
+    internal static List<(int Reference, int Candidate)> Match(List<Timed> a, List<Timed> b)
     {
         var table = new int[a.Count + 1, b.Count + 1];
 
@@ -268,9 +268,9 @@ internal static class AlignerTrialCommand
         return pairs;
     }
 
-    private static double Percentile(List<double> sorted, double p) =>
+    internal static double Percentile(List<double> sorted, double p) =>
         sorted.Count == 0 ? 0 : sorted[Math.Min(sorted.Count - 1, (int)(p * sorted.Count))];
 
-    private static string Fold(string text) =>
+    internal static string Fold(string text) =>
         new([.. text.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant)]);
 }

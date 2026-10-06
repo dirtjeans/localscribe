@@ -7,6 +7,8 @@ version says what is now proven, how it was proven, and what is still known to b
 in that order, because the *how* is the part a newcomer needs most.
 
 The macOS port has run; its own handoff is [handoff-macos.md](handoff-macos.md).
+Every model tried for a stage of the pipeline, and the numbers that kept or rejected it, is in
+[model-trials.md](model-trials.md).
 
 ## Where things stand
 

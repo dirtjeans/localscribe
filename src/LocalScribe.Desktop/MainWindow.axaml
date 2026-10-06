@@ -120,23 +120,20 @@
       <Setter Property="Spacing" Value="6" />
     </Style>
 
-    <!-- The paragraph cards say "clickable" on approach and change softly, never abruptly;
-         a press compresses the card a hair, so the click that starts playback lands. -->
+    <!-- The card marks the paragraph under the pointer and nothing more. It once wore a
+         hand cursor and a press squeeze, from when a click anywhere on it played; the text
+         is selectable now, so the words show the text cursor, and the word a click would
+         play from is underlined as the pointer crosses it (see BuildWordBlock). A hand on
+         the margins promised a click that did nothing. -->
     <Style Selector="Border.paragraph">
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="RenderTransform" Value="scale(1)" />
       <Setter Property="Transitions">
         <Transitions>
           <BrushTransition Property="Background" Duration="0:0:0.12" />
-          <TransformOperationsTransition Property="RenderTransform" Duration="0:0:0.18" Easing="BackEaseOut" />
         </Transitions>
       </Setter>
     </Style>
     <Style Selector="Border.paragraph:pointerover">
       <Setter Property="Background" Value="#0E808080" />
-    </Style>
-    <Style Selector="Border.paragraph.pressed">
-      <Setter Property="RenderTransform" Value="scale(0.992)" />
     </Style>
   </Window.Styles>
 

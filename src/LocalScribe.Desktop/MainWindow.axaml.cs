@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -50,6 +51,7 @@ public sealed partial class MainWindow : Window
         _viewModel.Player.Failed += message => Post(() => StatusText.Text = message);
 
         InitializeComponent();
+        BuildEditMenu();
 
         _waveform.PeakSource = buckets => _viewModel.WaveformPeaks(buckets);
 
@@ -1095,7 +1097,7 @@ public sealed partial class MainWindow : Window
                 _paragraphWordRuns.Add([]);
                 var placeholder = new Border
                 {
-                    Child = new TextBlock
+                    Child = new SelectableTextBlock
                     {
                         Text = paragraph.Text,
                         TextWrapping = TextWrapping.Wrap,
@@ -1157,12 +1159,6 @@ public sealed partial class MainWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Classes = { "paragraph" },
             };
-
-            // The press compression rides on a class because Border has no :pressed of its
-            // own; capture-lost clears it so a drag off the card never leaves it squeezed.
-            border.PointerPressed += (_, _) => border.Classes.Add("pressed");
-            border.PointerReleased += (_, _) => border.Classes.Remove("pressed");
-            border.PointerCaptureLost += (_, _) => border.Classes.Remove("pressed");
 
             _paragraphBorders.Add(border);
             ParagraphsPanel.Children.Add(border);
@@ -1249,12 +1245,14 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private Control BuildWordBlock(TranscriptParagraph paragraph, bool streaming = false)
     {
-        var block = new TextBlock
+        var block = new SelectableTextBlock
         {
             TextWrapping = TextWrapping.Wrap,
             FontSize = 15,
             LineHeight = 24,
         };
+
+        TrackSelection(block);
 
         var runs = new List<WordRun>();
         var at = 0;
@@ -1301,7 +1299,7 @@ public sealed partial class MainWindow : Window
             block.Inlines!.Clear();
             block.Text = paragraph.Text;
             var start = paragraph.StartSeconds;
-            block.PointerPressed += (_, _) => StartPlayback(start);
+            OnClick(block, _ => StartPlayback(start));
             _paragraphWordRuns.Add([]);
             return block;
         }
@@ -1312,9 +1310,8 @@ public sealed partial class MainWindow : Window
         // character, the character to a word, and the word carries its own measured time —
         // the same table the marker follows, so what is clicked is what is heard.
         var mine = runs;
-        block.PointerPressed += (_, e) =>
+        OnClick(block, point =>
         {
-            var point = e.GetPosition(block);
             var hit = block.TextLayout.HitTestPoint(point);
             var index = hit.TextPosition;
 
@@ -1334,9 +1331,174 @@ public sealed partial class MainWindow : Window
             {
                 StartPlayback(word.Word.StartSeconds);
             }
+        });
+
+        ShowClickTarget(block, mine);
+        return block;
+    }
+
+    /// <summary>
+    /// Underlines the word a click would play from, as the pointer crosses it — the cue the
+    /// hand cursor used to give, which selectable text cannot wear. Not while a button is
+    /// down: that is a selection being dragged, and an underline chasing it reads as noise.
+    /// </summary>
+    private static void ShowClickTarget(SelectableTextBlock block, List<WordRun> words)
+    {
+        WordRun? lit = null;
+
+        void Light(WordRun? word)
+        {
+            if (word == lit)
+            {
+                return;
+            }
+
+            if (lit is not null)
+            {
+                lit.Run.TextDecorations = null;
+            }
+
+            if (word is not null)
+            {
+                word.Run.TextDecorations = TextDecorations.Underline;
+            }
+
+            lit = word;
+        }
+
+        block.AddHandler(
+            PointerMovedEvent,
+            (_, e) =>
+            {
+                if (e.GetCurrentPoint(block).Properties.IsLeftButtonPressed)
+                {
+                    Light(null);
+                    return;
+                }
+
+                var hit = block.TextLayout.HitTestPoint(e.GetPosition(block));
+                var index = hit.TextPosition;
+
+                Light(hit.IsInside
+                    ? words.FirstOrDefault(r => index >= r.CharStart && index < r.CharEnd)
+                    : null);
+            },
+            RoutingStrategies.Bubble,
+            handledEventsToo: true);
+
+        block.PointerExited += (_, _) => Light(null);
+    }
+
+    /// <summary>
+    /// A click, as opposed to a drag: the text is selectable now, so pressing on a word may be
+    /// the start of a selection. The seek waits for the release and happens only if the
+    /// pointer barely moved and nothing ended up selected — a click hears the word, a drag
+    /// copies it, and neither does the other's job.
+    /// </summary>
+    private static void OnClick(SelectableTextBlock block, Action<Point> clicked)
+    {
+        Point? pressedAt = null;
+
+        // Handled-too, because the selectable block claims its own pointer presses to start
+        // a selection, and an ordinary handler would never hear them.
+        block.AddHandler(
+            PointerPressedEvent,
+            (_, e) =>
+            {
+                pressedAt = e.GetCurrentPoint(block).Properties.IsLeftButtonPressed
+                    ? e.GetPosition(block)
+                    : null;
+            },
+            RoutingStrategies.Bubble,
+            handledEventsToo: true);
+
+        block.AddHandler(
+            PointerReleasedEvent,
+            (_, e) =>
+            {
+                if (pressedAt is not { } from)
+                {
+                    return;
+                }
+
+                pressedAt = null;
+                var to = e.GetPosition(block);
+                var moved = Math.Abs(to.X - from.X) + Math.Abs(to.Y - from.Y);
+
+                if (moved <= 4 && string.IsNullOrEmpty(block.SelectedText))
+                {
+                    clicked(to);
+                }
+            },
+            RoutingStrategies.Bubble,
+            handledEventsToo: true);
+    }
+
+    /// <summary>The paragraph holding the latest selection, for Edit > Copy.</summary>
+    private SelectableTextBlock? _selecting;
+
+    private void TrackSelection(SelectableTextBlock block)
+    {
+        block.AddHandler(
+            PointerReleasedEvent,
+            (_, _) =>
+            {
+                if (!string.IsNullOrEmpty(block.SelectedText))
+                {
+                    // One selection at a time, as in any reader: the paragraph left behind
+                    // lets go of its highlight rather than looking copied along with this one.
+                    if (_selecting is { } previous && previous != block)
+                    {
+                        previous.SelectionStart = previous.SelectionEnd = 0;
+                    }
+
+                    _selecting = block;
+                }
+            },
+            RoutingStrategies.Bubble,
+            handledEventsToo: true);
+    }
+
+    /// <summary>
+    /// Edit > Copy and Copy Transcript. The menu owns ⌘C once it lists Copy, so Copy serves
+    /// whatever has the selection: the search box when it is focused, otherwise the paragraph
+    /// last selected in. Copy Transcript is the way across paragraphs — each is its own block,
+    /// and a drag selects within one.
+    /// </summary>
+    private void BuildEditMenu()
+    {
+        var command = OperatingSystem.IsMacOS() ? KeyModifiers.Meta : KeyModifiers.Control;
+
+        var copy = new NativeMenuItem("Copy") { Gesture = new KeyGesture(Key.C, command) };
+        copy.Click += async (_, _) =>
+        {
+            if (FocusManager?.GetFocusedElement() is TextBox box)
+            {
+                box.Copy();
+                return;
+            }
+
+            if (_selecting?.SelectedText is { Length: > 0 } text && Clipboard is { } clipboard)
+            {
+                await clipboard.SetTextAsync(text);
+            }
         };
 
-        return block;
+        var copyAll = new NativeMenuItem("Copy Transcript")
+        {
+            Gesture = new KeyGesture(Key.C, command | KeyModifiers.Shift),
+        };
+        copyAll.Click += async (_, _) =>
+        {
+            if (_viewModel.Transcript is { Length: > 0 } text && Clipboard is { } clipboard)
+            {
+                await clipboard.SetTextAsync(text);
+                StatusText.Text = "Transcript copied, with speaker names.";
+            }
+        };
+
+        var edit = new NativeMenuItem("Edit") { Menu = new NativeMenu { Items = { copy, copyAll } } };
+        NativeMenu.SetMenu(this, new NativeMenu { Items = { edit } });
     }
 
     /// <summary>

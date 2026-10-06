@@ -6,6 +6,9 @@ is over: the port ran, on an Apple-silicon Mac (M2, 16 GB), on real recordings, 
 what is proven, how it was proven, and what is still open — the same order as
 [handoff.md](handoff.md), because the *how* is the part a newcomer needs most.
 
+Every model measured for a stage of the pipeline — what was kept, what was rejected, and the
+numbers that decided it — is in [model-trials.md](model-trials.md).
+
 ## Where things stand
 
 `LocalScribe.Desktop` (Avalonia, in the solution — it restores everywhere, unlike the WinUI

@@ -261,6 +261,12 @@ internal static class Program
                 ArgumentValue(args, "--candidates") ?? Path.Combine(modelDirectory, "candidates"));
         }
 
+        var asrTrial = ArgumentValue(args, "--asr-trial");
+        if (asrTrial is not null)
+        {
+            return AsrTrialCommand.Run(asrTrial, modelDirectory, plan);
+        }
+
         var trial = ArgumentValue(args, "--aligner-trial");
         if (trial is not null)
         {
@@ -371,6 +377,7 @@ internal static class Program
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
         Console.WriteLine("  --aligner-trial <f>  Time candidate word aligners on a .scrb and grade them against the reference.");
+        Console.WriteLine("  --asr-trial <f>  Transcribe a .scrb with Nemotron 3.5 ASR and Whisper; compare speed, words, timing.");
         Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");
         Console.WriteLine("  --segmentation-model [n]  Show or switch what decides where speakers change.");
         Console.WriteLine("  --diarizer [n]   Show or switch how speakers are worked out: tracking or voices.");
