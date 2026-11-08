@@ -61,7 +61,7 @@ public class WindowSeekTests
         using var transcriber = new StopsEarlyTranscriber(transcribedSeconds: 25.8);
         var chunker = new AudioChunker(overlapSeconds: 2.0);
 
-        await new TranscriptionPipeline(transcriber, chunker: chunker).RunAsync(Silence(63));
+        await new TranscriptionPipeline(transcriber, chunker: chunker).TranscribeAsync(Silence(63));
 
         // Each window must begin no later than where the previous one stopped hearing.
         for (var i = 1; i < transcriber.WindowStarts.Count; i++)
@@ -80,7 +80,7 @@ public class WindowSeekTests
     {
         using var transcriber = new StopsEarlyTranscriber(transcribedSeconds: 25.8);
 
-        await new TranscriptionPipeline(transcriber).RunAsync(Silence(63));
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(Silence(63));
 
         Assert.True(transcriber.WindowStarts[^1] + 30 >= 63, "The last window stops short of the audio.");
     }
@@ -94,7 +94,7 @@ public class WindowSeekTests
     {
         using var transcriber = new StopsEarlyTranscriber(transcribedSeconds: 0);
 
-        await new TranscriptionPipeline(transcriber).RunAsync(Silence(90));
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(Silence(90));
 
         Assert.True(transcriber.WindowStarts.Count is > 1 and < 20);
         Assert.True(transcriber.WindowStarts.Zip(transcriber.WindowStarts.Skip(1)).All(p => p.Second > p.First));
@@ -110,7 +110,7 @@ public class WindowSeekTests
         using var transcriber = new StopsEarlyTranscriber(transcribedSeconds: 30);
         var chunker = new AudioChunker(overlapSeconds: 2.0);
 
-        await new TranscriptionPipeline(transcriber, chunker: chunker).RunAsync(Silence(40));
+        await new TranscriptionPipeline(transcriber, chunker: chunker).TranscribeAsync(Silence(40));
 
         // The second window covers 28-40; a claim to have heard to 58 must not move the third
         // window past the end of the recording's real audio.
@@ -122,7 +122,7 @@ public class WindowSeekTests
     {
         using var transcriber = new StopsEarlyTranscriber(transcribedSeconds: 5);
 
-        await new TranscriptionPipeline(transcriber).RunAsync(Silence(6));
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(Silence(6));
 
         Assert.Single(transcriber.WindowStarts);
     }

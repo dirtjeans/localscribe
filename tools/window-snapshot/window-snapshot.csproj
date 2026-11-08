@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Renders the Mac window offscreen to PNG, through Avalonia's headless platform with real Skia
+    drawing. Design work needs to see the window, and the window cannot always be put on a
+    screen — the display may be asleep, or nobody is at the Mac. Kept out of the solution and
+    out of the app: the app never references the headless platform.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" Version="11.3.20" />
+    <PackageReference Include="Avalonia.Skia" Version="11.3.20" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/LocalScribe.Desktop/LocalScribe.Desktop.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -116,7 +116,7 @@ public static class WorkPaces
 
         return pace switch
         {
-            WorkPace.Light => $"Lighter on this PC: {cpu}{npu}. Slower, but the rest of the computer barely notices.",
+            WorkPace.Light => $"Lighter: {cpu}{npu}. Slower, but the rest of the computer barely notices.",
             WorkPace.Fast => $"Faster: {cpu}{npu}. Other apps may feel slower while it works.",
             WorkPace.Full => $"Fastest: {cpu}{npu}. Best when you are not using the computer for anything else.",
             _ => $"Balanced, the default: {cpu}{npu}.",

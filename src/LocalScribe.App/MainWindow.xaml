@@ -176,22 +176,6 @@
                                     Style="{ThemeResource CaptionTextBlockStyle}"
                                     Opacity="0.7"
                                     TextWrapping="Wrap" />
-
-                                <!--
-                                    Beside the pace because it is the other thing that decides
-                                    how long a run takes. Off means Foundry is never started and
-                                    no model is loaded; the words and their timing are the same.
-                                -->
-                                <Border Height="1" Margin="0,4" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
-                                <CheckBox
-                                    x:Name="CleanupToggle"
-                                    Content="Polish punctuation with a language model"
-                                    Click="OnCleanupToggled" />
-                                <TextBlock
-                                    Text="Whisper's own punctuation is usually good. Polishing reworks it with the local model after the words are timed, and makes each transcription take longer."
-                                    Style="{ThemeResource CaptionTextBlockStyle}"
-                                    Opacity="0.7"
-                                    TextWrapping="Wrap" />
                             </StackPanel>
                         </Flyout>
                     </Button.Flyout>
@@ -227,7 +211,6 @@
                     </StackPanel>
                 </Button>
 
-                <Button x:Name="GlossaryButton" Content="Glossary" Click="OnEditGlossary" />
 
 
                 <AppBarSeparator />
@@ -289,44 +272,6 @@
                         TextWrapping="Wrap" />
                 </StackPanel>
             </StackPanel>
-        </Border>
-
-<!--
-            What cleanup could not do, said where the transcript is rather than in the status
-            line, which scrolls away and is read by nobody. Only appears when there is something
-            to say: an unpunctuated passage otherwise looks like the recording was unclear rather
-            than like a stage that failed and can be run again.
-        -->
-        <Border
-            x:Name="CleanupNotice"
-            Grid.Row="2"
-            CornerRadius="8"
-            Padding="16,12"
-            Margin="0,0,0,12"
-            Background="{ThemeResource SystemFillColorCautionBackgroundBrush}"
-            BorderBrush="{ThemeResource SystemFillColorCautionBrush}"
-            BorderThickness="1"
-            Visibility="Collapsed">
-            <Grid ColumnSpacing="16">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <TextBlock
-                    x:Name="CleanupNoticeText"
-                    Grid.Column="0"
-                    VerticalAlignment="Center"
-                    TextWrapping="Wrap"
-                    Style="{ThemeResource BodyTextBlockStyle}" />
-
-                <Button
-                    x:Name="RetryCleanupButton"
-                    Grid.Column="1"
-                    Content="Try again"
-                    VerticalAlignment="Center"
-                    Click="OnRetryCleanup" />
-            </Grid>
         </Border>
 
         <Grid Grid.Row="3" RowSpacing="12">

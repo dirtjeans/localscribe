@@ -135,6 +135,6 @@ if [ -n "$PROFILE" ]; then
 elif [ -n "$IDENTITY" ]; then
     echo "Signed but not notarized: $SHARE is blocked on another Mac until its user allows it in System Settings > Privacy & Security."
 fi
-echo "First launch downloads the models (about 2.8 GiB) into"
+echo "First launch downloads the models (about 3.1 GB) into"
 echo "~/Library/Application Support/LocalScribe/models — not into the bundle, whose"
 echo "signature must survive."

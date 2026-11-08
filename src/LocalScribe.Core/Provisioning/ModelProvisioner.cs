@@ -9,7 +9,7 @@ namespace LocalScribe.Core.Provisioning;
 /// <para>
 /// This exists so that a first launch needs no manual step at all — the app provisions its own
 /// weights, narrating cost and progress as it goes. It downloads only model files, into the
-/// app's own model directory; installing anything beyond that (Foundry Local, drivers) stays
+/// app's own model directory; installing anything beyond that (drivers) stays
 /// behind an explicit user action, which is the line the app has always held.
 /// </para>
 /// <para>
@@ -31,6 +31,21 @@ public sealed class ModelProvisioner(
         || !HasAligner(modelRoot)
         || !DiarizationModelInstaller.IsInstalled(Path.Combine(modelRoot, "diarization"))
         || (SpeakerEngines.Current == SpeakerEngine.Sortformer && !HasSortformer(modelRoot));
+
+    /// <summary>The speaker pipeline's models, on disk: a voice model is fetched on every machine.</summary>
+    private const long PipelineApproximateBytes = 190_000_000;
+
+    /// <summary>
+    /// Roughly what fetching the missing models will cost, so the app can say so before spending
+    /// it: everything on a first run, one file when an update moves a model.
+    /// </summary>
+    public static long ApproximateBytesToFetch(string modelRoot, bool whisperCpp) =>
+        (whisperCpp && !HasWhisperCpp(modelRoot) ? WhisperCppModelSource.ApproximateBytes : 0)
+        + (HasAligner(modelRoot) ? 0 : AlignmentModelSource.ApproximateBytesForThisMachine)
+        + (DiarizationModelInstaller.IsInstalled(Path.Combine(modelRoot, "diarization")) ? 0 : PipelineApproximateBytes)
+        + (SpeakerEngines.Current == SpeakerEngine.Sortformer && !HasSortformer(modelRoot)
+            ? SortformerModelSource.ApproximateBytesForThisMachine
+            : 0);
 
     /// <summary>
     /// Ensures everything transcription wants is on disk, reporting each stage.
@@ -83,8 +98,8 @@ public sealed class ModelProvisioner(
         {
             await _fetcher.FetchAsync(
                     Path.Combine(modelRoot, SortformerModelSource.DirectoryName),
-                    SortformerModelSource.Files,
-                    Staged(progress, "the speaker model", SortformerModelSource.ApproximateBytes),
+                    SortformerModelSource.FilesForThisMachine,
+                    Staged(progress, "the speaker model", SortformerModelSource.ApproximateBytesForThisMachine),
                     force: false,
                     cancellationToken)
                 .ConfigureAwait(false);

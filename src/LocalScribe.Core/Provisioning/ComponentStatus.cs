@@ -6,9 +6,6 @@ public enum ComponentKind
     /// <summary>Whisper weights and vocabulary. Downloadable.</summary>
     ModelAssets,
 
-    /// <summary>A local inference service such as Foundry Local. Installable through a package manager.</summary>
-    InferenceEngine,
-
     /// <summary>A hardware driver. Needs a human.</summary>
     Driver,
 
@@ -31,7 +28,7 @@ public enum ComponentKind
 /// and the component is missing.
 /// </param>
 /// <param name="Required">
-/// False for components the app works without, such as the cleanup model. Optional components
+/// False for components the app works without, such as the speaker models. Optional components
 /// are reported but never block.
 /// </param>
 public sealed record ComponentStatus(

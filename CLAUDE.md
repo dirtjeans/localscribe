@@ -1,7 +1,7 @@
 # LocalScribe
 
-Offline transcription for Snapdragon X Windows laptops. Whisper on the Hexagon NPU, a local
-language model for cleanup, nothing leaving the machine.
+Offline transcription for Snapdragon X Windows laptops. Whisper on the Hexagon NPU, word timing
+and speakers alongside it, nothing leaving the machine.
 
 **Read [docs/handoff.md](docs/handoff.md) first.** It says what has been verified, what has never
 run, and what is most likely to be broken. This file is the short version. The macOS port
@@ -11,7 +11,7 @@ there. `LocalScribe.Desktop` is the Avalonia window and lives in the solution.
 ## The state that matters
 
 Everything runs on the real hardware now: transcription on the NPU, word-level alignment,
-diarization, cleanup, playback with a synced highlight, `.scrb` archives. Claims about this
+diarization, playback with a synced highlight, `.scrb` archives. Claims about this
 codebase are settled by measurement, not argument — the doctor's `--check-words`, `--align`,
 `--replay`, and `--diarize`, plus the app's `%TEMP%` diagnostics, are the instruments;
 `docs/handoff.md` explains each and the discipline that goes with them.
@@ -40,7 +40,6 @@ Do not change these without reading the reasoning in `docs/handoff.md`:
   audio maths testable on any machine.
 - **The decoder stays on the CPU** unless the NPU took the encoder. Dispatch overhead per decode
   step outweighs the compute saved.
-- **Never hard-code the Foundry Local port.** It is dynamic; ask `foundry service status`.
 - **Never rename downloaded model files.** Large ONNX graphs reference their weight sidecars by
   name. `localscribe-model.json` records the roles instead.
 - **Never auto-install the Hexagon driver.** Signed kernel driver, account wall. Report it.

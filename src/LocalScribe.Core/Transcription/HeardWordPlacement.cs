@@ -12,7 +12,7 @@ namespace LocalScribe.Core.Transcription;
 /// <para>
 /// Matched by text within the segment's time span rather than by which window produced
 /// them, because the text on screen is rarely what came out of the decoder verbatim: windows
-/// are stitched at their overlaps, looped tails trimmed, and cleanup rewrites punctuation.
+/// are stitched at their overlaps and looped tails trimmed.
 /// Only the times are borrowed, the same discipline the aligner's words follow.
 /// </para>
 /// </summary>

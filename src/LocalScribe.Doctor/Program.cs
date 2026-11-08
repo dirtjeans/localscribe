@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using LocalScribe.Core.Hardware;
-using LocalScribe.Core.Refinement;
 using LocalScribe.Onnx;
 
 namespace LocalScribe.Doctor;
@@ -33,9 +32,6 @@ internal static class Program
         Heading("Machine");
 
         var capabilities = DeviceProbe.Probe(modelDirectory);
-        var languageModel = await LocalLanguageModel.ResolveAsync().ConfigureAwait(false);
-        using var languageModelHandle = languageModel as IDisposable;
-        capabilities = capabilities with { LocalLanguageModelPresent = languageModel is not null };
 
         Report("Processor", capabilities.SocName);
         Report("Detected family", capabilities.Family.ToString());
@@ -94,19 +90,6 @@ internal static class Program
             Check("DirectML (Adreno GPU)", capabilities.DirectMlPresent,
                 "Optional. Used as the fallback when the NPU is unavailable.");
         }
-        Check(
-            languageModel is null
-                ? "Local language model"
-                : $"Local language model ({languageModel.Description})",
-            capabilities.LocalLanguageModelPresent,
-            OperatingSystem.IsMacOS()
-                ? "Optional; enables punctuation repair, glossary correction and summaries. "
-                  + "Foundry Local ships for Apple silicon: 'brew tap microsoft/foundrylocal && "
-                  + "brew install foundrylocal', then 'foundry service start'."
-                : "Optional; enables punctuation repair, glossary correction and summaries. Start "
-                  + $"one of: {string.Join(", ", LocalLanguageModel.BackendNames)}. GenieX is "
-                  + "preferred on Snapdragon; see docs/setup-snapdragon.md.");
-
         if (capabilities.OnnxProviders.Count > 0)
         {
             Report("Providers registered", string.Join(", ", capabilities.OnnxProviders.Order()));
@@ -138,7 +121,6 @@ internal static class Program
         Report("Whisper model", plan.WhisperModel);
         Report("Encoder", $"{plan.Encoder.Device} — {plan.Encoder.Reason}");
         Report("Decoder", $"{plan.Decoder.Device} — {plan.Decoder.Reason}");
-        Report("Cleanup", $"{plan.LanguageModel.Device} — {plan.LanguageModel.Reason}");
         Report("CPU budget", $"{plan.CpuBudget.IntraOpThreads} intra-op, "
             + $"{plan.CpuBudget.InterOpThreads} inter-op, "
             + (plan.CpuBudget.BelowNormalPriority ? "below-normal priority" : "normal priority"));
@@ -300,6 +282,22 @@ internal static class Program
                 double.TryParse(ArgumentValue(args, "--npu-window"), System.Globalization.CultureInfo.InvariantCulture, out var seconds) ? seconds : 30);
         }
 
+        var gpuTrial = ArgumentValue(args, "--aligner-coreml");
+        if (gpuTrial is not null && args.Contains("--app", StringComparer.Ordinal))
+        {
+            return AlignerNpuCommand.GradeApp(gpuTrial, modelDirectory, plan, gpu: true);
+        }
+
+        if (gpuTrial is not null)
+        {
+            return AlignerNpuCommand.Grade(
+                gpuTrial,
+                modelDirectory,
+                plan,
+                double.TryParse(ArgumentValue(args, "--npu-window"), System.Globalization.CultureInfo.InvariantCulture, out var coreMlSeconds) ? coreMlSeconds : 30,
+                ArgumentValue(args, "--units") ?? "CPUAndGPU");
+        }
+
         var trial = ArgumentValue(args, "--aligner-trial");
         if (trial is not null)
         {
@@ -410,6 +408,7 @@ internal static class Program
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
         Console.WriteLine("  --aligner-trial <f>  Time candidate word aligners on a .scrb and grade them against the reference.");
+        Console.WriteLine("  --aligner-coreml <f>  Grade the fp16 aligner through Core ML on a .scrb; --units CPUAndGPU|CPUAndNeuralEngine|ALL; --app for the app's own GPU path.");
         Console.WriteLine("  --asr-trial <f>  Transcribe a .scrb with Nemotron 3.5 ASR and Whisper; compare speed, words, timing.");
         Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");
         Console.WriteLine("  --segmentation-model [n]  Show or switch what decides where speakers change.");

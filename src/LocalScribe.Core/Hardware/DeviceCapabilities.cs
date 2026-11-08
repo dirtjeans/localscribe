@@ -106,13 +106,6 @@ public sealed record DeviceCapabilities
     /// </summary>
     public bool WhisperCppCoreMlEncoderPresent { get; init; }
 
-    /// <summary>
-    /// True when some local text-generation service is reachable for the cleanup stage.
-    /// Which one is deliberately not recorded here: the planner's decision is the same either
-    /// way, and the backend's own Description says what is actually running.
-    /// </summary>
-    public bool LocalLanguageModelPresent { get; init; }
-
     /// <summary>True when the machine is running on battery rather than mains power.</summary>
     public bool OnBattery { get; init; }
 

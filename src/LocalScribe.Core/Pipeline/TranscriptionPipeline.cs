@@ -1,27 +1,12 @@
 using LocalScribe.Core.Audio;
-using LocalScribe.Core.Refinement;
 using LocalScribe.Core.Transcription;
 
 namespace LocalScribe.Core.Pipeline;
 
-/// <summary>Which stage of the run is being reported.</summary>
-public enum TranscriptionPhase
-{
-    /// <summary>Whisper, window by window.</summary>
-    Transcribing,
-
-    /// <summary>The language model repairing punctuation, names, and writing a summary.</summary>
-    CleaningUp,
-}
-
-/// <summary>Progress for the UI: which stage, how far through it, and the text so far.</summary>
+/// <summary>Progress for the UI: how far through the recording, and the text so far.</summary>
 /// <param name="ChunksCompleted">Units of this stage finished.</param>
 /// <param name="ChunksTotal">Units in this stage.</param>
 /// <param name="LatestText">Text from the window that just finished, for a live-updating view.</param>
-/// <param name="Phase">
-/// Which stage this is. A run has more than one, and they take comparable amounts of time, so a
-/// bar that reaches the end and then sits there for a minute is worse than no bar at all.
-/// </param>
 /// <param name="LatestStartSeconds">Where the finished window's audio actually begins.</param>
 /// <param name="LatestEndSeconds">
 /// Where it ends. Carried so a live view can stamp streamed text with the truth: windows
@@ -33,23 +18,14 @@ public sealed record TranscriptionProgress(
     int ChunksCompleted,
     int ChunksTotal,
     string LatestText,
-    TranscriptionPhase Phase = TranscriptionPhase.Transcribing,
     double LatestStartSeconds = 0,
     double LatestEndSeconds = 0)
 {
     public double Fraction => ChunksTotal == 0 ? 0 : ChunksCompleted / (double)ChunksTotal;
 }
 
-/// <param name="Transcript">Raw output, before any cleanup.</param>
-/// <param name="Refinement">Cleanup output, or <c>null</c> when no language model was available.</param>
-public sealed record TranscriptionResult(Transcript Transcript, RefinementResult? Refinement)
-{
-    /// <summary>The best text we have: cleaned when cleanup ran, raw otherwise.</summary>
-    public string BestText => Refinement?.CleanedText ?? Transcript.FullText;
-}
-
 /// <summary>
-/// Runs a recording end to end: chunk, transcribe, stitch, then optionally clean up.
+/// Runs a recording end to end: chunk, transcribe, stitch.
 /// <para>
 /// Windows are transcribed one at a time rather than in parallel. That is deliberate — the NPU
 /// is a single shared resource, and queueing several windows at it makes the whole run slower
@@ -59,49 +35,20 @@ public sealed record TranscriptionResult(Transcript Transcript, RefinementResult
 public sealed class TranscriptionPipeline
 {
     private readonly ITranscriber _transcriber;
-    private readonly TranscriptRefiner? _refiner;
     private readonly AudioChunker _chunker;
     private readonly TranscriptStitcher _stitcher;
 
     public TranscriptionPipeline(
         ITranscriber transcriber,
-        TranscriptRefiner? refiner = null,
         AudioChunker? chunker = null,
         TranscriptStitcher? stitcher = null)
     {
         _transcriber = transcriber ?? throw new ArgumentNullException(nameof(transcriber));
-        _refiner = refiner;
         _chunker = chunker ?? new AudioChunker();
         _stitcher = stitcher ?? new TranscriptStitcher();
     }
 
-    /// <summary>
-    /// Transcribes and then cleans up, one after the other.
-    /// <para>
-    /// The convenience for callers with nothing else to do. A caller that also wants to work out
-    /// who spoke should run <see cref="TranscribeAsync"/> and then start
-    /// <see cref="RefineAsync"/> alongside the diarizer, which reads only the audio and so has
-    /// no reason to wait for either.
-    /// </para>
-    /// </summary>
-    public async Task<TranscriptionResult> RunAsync(
-        PcmAudio audio,
-        IReadOnlyList<string>? glossary = null,
-        RefinementOutputs outputs = RefinementOutputs.Default,
-        IProgress<TranscriptionProgress>? progress = null,
-        CancellationToken cancellationToken = default,
-        SpeechTask task = SpeechTask.Transcribe)
-    {
-        var transcript = await TranscribeAsync(audio, progress, cancellationToken, task)
-            .ConfigureAwait(false);
-
-        var refinement = await RefineAsync(transcript, glossary, outputs, progress, cancellationToken)
-            .ConfigureAwait(false);
-
-        return new TranscriptionResult(transcript, refinement);
-    }
-
-    /// <summary>Whisper only: the words and their timings, before any cleanup.</summary>
+    /// <summary>The words and their timings, as Whisper heard them.</summary>
     public async Task<Transcript> TranscribeAsync(
         PcmAudio audio,
         IProgress<TranscriptionProgress>? progress = null,
@@ -109,8 +56,7 @@ public sealed class TranscriptionPipeline
         SpeechTask task = SpeechTask.Transcribe)
     {
         // A different recording, so anything carried over from the last one is wrong now. Here
-        // rather than in RunAsync: this is the method every caller passes through, and the app
-        // calls it directly.
+        // because this is the method every caller passes through.
         _transcriber.BeginRecording(task);
 
         ArgumentNullException.ThrowIfNull(audio);
@@ -163,35 +109,6 @@ public sealed class TranscriptionPipeline
         // told apart afterwards however good the voices were, because there was only ever one
         // segment to attach a speaker to.
         return new Transcript(DialogueMarks.Split(_stitcher.Stitch(perChunkSegments)));
-    }
-
-    /// <summary>
-    /// Cleanup only: punctuation, the glossary, and whatever else was asked for. Null when no
-    /// cleanup model was found or there is nothing to clean.
-    /// </summary>
-    public async Task<RefinementResult?> RefineAsync(
-        Transcript transcript,
-        IReadOnlyList<string>? glossary = null,
-        RefinementOutputs outputs = RefinementOutputs.Default,
-        IProgress<TranscriptionProgress>? progress = null,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(transcript);
-
-        if (_refiner is null || transcript.Segments.Count == 0)
-        {
-            return null;
-        }
-
-        var cleanup = new Progress<double>(fraction => progress?.Report(new TranscriptionProgress(
-            (int)Math.Round(fraction * 100),
-            100,
-            string.Empty,
-            TranscriptionPhase.CleaningUp)));
-
-        return await _refiner
-            .RefineAsync(transcript, glossary, outputs, cleanup, null, cancellationToken)
-            .ConfigureAwait(false);
     }
 
     /// <summary>

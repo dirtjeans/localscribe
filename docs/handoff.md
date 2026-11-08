@@ -7,6 +7,12 @@ version says what is now proven, how it was proven, and what is still known to b
 in that order, because the *how* is the part a newcomer needs most.
 
 The macOS port has run; its own handoff is [handoff-macos.md](handoff-macos.md).
+
+**The language-model cleanup stage was removed on 2026-11-03**, with Foundry Local, GenieX and
+the glossary, which only ever worked through it. Older sections below may still describe it as
+history. To a reader, "Cleanup" now names the word-timing scan: see `ProgressSteps` and the
+handoff-macos section on progress. The Windows window was edited without being compiled; build
+it first (`LocalScribe.App`, by path) before trusting it.
 Every model tried for a stage of the pipeline, and the numbers that kept or rejected it, is in
 [model-trials.md](model-trials.md).
 
@@ -15,8 +21,7 @@ Every model tried for a stage of the pipeline, and the numbers that kept or reje
 The app transcribes on the Hexagon NPU (Whisper large-v3-turbo through a cached QNN export,
 encoder and decoder both), times every word with an MMS CTC aligner on the CPU, attributes
 speakers with NVIDIA's Nemotron 3 Diarization on ARM64 (pyannote segmentation plus WeSpeaker
-embeddings elsewhere), cleans up
-with a local language model through Foundry Local or GenieX, and plays back with a word-level
+embeddings elsewhere), and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
 segments, and a readable text copy — that reopen instantly and are byte-portable across
 machines. The core library's 721 tests pass; the published app is self-contained and carries
@@ -184,9 +189,6 @@ set the reader's expectations exactly where the labels are least trustworthy.
 - **Closing asks before it destroys**: unsaved work (a fresh transcription, a live recording,
   an edited transcript) gets Save / Discard / Cancel, and a cancelled save picker is not
   consent to lose anything.
-- The cleanup model can be provisioned from the glossary dialog's notice (install Foundry
-  Local, start it, download the default model, reconnect, rerun cleanup) — all user-initiated;
-  the app never installs anything uninvited.
 
 ## Decisions worth not undoing
 
@@ -205,8 +207,6 @@ ONNX Runtime, which has no QNN provider. There is no "pyannote-NPU". See `diariz
 **Downloaded model files keep their published names.** Large ONNX graphs reference weight
 sidecars by name from inside the graph. `localscribe-model.json` records roles instead.
 
-**The Foundry Local port is never hard-coded.** It binds a dynamic loopback port; ask
-`foundry service status`.
 
 **CPU threads are capped rather than maximised.** The machine staying responsive is the product
 requirement, not a limitation to optimise away. The pace slider (`WorkPaces`) lets the user

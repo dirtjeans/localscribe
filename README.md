@@ -1,7 +1,7 @@
 # LocalScribe
 
-Offline transcription for Snapdragon X Windows laptops. Whisper runs on the Hexagon NPU, a
-local language model cleans up the text, and nothing leaves the machine.
+Offline transcription for Snapdragon X Windows laptops. Whisper runs on the Hexagon NPU, words
+are timed and speakers worked out alongside it, and nothing leaves the machine.
 
 ## Why this exists
 
@@ -19,9 +19,8 @@ three while the machine stutters.
 - Transcribes audio files, or listens to the microphone live
 - Puts the Whisper encoder on the Hexagon NPU, falling back to the Adreno GPU, then the CPU
 - Caps CPU usage so the rest of Windows stays responsive
-- Repairs punctuation and casing with a local language model
-- Corrects names and jargon against a glossary you supply
-- Writes a summary and pulls out action items
+- On the Mac: correct a misheard word or name by right-clicking it, here or everywhere, and get an
+  alert when a run in the background is done
 
 ## Getting started
 

@@ -45,7 +45,6 @@ public static class DeviceProbe
             DirectMlPresent = providers.Contains("DmlExecutionProvider") || providers.Contains("DML"),
             WhisperCppModelPresent = whisperCppModel,
             WhisperCppCoreMlEncoderPresent = whisperCppCoreMl,
-            LocalLanguageModelPresent = false, // Filled in asynchronously by the caller; see LocalLanguageModel.
             OnBattery = IsOnBattery(),
         };
     }

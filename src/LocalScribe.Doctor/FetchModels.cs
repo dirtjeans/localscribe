@@ -257,7 +257,7 @@ internal static class FetchModels
         try
         {
             var results = await new ModelFetcher()
-                .FetchAsync(directory, SortformerModelSource.Files)
+                .FetchAsync(directory, SortformerModelSource.FilesForThisMachine)
                 .ConfigureAwait(false);
 
             foreach (var result in results)

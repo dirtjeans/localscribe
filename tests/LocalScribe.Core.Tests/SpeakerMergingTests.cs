@@ -113,7 +113,7 @@ public class SortformerModelSourceTests
     [Fact]
     public void EveryFileIsPinnedToItsExactContents()
     {
-        Assert.All(SortformerModelSource.Files, file =>
+        Assert.All(SortformerModelSource.Files.Concat(SortformerModelSource.FullPrecisionFiles), file =>
         {
             Assert.Matches("^[0-9a-f]{64}$", file.Sha256);
 
@@ -131,15 +131,85 @@ public class SortformerModelSourceTests
 
         try
         {
-            Assert.Contains(SortformerModelSource.Files, file => file.FileName == "LICENSE");
+            Assert.Contains(SortformerModelSource.FilesForThisMachine, file => file.FileName == "LICENSE");
             Assert.False(SortformerModelSource.IsInstalled(directory));
 
-            foreach (var file in SortformerModelSource.Files.Where(f => f.FileName != "LICENSE"))
+            foreach (var file in SortformerModelSource.FilesForThisMachine.Where(f => f.FileName != "LICENSE"))
             {
                 File.WriteAllBytes(Path.Combine(directory, file.FileName), [1]);
             }
 
             Assert.True(SortformerModelSource.IsInstalled(directory));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The int8 file invents speakers on the Mac and is what the Snapdragon was measured with,
+    /// so each machine has to fetch the build it runs, and only that one.
+    /// </summary>
+    [Fact]
+    public void EachMachineFetchesOneTransformerAndItIsTheOneItRuns()
+    {
+        var transformers = SortformerModelSource.FilesForThisMachine
+            .Select(file => file.FileName)
+            .Where(name => name.StartsWith("step", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Equal(
+            [OperatingSystem.IsMacOS() ? SortformerModelSource.FullPrecisionFileName : "step_int8.onnx"],
+            transformers);
+    }
+
+    /// <summary>
+    /// A Mac that installed before the move to float32 holds only the int8 file. It still wants
+    /// the download, and until that succeeds it must keep finding speakers rather than lose them.
+    /// </summary>
+    [Fact]
+    public void AnOlderInstallKeepsItsSpeakersUntilTheLargerFileArrives()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"localscribe-sortformer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            foreach (var file in SortformerModelSource.Files.Where(f => f.FileName != "LICENSE"))
+            {
+                File.WriteAllBytes(Path.Combine(directory, file.FileName), [1]);
+            }
+
+            Assert.True(SortformerModelSource.CanRun(directory));
+            Assert.False(SortformerModelSource.RunsFullPrecision(directory));
+            Assert.Equal(!SortformerModelSource.PreferFullPrecision, SortformerModelSource.IsInstalled(directory));
+
+            File.WriteAllBytes(Path.Combine(directory, SortformerModelSource.FullPrecisionFileName), [1]);
+
+            Assert.True(SortformerModelSource.IsInstalled(directory));
+            Assert.Equal(SortformerModelSource.PreferFullPrecision, SortformerModelSource.RunsFullPrecision(directory));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void NoTransformerAtAllMeansNoSpeakers()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"localscribe-sortformer-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            foreach (var file in SortformerModelSource.Files.Where(f => !f.FileName.StartsWith("step", StringComparison.Ordinal)))
+            {
+                File.WriteAllBytes(Path.Combine(directory, file.FileName), [1]);
+            }
+
+            Assert.False(SortformerModelSource.CanRun(directory));
         }
         finally
         {

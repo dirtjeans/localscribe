@@ -32,19 +32,26 @@ public sealed class ForcedAligner : IDisposable
     private readonly AlignmentAlphabet _alphabet;
     private readonly string _input;
 
-    /// <summary>The one window length a compiled NPU graph accepts, or null on the CPU.</summary>
+    /// <summary>The one window length a compiled NPU or GPU model accepts, or null on the CPU.</summary>
     private readonly int? _fixedWindow;
 
-    private ForcedAligner(InferenceSession session, AlignmentAlphabet alphabet, int? fixedWindow = null)
+    private ForcedAligner(InferenceSession session, AlignmentAlphabet alphabet, int? fixedWindow = null, string device = "CPU")
     {
         _session = session;
         _alphabet = alphabet;
         _input = session.InputMetadata.Keys.First();
         _fixedWindow = fixedWindow;
+        Device = device;
     }
 
-    /// <summary>True when this aligner scans on the NPU.</summary>
-    public bool OnNpu => _fixedWindow is not null;
+    /// <summary>Where the scan runs: "CPU", "NPU" or "GPU".</summary>
+    public string Device { get; }
+
+    /// <summary>True when this aligner scans on the NPU, which it shares with Whisper.</summary>
+    public bool OnNpu => Device == "NPU";
+
+    /// <summary>True when the scan runs on an accelerator, so a failure there can fall back to the CPU.</summary>
+    public bool Accelerated => _fixedWindow is not null;
 
     /// <summary>What the aligner needs on disk, or null when it is not installed.</summary>
     public static string? Find(string modelRoot)
@@ -99,7 +106,20 @@ public sealed class ForcedAligner : IDisposable
         ArgumentNullException.ThrowIfNull(plan);
 
         var alphabet = AlignmentAlphabet.Load(Path.Combine(directory, "vocab.json"));
-        return new ForcedAligner(NpuAligner.Open(directory, plan), alphabet, NpuAligner.WindowSamples);
+        return new ForcedAligner(NpuAligner.Open(directory, plan), alphabet, NpuAligner.WindowSamples, "NPU");
+    }
+
+    /// <summary>
+    /// Loads the aligner rewritten for the Mac's GPU (<see cref="GpuAligner"/>), or throws when
+    /// Core ML will not open it. Placing words is the same code either way; only the scan differs.
+    /// </summary>
+    public static ForcedAligner LoadGpu(string directory, ExecutionPlan plan)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(directory);
+        ArgumentNullException.ThrowIfNull(plan);
+
+        var alphabet = AlignmentAlphabet.Load(Path.Combine(directory, "vocab.json"));
+        return new ForcedAligner(GpuAligner.Open(directory, plan), alphabet, GpuAligner.WindowSamples, "GPU");
     }
 
     /// <summary>
@@ -111,7 +131,7 @@ public sealed class ForcedAligner : IDisposable
     /// </para>
     /// <para>
     /// Scored on a fixed grid rather than segment by segment. Where the segments will fall is
-    /// not known this early, and cleanup and attribution would move them afterwards regardless.
+    /// not known this early, and attribution would move them afterwards regardless.
     /// </para>
     /// </summary>
     /// <returns>The whole recording's scores, or null when it cannot be scored at all.</returns>
@@ -276,7 +296,7 @@ public sealed class ForcedAligner : IDisposable
             if (window.Frames != expected)
             {
                 throw new InvalidDataException(
-                    $"The NPU aligner returned {window.Frames} frames for a window that should have {expected}.");
+                    $"The {Device} aligner returned {window.Frames} frames for a window that should have {expected}.");
             }
 
             var offset = at - readFrom;

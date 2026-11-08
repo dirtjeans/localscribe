@@ -7,14 +7,13 @@ namespace LocalScribe.Core.Alignment;
 /// Alignment has two halves with very different costs. Running the network over the audio is
 /// nearly all of the work and depends on nothing but the audio. Placing known words onto the
 /// frames it produced is a Viterbi pass over a few hundred frames and costs almost nothing.
-/// Splitting them lets the expensive half run early — beside cleanup and speaker detection,
-/// which is where it was always wanted — while the cheap half waits for the text those two
-/// leave behind.
+/// Splitting them lets the expensive half run independently of the text, while the cheap half
+/// waits for the transcript it will be placed against.
 /// </para>
 /// <para>
 /// The frames are a fixed grid over the whole recording rather than one run per segment, because
-/// segment boundaries are not known when the scan happens and will not survive cleanup and
-/// attribution anyway. A grid is indifferent to where the segments end up.
+/// segment boundaries are not known when the scan happens and will not survive attribution
+/// anyway. A grid is indifferent to where the segments end up.
 /// </para>
 /// <para>
 /// Thirty-one tokens at twenty milliseconds is about eight megabytes an hour, so a recording is

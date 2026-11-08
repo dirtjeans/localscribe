@@ -64,9 +64,8 @@ public static class RepeatedPhrase
     /// </para>
     /// <para>
     /// Reading the transcript as one stream of words and putting the words back where they came
-    /// from catches it wherever the boundary falls, and catches a repeat introduced after
-    /// stitching — by cleanup rewriting the text, for instance — which the stitcher is long
-    /// finished by.
+    /// from catches it wherever the boundary falls, and catches a repeat that only
+    /// shows once the text is read whole, which the stitcher is long finished by.
     /// </para>
     /// </summary>
     public static IReadOnlyList<TranscriptSegment> TrimAcross(IReadOnlyList<TranscriptSegment> segments)

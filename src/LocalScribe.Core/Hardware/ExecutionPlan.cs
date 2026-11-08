@@ -69,8 +69,6 @@ public sealed record ExecutionPlan
 
     public required StagePlan Decoder { get; init; }
 
-    public required StagePlan LanguageModel { get; init; }
-
     public required CpuBudget CpuBudget { get; init; }
 
     /// <summary>How hard the NPU is driven, for stages placed on it.</summary>
@@ -92,11 +90,10 @@ public sealed record ExecutionPlan
     /// <summary>True when nothing at all was offloaded and the CPU is doing every stage.</summary>
     public bool IsCpuOnly =>
         Encoder.Device == ComputeDevice.Cpu &&
-        Decoder.Device == ComputeDevice.Cpu &&
-        LanguageModel.Device == ComputeDevice.Cpu;
+        Decoder.Device == ComputeDevice.Cpu;
 
     /// <summary>One-line summary for the status bar.</summary>
     public string Summary =>
-        $"Whisper {WhisperModel}: encoder on {Encoder.Device}, decoder on {Decoder.Device}, " +
-        $"cleanup on {LanguageModel.Device} ({CpuBudget.IntraOpThreads} CPU threads)";
+        $"Whisper {WhisperModel}: encoder on {Encoder.Device}, decoder on {Decoder.Device} " +
+        $"({CpuBudget.IntraOpThreads} CPU threads)";
 }

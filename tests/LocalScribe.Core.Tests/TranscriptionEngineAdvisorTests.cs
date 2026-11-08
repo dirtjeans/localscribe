@@ -22,7 +22,6 @@ public class TranscriptionEngineAdvisorTests
             HexagonDriverPresent = driver,
             WhisperQnnAssetsPresent = assets,
             DirectMlPresent = directMl,
-            LocalLanguageModelPresent = false,
             OnBattery = false,
         };
 

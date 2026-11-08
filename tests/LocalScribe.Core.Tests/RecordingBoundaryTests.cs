@@ -58,8 +58,8 @@ public class RecordingBoundaryTests
         var transcriber = new CountingTranscriber();
         var pipeline = new TranscriptionPipeline(transcriber);
 
-        await pipeline.RunAsync(Silence(3));
-        await pipeline.RunAsync(Silence(3));
+        await pipeline.TranscribeAsync(Silence(3));
+        await pipeline.TranscribeAsync(Silence(3));
 
         Assert.Equal(2, transcriber.Beginnings);
     }
@@ -71,7 +71,7 @@ public class RecordingBoundaryTests
         var transcriber = new CountingTranscriber();
         var pipeline = new TranscriptionPipeline(transcriber);
 
-        await pipeline.RunAsync(Silence(90));
+        await pipeline.TranscribeAsync(Silence(90));
 
         Assert.True(transcriber.Windows > 1, "the recording should span more than one window");
         Assert.Equal(1, transcriber.Beginnings);
@@ -93,7 +93,7 @@ public class RecordingBoundaryTests
     {
         var transcriber = new CountingTranscriber();
 
-        await new TranscriptionPipeline(transcriber).RunAsync(Silence(3));
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(Silence(3));
 
         Assert.Equal(SpeechTask.Transcribe, transcriber.LastTask);
     }
@@ -105,16 +105,12 @@ public class RecordingBoundaryTests
         var transcriber = new CountingTranscriber();
 
         await new TranscriptionPipeline(transcriber)
-            .RunAsync(Silence(3), task: SpeechTask.TranslateToEnglish);
+            .TranscribeAsync(Silence(3), task: SpeechTask.TranslateToEnglish);
 
         Assert.Equal(SpeechTask.TranslateToEnglish, transcriber.LastTask);
     }
 
-    /// <summary>
-    /// The app transcribes through this method rather than through RunAsync, so the boundary has
-    /// to be on it. Put on RunAsync alone, the fix for a recording inheriting the last one's
-    /// language would never have run in the app at all.
-    /// </summary>
+    /// <summary>The app transcribes through this method, so the boundary has to be on it.</summary>
     [Fact]
     public async Task TranscribingDirectlyIsStillARecording()
     {

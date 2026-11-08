@@ -17,7 +17,7 @@ transcribes with whisper.cpp through the whisper.net binding — encoder on the 
 Engine via Core ML, decoder on CPU/Metal — times words with the same MMS aligner on the CPU,
 attributes speakers with the same models, plays back through miniaudio with the word-level
 highlight, records from the microphone, saves and opens the same byte-portable `.scrb`
-archives, and provisions its own models on first launch (~2.8 GiB, narrated, into
+archives, and provisions its own models on first launch (~3.1 GB, narrated, into
 `~/Library/Application Support/LocalScribe/models` when bundled). `tools/make-macos-app.sh`
 builds `build/LocalScribe.app` (`--install` copies it to /Applications); the icons are the
 Windows masters rendered through the scripts' `--iconset` mode.
@@ -466,6 +466,99 @@ Later changes to shared code. Each arrives with the next Mac build whether or no
 - **The stage log has new marks**: "transcription started" with the pace and order switches,
   "first words clickable", "labels on screen", "transcription ended" and "done". They are what
   the Windows ordering trial was timed with, and the Mac's headless runs write them too.
+
+### Progress and what the reader can do meanwhile (2026-11-03)
+
+A run reports three steps, each with its own bar: **Raw transcript** (Whisper), **Figuring out who
+said what** (the diarizer) and **Cleanup**. That last word now means the MMS word-timing scan; the
+language-model cleanup it used to name is gone. Separate bars because the steps overlap and finish
+in no fixed order, which a single bar could only hide behind an invented number. The steps live in
+the view model (`ProgressSteps`), so any window can draw them; the Mac draws them above the player.
+**The Windows window has not been given them yet**: it has the new wording in its status line, with
+the hint below in front of it, and keeps its one bar.
+
+`ProgressHint` says what the reader can already do, so a progress bar does not read as "wait":
+select and copy as soon as text appears, and rename speakers as soon as labels appear. Labels
+appear when the diarizer answers rather than when it starts, because Nemotron hands back its turns
+all at once; on the Mac that is seconds into a short file and a minute or two into a long one.
+
+Removed with the cleanup stage, on both windows: the Pace panel's polish switch, the Mac's Foundry
+banner, and on Windows the Glossary button and the cleanup notice. **The Windows window was edited
+on the Mac and has not been compiled.** Handlers, element names and view-model members were checked
+by search; build it before relying on it.
+
+### Correcting words, and hearing when a run ends (2026-11-04)
+
+**Right-click a word or a selection** to correct it, here or everywhere, the same two reaches a
+speaker's name has (`WordCorrections`, in Core). `_segments` stays as heard and the corrections
+are applied last in `SetTranscript`, each time: every rebuild starts from what was heard, so a fix
+survives the windows still to come, and word times stay paired by value and count with the words
+they were measured for. A corrected word borrows the times of the words it replaced, shared evenly
+when the count changes, so "Ragu Nanda Kumara" becoming "Raghu Nandakumara" stays clickable and
+stays measured. `WordsIn`, `IsTimed`, the archive and SubRip all go through `_corrected`; anything
+new that takes a segment from `Paragraphs` must too, or it will look up a segment no table knows.
+
+Matching is by whole word and by case, so correcting "Will" leaves "will" alone; a correction made
+on the lower-case form also reaches the capitalised one, keeping the capital. A saved archive holds
+the corrected text, and opening it treats that as what was heard. Corrections last for one
+recording: there is no list carried between recordings, though that is the obvious next step, and
+Whisper's initial prompt is where it would go to get names right in the first place.
+
+**"Alert me when it's done"** sits beside the progress hint, off until ticked, because ticking it
+is what brings up the macOS permission prompt (`FinishedAlert`). When a run ends, or fails, and the
+window is not active: a notification if allowed, otherwise the Glass sound, and a Dock bounce either
+way. A cancelled run is silent. UNUserNotificationCenter raises an uncatchable exception in a process
+with no bundle identifier, so nothing reaches it outside `LocalScribe.app`.
+macOS accepts the request from an ad-hoc signed app, and asks with a silent notification in the
+corner of the screen, not a dialog (usernoted's log: "displaying as alert"). That is left as macOS
+does it, with no guidance of the app's own, by choice. Until it is answered, or if refused, the alert
+is the sound and the bounce. Read the log with `/usr/bin/log`: in zsh, `log` is a builtin.
+**Not yet seen working:** the notification itself, which needs someone to answer that prompt. Corrections were checked by a whole headless run with one
+made mid-stream (`LOCALSCRIBE_HEADLESS_CORRECT=wrong=right`) and by `window-snapshot --correct`.
+
+**How long it took:** each step's strip shows its time as it finishes, and the status line ends the
+run with `Done in 4:12 for 7:23 of audio. Raw transcript 1:05 · …` (`RunTimes`). The steps overlap,
+so they add up to more than the whole.
+
+The view model carries all of this for Windows too (`CorrectWords`, `PlacesOf`, `RunEnded`, and the
+status line, which needs nothing), but only the Mac window has the menu and the box. The hint offers
+correcting only where `OffersWordCorrection` is set.
+
+### Word timing on the GPU (2026-11-07)
+
+The scan runs on the GPU now (`GpuAligner`, `ForcedAligner.LoadGpu`): the fp16 aligner through
+ONNX Runtime's Core ML provider, in fixed 34 s windows, after its MatMuls are rewritten as Gemms
+(`GemmRewrite`) so Core ML keeps the weights binary instead of writing 3.7 GB of them as text.
+On the podcast at Balanced a whole run went from 3:42–4:15 to 1:35–1:52, labels no later, peak
+memory unchanged; word times match the fp16 reference exactly. Prepared once in the background
+at startup (12 s here; a 630 MB fp16 download first where only the 4-bit build is installed),
+in `models/alignment/gpu`, trusted only with its `compiled` marker, forgotten if Core ML refuses
+it. Until then, below 34 s, or on any failure, the 4-bit CPU scan runs as before. The scan still
+waits for transcription: alongside it was slower overall. `LOCALSCRIBE_GPU_ALIGNER=0` turns it
+off; `LOCALSCRIBE_PACE` sets the pace for a measurement without touching the saved one. Numbers
+and the trail that led here are in docs/model-trials.md.
+
+### The window's look (2026-10-14)
+
+Restyled without removing anything. The title bar carries the whole toolbar: Open and Record
+keep their words on the left, the document's name and its length and speaker count sit in the
+middle, and the search field and the transcript's tools (Speakers, Pace, Save, Export,
+Discard) are glyphs on the right, each named by its tooltip and again in a new File menu with
+⌘O, ⌘R, ⌘S and ⌘E. The transcript is a centred reading column; each speaker has a colour
+(eight, light and dark sets) and each paragraph its start time, and a plain click on a name
+opens the rename menu as a right-click does. The player is a card whose waveform colours what
+has played. An empty window offers Open and Record, and a file dropped on the window opens as
+Open would. The palette lives in `App.axaml`, per theme, so dialogs and flyouts share it; dark
+is charcoal, not Fluent's black. Two bugs went with it: idle names in the models chip and
+panel were drawn in no colour at all (a local `Foreground = null` outranks inheritance), and
+the Light pace said "this PC" on a Mac.
+
+To see the window without a screen, `tools/window-snapshot` renders the real `MainWindow`
+offscreen through Avalonia's headless platform with Skia, in light and dark:
+`dotnet run --project tools/window-snapshot -- <out-dir> [file.scrb | recording] [--size WxH]
+[--flyouts] [--mid-run seconds]`. A `.scrb` is opened; a recording is transcribed for real and
+caught after `--mid-run` seconds, which is how the working glow and streaming rows were
+checked. It stays out of the solution, so the app never references the headless platform.
 
 ### New instruments
 

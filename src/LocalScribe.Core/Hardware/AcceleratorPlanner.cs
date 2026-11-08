@@ -48,7 +48,6 @@ public static class AcceleratorPlanner
         var warnings = new List<string>();
         var encoder = PlanEncoder(caps, warnings);
         var decoder = PlanDecoder(caps, encoder);
-        var languageModel = PlanLanguageModel(caps, warnings);
 
         var everythingOffloaded =
             encoder.Device != ComputeDevice.Cpu && decoder.Device != ComputeDevice.Cpu;
@@ -57,7 +56,6 @@ public static class AcceleratorPlanner
         {
             Encoder = encoder,
             Decoder = decoder,
-            LanguageModel = languageModel,
             CpuBudget = PlanCpuBudget(caps, profile, everythingOffloaded),
             WhisperModel = ChooseWhisperModel(caps, encoder.Device, mode),
             StrictProviderCheck = strictProviderCheck,
@@ -112,36 +110,6 @@ public static class AcceleratorPlanner
             ComputeDevice.Cpu,
             null,
             "CPU. The decoder issues many small steps, and dispatch overhead outweighs any GPU gain.");
-    }
-
-    /// <summary>
-    /// The cleanup model is optional. When a local service is running we hand the work to it,
-    /// since it picks its own hardware variant. Otherwise the pipeline still produces a
-    /// transcript, just without punctuation repair or a summary.
-    /// </summary>
-    private static StagePlan PlanLanguageModel(DeviceCapabilities caps, List<string> warnings)
-    {
-        if (!caps.LocalLanguageModelPresent)
-        {
-            warnings.Add(
-                "No local language-model service is reachable. Transcripts will be raw: no " +
-                "punctuation repair, glossary correction, or summary. Start GenieX, or " +
-                "'foundry service start' for Foundry Local, to enable them.");
-            return new StagePlan(ComputeDevice.Cpu, null, "Disabled. No local language-model service was found.");
-        }
-
-        if (caps.NpuUsable)
-        {
-            return new StagePlan(
-                ComputeDevice.Npu,
-                null,
-                "A local model on the NPU. Cleanup runs off-CPU alongside transcription.");
-        }
-
-        return new StagePlan(
-            ComputeDevice.Cpu,
-            null,
-            "A local model on the CPU. The Oryon cores handle a small model at reading speed.");
     }
 
     /// <summary>

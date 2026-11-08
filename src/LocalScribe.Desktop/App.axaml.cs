@@ -25,7 +25,7 @@ public sealed class App : Application
             {
                 Margin = new Avalonia.Thickness(28, 22),
                 Text = "LocalScribe\n\nOffline transcription. Whisper on the Neural Engine,\n"
-                    + "a local language model for cleanup, nothing leaving this Mac.",
+                    + "speakers and word timing on the CPU, nothing leaving this Mac.",
                 TextAlignment = Avalonia.Media.TextAlignment.Center,
             },
         };

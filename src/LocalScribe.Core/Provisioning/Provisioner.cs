@@ -21,16 +21,13 @@ public sealed class Provisioner
     public const string HexagonDriverUrl = "https://softwarecenter.qualcomm.com/";
 
     private readonly WhisperModelInstaller _models;
-    private readonly FoundryLocalManager _foundry;
     private readonly DiarizationModelInstaller _diarizationModels;
 
     public Provisioner(
         WhisperModelInstaller? models = null,
-        FoundryLocalManager? foundry = null,
         DiarizationModelInstaller? diarizationModels = null)
     {
         _models = models ?? new WhisperModelInstaller();
-        _foundry = foundry ?? new FoundryLocalManager();
         _diarizationModels = diarizationModels ?? new DiarizationModelInstaller();
     }
 
@@ -41,7 +38,6 @@ public sealed class Provisioner
     /// <param name="capabilities">What the machine was observed to have.</param>
     /// <param name="plan">The execution plan, which determines which model size is needed.</param>
     /// <param name="modelDirectory">Directory for the chipset and size in <paramref name="plan"/>.</param>
-    /// <param name="foundryInstalled">Whether the foundry CLI was found.</param>
     /// <param name="processIsArm64">Whether this process is running natively on arm64.</param>
     /// <param name="diarizationDirectory">
     /// Where the speaker diarization models live. Pass <c>null</c> to leave diarization out of
@@ -51,7 +47,6 @@ public sealed class Provisioner
         DeviceCapabilities capabilities,
         ExecutionPlan plan,
         string modelDirectory,
-        bool foundryInstalled,
         bool processIsArm64,
         string? diarizationDirectory = null)
     {
@@ -111,29 +106,6 @@ public sealed class Provisioner
                 Required: false));
         }
 
-        components.Add(new ComponentStatus(
-            Id: "foundry",
-            Title: "Foundry Local",
-            Kind: ComponentKind.InferenceEngine,
-            Installed: foundryInstalled,
-            CanInstallAutomatically: true,
-            Detail: foundryInstalled ? "Installed." : "Not installed.",
-            Required: false));
-
-        components.Add(new ComponentStatus(
-            Id: "foundry-model",
-            Title: $"Cleanup model ({FoundryLocalManager.DefaultModelAlias})",
-            Kind: ComponentKind.ModelAssets,
-            Installed: capabilities.LocalLanguageModelPresent,
-            CanInstallAutomatically: foundryInstalled,
-            Detail: capabilities.LocalLanguageModelPresent
-                ? "Service is answering."
-                : "Service is not answering, so punctuation repair and summaries are unavailable.",
-            ManualInstructions: foundryInstalled
-                ? null
-                : "Install Foundry Local first.",
-            Required: false));
-
         if (diarizationDirectory is not null)
         {
             var installed = DiarizationModelInstaller.IsInstalled(diarizationDirectory);
@@ -160,7 +132,7 @@ public sealed class Provisioner
     /// Installs every component that can be installed unattended.
     /// <para>
     /// Failures do not stop the run. The components are independent, and a machine that cannot
-    /// reach the model repository can still install the cleanup service, so it is better to make
+    /// reach one model repository may still reach another, so it is better to make
     /// what progress is possible and report the rest than to abort at the first problem.
     /// </para>
     /// </summary>
@@ -189,11 +161,6 @@ public sealed class Provisioner
                         modelDirectory, whisperModel, chipsetSlug, progress, cancellationToken)
                         .ConfigureAwait(false),
 
-                    "foundry" => await InstallFoundryAsync(progress, cancellationToken).ConfigureAwait(false),
-
-                    "foundry-model" => await InstallFoundryModelAsync(progress, cancellationToken)
-                        .ConfigureAwait(false),
-
                     "diarization-models" when diarizationDirectory is not null =>
                         await _diarizationModels
                             .EnsureInstalledAsync(diarizationDirectory, progress, cancellationToken)
@@ -213,30 +180,5 @@ public sealed class Provisioner
         }
 
         return results;
-    }
-
-    private async Task<InstallResult> InstallFoundryAsync(
-        IProgress<InstallProgress>? progress,
-        CancellationToken cancellationToken)
-    {
-        var install = await _foundry.InstallAsync(progress, cancellationToken).ConfigureAwait(false);
-        if (!install.Succeeded)
-        {
-            return install;
-        }
-
-        return await _foundry.StartServiceAsync(progress, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<InstallResult> InstallFoundryModelAsync(
-        IProgress<InstallProgress>? progress,
-        CancellationToken cancellationToken)
-    {
-        // Starting the service is idempotent, and the model download needs it running.
-        await _foundry.StartServiceAsync(progress, cancellationToken).ConfigureAwait(false);
-
-        return await _foundry
-            .DownloadModelAsync(FoundryLocalManager.DefaultModelAlias, progress, cancellationToken)
-            .ConfigureAwait(false);
     }
 }

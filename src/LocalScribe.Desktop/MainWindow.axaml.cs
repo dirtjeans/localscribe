@@ -12,6 +12,7 @@ using LocalScribe.App;
 using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
+using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Provisioning;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Onnx;
@@ -45,13 +46,16 @@ public sealed partial class MainWindow : Window
         _openOnLaunch = openOnLaunch;
 
         _viewModel = new MainViewModel(FindModelRoot(), OpenEngine);
+        _viewModel.OffersWordCorrection = true;
         _viewModel.PropertyChanged += OnViewModelChanged;
+        _viewModel.RunEnded += OnRunEnded;
         _viewModel.Player.PositionChanged += OnPlaybackPosition;
         _viewModel.Player.Stopped += OnPlaybackStopped;
         _viewModel.Player.Failed += message => Post(() => StatusText.Text = message);
 
         InitializeComponent();
-        BuildEditMenu();
+        BuildMenus();
+        SetUpAlert();
 
         _waveform.PeakSource = buckets => _viewModel.WaveformPeaks(buckets);
 
@@ -84,12 +88,75 @@ public sealed partial class MainWindow : Window
             }
         };
         WaveformHost.Content = _waveform;
-
+        WatchForReaderScrolling();
 
         RefreshControls();
 
         Opened += OnOpened;
         Closing += OnClosing;
+
+        AddHandler(DragDrop.DragOverEvent, OnDragOver);
+        AddHandler(DragDrop.DropEvent, OnDrop);
+
+        // Speaker colours come in a light and a dark set, chosen when a row is built, so a
+        // change of appearance rebuilds the rows rather than leaving one theme's colours on
+        // the other's background.
+        ActualThemeVariantChanged += (_, _) =>
+        {
+            if (_viewModel.IsBusy)
+            {
+                ScheduleStreamingRebuild();
+            }
+            else
+            {
+                RebuildParagraphs();
+            }
+
+            _waveform.InvalidateVisual();
+        };
+
+        SizeChanged += (_, e) => FitTitleBar(e.NewSize.Width);
+    }
+
+    /// <summary>
+    /// A narrow window keeps every control and drops words first: Open and Record become
+    /// glyphs like the rest, then the search field gives up some width. The document name
+    /// between them trims itself.
+    /// </summary>
+    private void FitTitleBar(double width)
+    {
+        OpenLabel.IsVisible = width >= 760;
+        RecordLabel.IsVisible = width >= 760;
+        SearchBox.Width = width >= 700 ? 170 : 120;
+    }
+
+    private string? DroppedFile(DragEventArgs e)
+    {
+        if (e.DataTransfer.TryGetFiles()?.FirstOrDefault()?.TryGetLocalPath() is not { } path)
+        {
+            return null;
+        }
+
+        var extension = Path.GetExtension(path);
+        var known = AudioFileLoader.SupportedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
+            || extension.Equals(".scrb", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".lscribe", StringComparison.OrdinalIgnoreCase);
+
+        return known ? path : null;
+    }
+
+    private void OnDragOver(object? sender, DragEventArgs e) =>
+        e.DragEffects = OpenButton.IsEnabled && DroppedFile(e) is not null
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+
+    /// <summary>A dropped file opens exactly as Open would open it, and only when Open could.</summary>
+    private async void OnDrop(object? sender, DragEventArgs e)
+    {
+        if (OpenButton.IsEnabled && DroppedFile(e) is { } path)
+        {
+            await OpenPathAsync(path);
+        }
     }
 
     private async void OnOpened(object? sender, EventArgs e)
@@ -100,9 +167,6 @@ public sealed partial class MainWindow : Window
 
         await _viewModel.InitialiseAsync();
 
-        // Only now is the offer honest: before initialisation, "no cleanup model" would just
-        // mean "not looked yet".
-        _initialised = true;
         SyncPaceControls();
 
         // Nemotron tells eight people apart and the pipeline ten; offering the stepper more
@@ -119,44 +183,12 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private bool _initialised;
-    private bool _provisioningFoundry;
-
     /// <summary>
-    /// The user asked, so the app installs: Homebrew tap, service start, model download — the
-    /// same flow the glossary notice drives on Windows, offered here as a banner because the
-    /// macOS window has no glossary dialog yet. The click is the consent; nothing here runs
-    /// uninvited.
-    /// </summary>
-    private async void OnFoundryClicked(object? sender, RoutedEventArgs e)
-    {
-        if (_provisioningFoundry)
-        {
-            return;
-        }
-
-        _provisioningFoundry = true;
-        FoundryButton.IsEnabled = false;
-        WorkProgress.IsVisible = true;
-
-        try
-        {
-            await _viewModel.ProvisionCleanupAsync();
-        }
-        finally
-        {
-            _provisioningFoundry = false;
-            FoundryButton.IsEnabled = true;
-            WorkProgress.IsVisible = false;
-            RefreshControls();
-        }
-    }
-
-    /// <summary>
-    /// A first launch downloads its own models, saying what it costs before spending it —
-    /// about 2.8 GiB all told — and every stage degrades the way the pipeline already does, so
+    /// The app downloads its own models, saying what it costs before spending it — a few
+    /// gigabytes on a first launch, one file when an update moves a model — and every stage
+    /// degrades the way the pipeline already does, so
     /// a failed download costs precision or labels, never the app. Model weights only:
-    /// installing services (Foundry Local) stays behind an explicit user action.
+    /// nothing else is ever installed.
     /// </summary>
     private async Task ProvisionModelsAsync()
     {
@@ -167,8 +199,13 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        StatusText.Text = "First run: downloading the models this app runs on (about 2.8 GiB). "
-            + "The app is usable the moment they land — nothing else to set up.";
+        var bytes = ModelProvisioner.ApproximateBytesToFetch(modelRoot, whisperCpp: true);
+        var cost = bytes >= 1_000_000_000 ? $"{bytes / 1e9:F1} GB" : $"{bytes / 1_000_000} MB";
+
+        StatusText.Text = bytes >= 1_000_000_000
+            ? $"First run: downloading the models this app runs on (about {cost}). "
+                + "The app is usable the moment they land — nothing else to set up."
+            : $"Updating a model this app runs on (about {cost}).";
         WorkProgress.IsVisible = true;
 
         var provisioner = new ModelProvisioner(diarizationExtractor: new LocalScribe.Doctor.TarBz2Extractor());
@@ -316,11 +353,79 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// Whether the transcript follows the marker. Re-engaged by asking to hear something;
-    /// surrendered the moment the highlight is scrolled out of view — the follow is for a
-    /// reader who was already there, and detecting "the user scrolled" by timing windows
-    /// failed whenever the marker itself was scrolling.
+    /// surrendered the moment the reader scrolls. Told by their input, not by where the view
+    /// ended up: timing windows failed whenever the marker itself was scrolling, and "the
+    /// highlight left the viewport" never fired in a paragraph taller than the window — some of
+    /// it was always in view, so every scroll was pulled straight back.
     /// </summary>
     private bool _followPlayback = true;
+
+    /// <summary>Hands the view to the reader the moment they scroll it themselves, by any means.</summary>
+    private void WatchForReaderScrolling()
+    {
+        // Tunnel and handled-too: the scroll viewer and the selectable text both claim these.
+        TranscriptScroll.AddHandler(
+            PointerWheelChangedEvent,
+            (_, _) => _followPlayback = false,
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+
+        TranscriptScroll.AddHandler(
+            PointerPressedEvent,
+            (_, e) =>
+            {
+                if (e.Source is Avalonia.Visual source
+                    && Avalonia.VisualTree.VisualExtensions.FindAncestorOfType<Avalonia.Controls.Primitives.ScrollBar>(source, includeSelf: true) is not null)
+                {
+                    _followPlayback = false;
+                }
+            },
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+
+        TranscriptScroll.AddHandler(
+            KeyDownEvent,
+            (_, e) =>
+            {
+                if (e.Key is Key.PageUp or Key.PageDown or Key.Up or Key.Down or Key.Home or Key.End)
+                {
+                    _followPlayback = false;
+                }
+            },
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+    }
+
+    /// <summary>
+    /// Keeps the word being heard on screen with a few lines around it, scrolling only when it
+    /// is about to leave. The word rather than its paragraph: a paragraph taller than the window
+    /// brought into view shows its top, and the voice can be a screen further down.
+    /// </summary>
+    private void KeepInView(int paragraph, WordRun? word)
+    {
+        const double context = 75;
+        var row = _paragraphBorders[paragraph];
+
+        if (word is not null
+            && Avalonia.VisualTree.VisualExtensions.GetVisualDescendants(row).OfType<SelectableTextBlock>().FirstOrDefault() is { } block
+            && block.TextLayout.HitTestTextRange(word.CharStart, Math.Max(1, word.CharEnd - word.CharStart)).FirstOrDefault() is var line
+            && line.Height > 0
+            && block.TranslatePoint(line.TopLeft, TranscriptScroll) is { } top)
+        {
+            if (top.Y >= context && top.Y + line.Height <= TranscriptScroll.Bounds.Height - context)
+            {
+                return;
+            }
+
+            block.BringIntoView(line.Inflate(new Thickness(0, context)));
+            return;
+        }
+
+        if (!IsVisibleInTranscript(row))
+        {
+            row.BringIntoView();
+        }
+    }
     private bool _scrubWasPlaying;
 
     private void StartPlayback(double seconds)
@@ -455,19 +560,8 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnCleanupToggled(object? sender, RoutedEventArgs e)
-    {
-        _viewModel.CleanupEnabled = CleanupToggle.IsChecked == true;
-        RefreshControls();
-    }
-
     private void SyncPaceControls()
     {
-        if (CleanupToggle is not null)
-        {
-            CleanupToggle.IsChecked = _viewModel.CleanupEnabled;
-        }
-
         // Flyout content can be wired lazily; a launch must never die over a pace label.
         if (PaceLight is null || PaceDetail is null)
         {
@@ -555,8 +649,10 @@ public sealed partial class MainWindow : Window
                 break;
 
             case nameof(MainViewModel.Progress):
+                // A run shows its steps instead; this bar is for the single jobs, such as
+                // comparing voices, that have only one number to give.
                 WorkProgress.Value = _viewModel.Progress;
-                WorkProgress.IsVisible = _viewModel.Progress is > 0 and < 1;
+                WorkProgress.IsVisible = _viewModel.Progress is > 0 and < 1 && _viewModel.ProgressSteps.Count == 0;
                 break;
 
             case nameof(MainViewModel.Paragraphs):
@@ -585,13 +681,6 @@ public sealed partial class MainWindow : Window
                 break;
 
             case nameof(MainViewModel.SpeakerCount):
-                SpeakerBadge.Text = _viewModel.SpeakerCount switch
-                {
-                    0 => string.Empty,
-                    1 => "1 speaker",
-                    var n => $"{n} speakers",
-                };
-
                 // The stepper opens showing the current answer, so "one more than it found"
                 // is a single click.
                 if (_viewModel.SpeakerCount > 0)
@@ -611,10 +700,6 @@ public sealed partial class MainWindow : Window
         // audio is disk work, and the player receiving the samples is the moment it ends —
         // model stages start immediately after. Preparing to record is model loading too.
         UpdateGlow((_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing);
-        // The offer waits its turn: advertising setup mid-transcription reads as "something
-        // is wrong right now", which is not what an absent optional model means.
-        Reveal(CleanupOffer, _initialised && _viewModel.CleanupEnabled && !_provisioningFoundry
-            && !_viewModel.IsBusy && !_viewModel.IsRecording && _viewModel.CleanupModel is null);
         OpenButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsRecording;
         RecordButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsPreparing;
         RecordLabel.Text = _viewModel.IsRecording ? "Stop" : "Record";
@@ -627,16 +712,143 @@ public sealed partial class MainWindow : Window
         DiscardButton.IsEnabled = _viewModel.HasTranscript;
 
         Reveal(TransportRow, _viewModel.Player.HasAudio);
+        Reveal(EmptyState, !_viewModel.HasTranscript && !_viewModel.IsBusy && !_viewModel.IsRecording
+            && !_viewModel.IsPreparing && string.IsNullOrEmpty(_viewModel.ProvisionalText));
 
         if (_viewModel.ActiveModels != _shownActive)
         {
             RenderModels();
         }
 
+        // Only when a different recording arrives: this runs on every change the view model
+        // reports, progress ticks included, and each call threw the waveform's peaks away.
+        var duration = _viewModel.Player.HasAudio ? _viewModel.Player.DurationSeconds : 0;
+
+        if (duration != _shownDuration)
+        {
+            _shownDuration = duration;
+            _waveform.SetAudio(duration);
+            TimeReadout.Text = $"0:00 / {Clock(duration)}";
+        }
+
+        UpdateTitle();
+        SyncMenu();
+        ShowSteps();
+    }
+
+    /// <summary>Draws the run's steps, or takes them away when no run is under way.</summary>
+    private void ShowSteps()
+    {
+        var steps = _viewModel.ProgressSteps;
+        Reveal(StepsPanel, steps.Count > 0);
+
+        if (steps.Count == 0)
+        {
+            return;
+        }
+
+        (TextBlock Label, TextBlock State, ProgressBar Bar)[] rows =
+        [
+            (StepLabel0, StepState0, StepBar0),
+            (StepLabel1, StepState1, StepBar1),
+            (StepLabel2, StepState2, StepBar2),
+        ];
+
+        for (var i = 0; i < rows.Length; i++)
+        {
+            var (label, state, bar) = rows[i];
+            var step = steps[i];
+
+            label.Text = step.Label;
+            ToolTip.SetTip(label, step.Label);
+            label.Opacity = step.State == MainViewModel.ProgressStepState.Waiting ? 0.5 : 1;
+            bar.Value = step.State == MainViewModel.ProgressStepState.Done ? 1 : step.Fraction;
+            state.Text = step.State switch
+            {
+                MainViewModel.ProgressStepState.Done when step.TookSeconds is { } took => $"✓ {RunTimes.Clock(took)}",
+                MainViewModel.ProgressStepState.Done => "✓",
+                MainViewModel.ProgressStepState.Working => $"{(int)(step.Fraction * 100)}%",
+                _ => string.Empty,
+            };
+        }
+
+        ProgressHintText.Text = _viewModel.ProgressHint;
+        ProgressHintText.IsVisible = _viewModel.ProgressHint is not null;
+    }
+
+    private void SetUpAlert()
+    {
+        AlertCheck.IsVisible = OperatingSystem.IsMacOS();
+        AlertCheck.IsChecked = FinishedAlert.Wanted;
+
+        if (FinishedAlert.Wanted)
+        {
+            // Already asked, since the box is ticked, so this only finds out the answer.
+            FinishedAlert.AskPermission(_ => { });
+        }
+    }
+
+    private void OnAlertToggled(object? sender, RoutedEventArgs e)
+    {
+        var wanted = AlertCheck.IsChecked == true;
+        FinishedAlert.Wanted = wanted;
+
+        if (wanted)
+        {
+            FinishedAlert.AskPermission(why =>
+            {
+                if (why is not null)
+                {
+                    StatusText.Text = $"You'll get a sound and a Dock bounce instead of a notification. {why} "
+                        + "You can change this in System Settings, under Notifications.";
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Says the run has ended, if that was asked for and nobody is looking at the window: the
+    /// words on screen already say so to anyone who is.
+    /// </summary>
+    private void OnRunEnded(MainViewModel.RunOutcome outcome) => Post(() =>
+    {
+        if (AlertCheck.IsChecked == true && !IsActive)
+        {
+            FinishedAlert.Show(
+                outcome.Succeeded ? $"{outcome.SourceName} is ready" : $"{outcome.SourceName} stopped",
+                outcome.Message);
+        }
+    });
+
+    private double _shownDuration = -1;
+
+    /// <summary>
+    /// The document's name in the title bar, with what a reader wants to know before opening
+    /// it: how long it is and how many people are in it. The window title carries the name
+    /// too, for the Window menu and Mission Control.
+    /// </summary>
+    private void UpdateTitle()
+    {
+        var named = _viewModel.HasTranscript || _viewModel.Player.HasAudio || _viewModel.IsRecording;
+        var name = named ? _viewModel.SourceName : "LocalScribe";
+
+        TitleText.Text = name;
+        Title = named ? $"{name} — LocalScribe" : "LocalScribe";
+
+        var facts = new List<string>();
+
         if (_viewModel.Player.HasAudio)
         {
-            _waveform.SetAudio(_viewModel.Player.DurationSeconds);
+            facts.Add(Clock(_viewModel.Player.DurationSeconds));
         }
+
+        if (_viewModel.SpeakerCount > 0)
+        {
+            facts.Add(_viewModel.SpeakerCount == 1 ? "1 speaker" : $"{_viewModel.SpeakerCount} speakers");
+        }
+
+        SubtitleText.Text = string.Join(" · ", facts);
+        SubtitleText.IsVisible = named && facts.Count > 0;
     }
 
     /* ---- the models chip ------------------------------------------------------------- */
@@ -672,6 +884,11 @@ public sealed partial class MainWindow : Window
         if (ForcedAligner.Find(FindModelRoot()) is not { } directory)
         {
             return null;
+        }
+
+        if (GpuAligner.Applies && GpuAligner.IsReady(directory))
+        {
+            return "MMS word aligner, fp16 on the GPU";
         }
 
         var quantised = File.Exists(Path.Combine(directory, AlignmentModelSource.QuantisedModelFileName))
@@ -725,13 +942,12 @@ public sealed partial class MainWindow : Window
                 });
             }
 
-            ModelsChipRow.Children.Add(new TextBlock
+            ModelsChipRow.Children.Add(Tinted(new TextBlock
             {
                 Text = Nickname(part),
                 FontWeight = working ? FontWeight.SemiBold : FontWeight.Normal,
-                Foreground = working ? WorkingBrush : null,
                 Opacity = working || active == MainViewModel.ModelRoles.None ? 1 : 0.6,
-            });
+            }, working));
         }
 
         ToolTip.SetTip(ModelsChip, active == MainViewModel.ModelRoles.None
@@ -756,18 +972,32 @@ public sealed partial class MainWindow : Window
                 Spacing = 1,
                 Children =
                 {
-                    new TextBlock
+                    Tinted(new TextBlock
                     {
                         Text = working ? $"{role} — working now" : role,
                         FontSize = 11.5,
                         Opacity = working ? 1 : 0.6,
-                        Foreground = working ? WorkingBrush : null,
                         FontWeight = working ? FontWeight.SemiBold : FontWeight.Normal,
-                    },
+                    }, working),
                     new TextBlock { Text = detail, FontSize = 12.5, TextWrapping = TextWrapping.Wrap },
                 },
             });
         }
+    }
+
+    /// <summary>
+    /// Lights a working model's name, and otherwise leaves the colour alone. Setting it to
+    /// null is not "default": a local null outranks the inherited text colour, and every idle
+    /// name rendered in no colour at all — the chip showed only its separators.
+    /// </summary>
+    private static TextBlock Tinted(TextBlock text, bool working)
+    {
+        if (working)
+        {
+            text.Foreground = WorkingBrush;
+        }
+
+        return text;
     }
 
     private static MainViewModel.ModelRoles RoleOf(string part)
@@ -789,14 +1019,7 @@ public sealed partial class MainWindow : Window
             return MainViewModel.ModelRoles.Speakers;
         }
 
-        if (p.Contains("cleanup off") || p.Contains("no cleanup"))
-        {
-            return MainViewModel.ModelRoles.None;
-        }
-
-        return p.Contains("qwen") || p.Contains("cleanup")
-            ? MainViewModel.ModelRoles.Cleanup
-            : MainViewModel.ModelRoles.None;
+        return MainViewModel.ModelRoles.None;
     }
 
     /// <summary>A word or two per model, for the chip.</summary>
@@ -824,27 +1047,6 @@ public sealed partial class MainWindow : Window
             return "pyannote";
         }
 
-        if (p.Contains("no cleanup"))
-        {
-            return "no cleanup";
-        }
-
-        if (p.Contains("cleanup off"))
-        {
-            return "cleanup off";
-        }
-
-        if (p.Contains("qwen"))
-        {
-            var size = System.Text.RegularExpressions.Regex.Match(p, @"(\d+(\.\d+)?)b");
-            return size.Success ? $"Qwen {size.Groups[1].Value}B" : "Qwen";
-        }
-
-        if (p.StartsWith("cleanup:", StringComparison.Ordinal))
-        {
-            return "cleanup";
-        }
-
         // Unknown shapes (the ONNX encoder/decoder line, a new model) fall back to their
         // first few words rather than to nothing.
         return string.Join(' ', part.Split(' ').Take(3));
@@ -857,7 +1059,11 @@ public sealed partial class MainWindow : Window
 
         if (p.Contains("aligner"))
         {
-            return ("Word timing", part + " — on the CPU; places each word against the audio");
+            return p.Contains("on the gpu")
+                ? ("Word timing", part.Replace(" on the GPU", string.Empty, StringComparison.Ordinal)
+                    + $" — on the GPU, through Core ML; places each word against the audio. "
+                    + $"Recordings under {GpuAligner.ShortestSeconds:F0} seconds are timed on the CPU")
+                : ("Word timing", part + " — on the CPU; places each word against the audio");
         }
 
         if (p.Contains("whisper") || p.StartsWith("encoder", StringComparison.Ordinal))
@@ -869,17 +1075,6 @@ public sealed partial class MainWindow : Window
         if (p.Contains("speakers"))
         {
             return ("Who spoke", part.Replace(" speakers", string.Empty, StringComparison.Ordinal) + " — on the CPU");
-        }
-
-        if (p.Contains("cleanup off"))
-        {
-            return ("Punctuation cleanup",
-                "Off — Whisper's own punctuation is used. Turn it on under Pace (adds time).");
-        }
-
-        if (p.StartsWith("cleanup:", StringComparison.Ordinal) || p.Contains("cleanup"))
-        {
-            return ("Punctuation cleanup", part.Replace("cleanup: ", string.Empty, StringComparison.Ordinal));
         }
 
         return ("Model", part);
@@ -979,7 +1174,7 @@ public sealed partial class MainWindow : Window
     private bool _streamHasTimedRows;
 
     /// <summary>
-    /// Coalesces streaming rebuilds, latest-wins: cleanup windows and head-timing passes both
+    /// Coalesces streaming rebuilds, latest-wins: streamed windows and head-timing passes both
     /// replace the transcript every few seconds, and rebuilding per update was the hog. One
     /// rebuild per interval reads identically and the final build lands when the run ends.
     /// </summary>
@@ -1045,6 +1240,7 @@ public sealed partial class MainWindow : Window
         _searchRuns.Clear();
         _searchMatches.Clear();
         ParagraphsPanel.Children.Clear();
+        _speakerOrder.Clear();
 
         _streamHasTimedRows = false;
 
@@ -1060,33 +1256,9 @@ public sealed partial class MainWindow : Window
 
             if (timed)
             {
-                var lines = new StackPanel { Spacing = 2 };
-
-                if (paragraph.Speaker is { Length: > 0 } speaker)
-                {
-                    // Renameable the moment it appears: the view model keeps the name against
-                    // the voice, so the windows still to come arrive already carrying it.
-                    lines.Children.Add(new TextBlock
-                    {
-                        Text = speaker,
-                        FontWeight = FontWeight.Bold,
-                        FontSize = 13,
-                        Opacity = 0.8,
-                        ContextMenu = BuildSpeakerMenu(paragraph),
-                    });
-                }
-
-                lines.Children.Add(BuildWordBlock(paragraph, streaming: true));
-
-                var border = new Border
-                {
-                    Child = lines,
-                    Padding = new Avalonia.Thickness(12, 7),
-                    CornerRadius = new Avalonia.CornerRadius(8),
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                    Classes = { "paragraph" },
-                };
-
+                // Renameable the moment it appears: the view model keeps the name against
+                // the voice, so the windows still to come arrive already carrying it.
+                var border = ParagraphRow(paragraph, BuildWordBlock(paragraph, streaming: true));
                 _paragraphBorders.Add(border);
                 ParagraphsPanel.Children.Add(border);
             }
@@ -1095,18 +1267,19 @@ public sealed partial class MainWindow : Window
                 // Indexes stay aligned with the timed rows so the marker and search maths
                 // hold; the empty run list makes this row invisible to both.
                 _paragraphWordRuns.Add([]);
-                var placeholder = new Border
+                var plain = new SelectableTextBlock
                 {
-                    Child = new SelectableTextBlock
-                    {
-                        Text = paragraph.Text,
-                        TextWrapping = TextWrapping.Wrap,
-                        FontSize = 15,
-                        LineHeight = 24,
-                        Opacity = 0.75,
-                    },
-                    Padding = new Avalonia.Thickness(12, 7),
+                    Text = paragraph.Text,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 15,
+                    LineHeight = 25,
+                    Opacity = 0.7,
                 };
+
+                OfferCorrections(plain, paragraph, []);
+
+                var placeholder = ParagraphRow(paragraph, plain);
+                placeholder.Classes.Remove("paragraph");
 
                 _paragraphBorders.Add(placeholder);
                 ParagraphsPanel.Children.Add(placeholder);
@@ -1127,42 +1300,136 @@ public sealed partial class MainWindow : Window
         _paragraphWordRuns.Clear();
         _highlightedRuns.Clear();
         ParagraphsPanel.Children.Clear();
+        _speakerOrder.Clear();
 
         foreach (var paragraph in _shownParagraphs)
         {
-            var lines = new StackPanel { Spacing = 2 };
-
-            if (paragraph.Speaker is { Length: > 0 } speaker)
-            {
-                var label = new TextBlock
-                {
-                    Text = paragraph.Overlapped ? $"{speaker} — crosstalk" : speaker,
-                    FontWeight = FontWeight.Bold,
-                    FontSize = 13,
-                    Opacity = 0.8,
-                };
-
-                // Renaming hangs off the label because the label is the thing that is wrong.
-                // All three verbs are needed: "this part" for a paragraph misfiled, "everywhere"
-                // for a person split across labels, "by voice" for one label meaning two people.
-                label.ContextMenu = BuildSpeakerMenu(paragraph);
-                lines.Children.Add(label);
-            }
-
-            lines.Children.Add(BuildWordBlock(paragraph));
-
-            var border = new Border
-            {
-                Child = lines,
-                Padding = new Avalonia.Thickness(12, 7),
-                CornerRadius = new Avalonia.CornerRadius(8),
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                Classes = { "paragraph" },
-            };
-
+            var border = ParagraphRow(paragraph, BuildWordBlock(paragraph));
             _paragraphBorders.Add(border);
             ParagraphsPanel.Children.Add(border);
         }
+    }
+
+    /// <summary>
+    /// One paragraph: who spoke and when on a quiet line above, the words below. The same shape
+    /// streaming and finished, so a transcript does not change its look the moment it settles.
+    /// </summary>
+    private Border ParagraphRow(TranscriptParagraph paragraph, Control body)
+    {
+        var lines = new StackPanel { Spacing = 3 };
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+
+        if (paragraph.Speaker is { Length: > 0 } speaker)
+        {
+            header.Children.Add(SpeakerLabel(paragraph, speaker));
+        }
+
+        header.Children.Add(Secondary(new TextBlock
+        {
+            Text = Clock(paragraph.StartSeconds),
+            FontSize = 11.5,
+            FontFamily = new FontFamily("Menlo, monospace"),
+            VerticalAlignment = VerticalAlignment.Center,
+        }));
+
+        if (paragraph.Overlapped)
+        {
+            header.Children.Add(Secondary(new TextBlock
+            {
+                Text = "crosstalk",
+                FontSize = 11.5,
+                FontStyle = FontStyle.Italic,
+                VerticalAlignment = VerticalAlignment.Center,
+            }));
+        }
+
+        lines.Children.Add(header);
+        lines.Children.Add(body);
+
+        return new Border
+        {
+            Child = lines,
+            Padding = new Avalonia.Thickness(14, 9),
+            CornerRadius = new Avalonia.CornerRadius(10),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Classes = { "paragraph" },
+        };
+    }
+
+    /// <summary>
+    /// The speaker's name, in that speaker's colour, and the way to rename them.
+    /// <para>
+    /// Renaming hangs off the label because the label is the thing that is wrong. All three
+    /// verbs are needed: "this part" for a paragraph misfiled, "everywhere" for a person split
+    /// across labels, "by voice" for one label meaning two people. A plain click opens them as
+    /// well as a right-click: a name that looks like a name gives no hint that it hides a menu.
+    /// </para>
+    /// </summary>
+    private TextBlock SpeakerLabel(TranscriptParagraph paragraph, string speaker)
+    {
+        var label = new TextBlock
+        {
+            Text = speaker,
+            FontWeight = FontWeight.SemiBold,
+            FontSize = 12.5,
+            Foreground = SpeakerBrush(speaker),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            VerticalAlignment = VerticalAlignment.Center,
+            ContextMenu = BuildSpeakerMenu(paragraph),
+        };
+
+        ToolTip.SetTip(label, "Rename this speaker");
+        label.PointerEntered += (_, _) => label.TextDecorations = TextDecorations.Underline;
+        label.PointerExited += (_, _) => label.TextDecorations = null;
+        label.PointerPressed += (_, e) =>
+        {
+            if (e.GetCurrentPoint(label).Properties.IsLeftButtonPressed)
+            {
+                label.ContextMenu?.Open(label);
+                e.Handled = true;
+            }
+        };
+
+        return label;
+    }
+
+    /// <summary>
+    /// Quiet text, bound to the palette rather than read from it once, so it follows a change
+    /// of appearance and is never left holding a colour that was not found.
+    /// </summary>
+    private static TextBlock Secondary(TextBlock text)
+    {
+        text[!TextBlock.ForegroundProperty] = new Avalonia.Markup.Xaml.MarkupExtensions.DynamicResourceExtension("SecondaryText");
+        return text;
+    }
+
+    /// <summary>Speakers in the order they first speak, for their colours.</summary>
+    private readonly Dictionary<string, int> _speakerOrder = new(StringComparer.Ordinal);
+
+    // Eight hues, one per voice Nemotron can tell apart, chosen to stay distinct from each
+    // other and readable on both backgrounds; dark mode takes the lighter set.
+    private static readonly Color[] LightSpeakerColors =
+    [
+        Color.Parse("#2563EB"), Color.Parse("#C2410C"), Color.Parse("#047857"), Color.Parse("#7C3AED"),
+        Color.Parse("#BE185D"), Color.Parse("#A16207"), Color.Parse("#0E7490"), Color.Parse("#4D7C0F"),
+    ];
+
+    private static readonly Color[] DarkSpeakerColors =
+    [
+        Color.Parse("#7AA7FF"), Color.Parse("#FF9466"), Color.Parse("#4FD1A5"), Color.Parse("#B99AFB"),
+        Color.Parse("#F57CB8"), Color.Parse("#F2BE4A"), Color.Parse("#5FCDE4"), Color.Parse("#A9CF4B"),
+    ];
+
+    private IBrush SpeakerBrush(string speaker)
+    {
+        if (!_speakerOrder.TryGetValue(speaker, out var index))
+        {
+            index = _speakerOrder.Count;
+            _speakerOrder[speaker] = index;
+        }
+
+        var palette = ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark ? DarkSpeakerColors : LightSpeakerColors;
+        return new SolidColorBrush(palette[index % palette.Length]);
     }
 
     private ContextMenu BuildSpeakerMenu(TranscriptParagraph paragraph)
@@ -1207,8 +1474,16 @@ public sealed partial class MainWindow : Window
             ? new ContextMenu { Items = { thisPart, everywhere } }
             : new ContextMenu { Items = { thisPart, everywhere, byVoice } };
 
-        // A streamed update rebuilds every row, and the menu with it — closing it under the
-        // pointer. Rebuilds wait while one is open; see ScheduleStreamingRebuild.
+        HoldRebuildsWhileOpen(menu);
+        return menu;
+    }
+
+    /// <summary>
+    /// A streamed update rebuilds every row, and any menu with it — closing it under the
+    /// pointer. Rebuilds wait while one is open; see ScheduleStreamingRebuild.
+    /// </summary>
+    private void HoldRebuildsWhileOpen(ContextMenu menu)
+    {
         menu.Opened += (_, _) => _speakerMenuOpen = true;
         menu.Closed += (_, _) =>
         {
@@ -1219,8 +1494,6 @@ public sealed partial class MainWindow : Window
                 ScheduleStreamingRebuild();
             }
         };
-
-        return menu;
     }
 
     private bool _speakerMenuOpen;
@@ -1249,7 +1522,7 @@ public sealed partial class MainWindow : Window
         {
             TextWrapping = TextWrapping.Wrap,
             FontSize = 15,
-            LineHeight = 24,
+            LineHeight = 25,
         };
 
         TrackSelection(block);
@@ -1300,6 +1573,7 @@ public sealed partial class MainWindow : Window
             block.Text = paragraph.Text;
             var start = paragraph.StartSeconds;
             OnClick(block, _ => StartPlayback(start));
+            OfferCorrections(block, paragraph, []);
             _paragraphWordRuns.Add([]);
             return block;
         }
@@ -1334,7 +1608,101 @@ public sealed partial class MainWindow : Window
         });
 
         ShowClickTarget(block, mine);
+        OfferCorrections(block, paragraph, mine);
         return block;
+    }
+
+    /// <summary>
+    /// Right-click a word, or a selection, to correct it — here or everywhere, the same two
+    /// reaches a speaker's name has. A left click is already taken: it plays the word. The
+    /// selectable block's own Copy moves into this menu, since one control has one menu.
+    /// </summary>
+    private void OfferCorrections(SelectableTextBlock block, TranscriptParagraph paragraph, List<WordRun> runs)
+    {
+        Point? pressedAt = null;
+        var menu = new ContextMenu();
+
+        block.ContextFlyout = null;
+        block.ContextMenu = menu;
+        HoldRebuildsWhileOpen(menu);
+
+        block.AddHandler(
+            PointerPressedEvent,
+            (_, e) =>
+            {
+                var button = e.GetCurrentPoint(block).Properties;
+
+                // Control-click is a right-click on a Mac, and arrives as a left press.
+                var controlClick = OperatingSystem.IsMacOS()
+                    && button.IsLeftButtonPressed
+                    && e.KeyModifiers.HasFlag(KeyModifiers.Control);
+
+                if (button.IsRightButtonPressed || controlClick)
+                {
+                    pressedAt = e.GetPosition(block);
+                }
+
+                if (controlClick)
+                {
+                    menu.Open(block);
+                }
+            },
+            RoutingStrategies.Bubble,
+            handledEventsToo: true);
+
+        menu.Opening += (_, _) =>
+        {
+            menu.Items.Clear();
+
+            var text = block.Inlines is { Count: > 0 } inlines ? inlines.Text ?? string.Empty : block.Text ?? string.Empty;
+            var low = Math.Min(block.SelectionStart, block.SelectionEnd);
+            var high = Math.Max(block.SelectionStart, block.SelectionEnd);
+            var at = pressedAt is { } point ? block.TextLayout.HitTestPoint(point).TextPosition : low;
+
+            // On the selection means the selection; anywhere else means the word clicked.
+            var found = high > low && at >= low && at <= high
+                ? WordCorrections.WordsAround(text, low, high)
+                : WordCorrections.WordsAround(text, at, at);
+
+            if (found is var (start, words))
+            {
+                var seconds = runs.FirstOrDefault(run => start >= run.CharStart && start < run.CharEnd)?.Word.StartSeconds
+                    ?? paragraph.StartSeconds
+                        + ((paragraph.EndSeconds - paragraph.StartSeconds) * start / Math.Max(1, text.Length));
+
+                var shown = words.Length > 40 ? $"{words[..39]}…" : words;
+                var places = _viewModel.PlacesOf(words);
+
+                var here = new MenuItem { Header = $"Correct “{shown}” here…" };
+                var everywhere = new MenuItem
+                {
+                    Header = places == 1
+                        ? $"Correct “{shown}” everywhere…"
+                        : $"Correct “{shown}” everywhere ({places} places)…",
+                };
+
+                here.Click += async (_, _) => await AskForCorrection(words, everywhere: false, seconds);
+                everywhere.Click += async (_, _) => await AskForCorrection(words, everywhere: true, seconds);
+
+                menu.Items.Add(here);
+                menu.Items.Add(everywhere);
+                menu.Items.Add(new Separator());
+            }
+
+            var copy = new MenuItem { Header = "Copy", IsEnabled = high > low };
+            copy.Click += (_, _) => block.Copy();
+            menu.Items.Add(copy);
+        };
+    }
+
+    private async Task AskForCorrection(string words, bool everywhere, double seconds)
+    {
+        var right = await InputDialog.AskAsync(this, "Correct", $"What should “{words}” say?", words);
+
+        if (!string.IsNullOrWhiteSpace(right))
+        {
+            _viewModel.CorrectWords(words, right.Trim(), everywhere, seconds);
+        }
     }
 
     /// <summary>
@@ -1406,6 +1774,7 @@ public sealed partial class MainWindow : Window
             (_, e) =>
             {
                 pressedAt = e.GetCurrentPoint(block).Properties.IsLeftButtonPressed
+                        && !e.KeyModifiers.HasFlag(KeyModifiers.Control)
                     ? e.GetPosition(block)
                     : null;
             },
@@ -1465,7 +1834,7 @@ public sealed partial class MainWindow : Window
     /// last selected in. Copy Transcript is the way across paragraphs — each is its own block,
     /// and a drag selects within one.
     /// </summary>
-    private void BuildEditMenu()
+    private void BuildMenus()
     {
         var command = OperatingSystem.IsMacOS() ? KeyModifiers.Meta : KeyModifiers.Control;
 
@@ -1498,7 +1867,55 @@ public sealed partial class MainWindow : Window
         };
 
         var edit = new NativeMenuItem("Edit") { Menu = new NativeMenu { Items = { copy, copyAll } } };
-        NativeMenu.SetMenu(this, new NativeMenu { Items = { edit } });
+
+        // The toolbar names most of these with a glyph alone; the menu is where each one is
+        // spelled out, with its shortcut, as a Mac user expects to find it.
+        _openItem = new NativeMenuItem("Open…") { Gesture = new KeyGesture(Key.O, command) };
+        _openItem.Click += (_, _) => OnOpenClicked(this, new RoutedEventArgs());
+        _recordItem = new NativeMenuItem("Record") { Gesture = new KeyGesture(Key.R, command) };
+        _recordItem.Click += (_, _) => OnRecordClicked(this, new RoutedEventArgs());
+        _saveItem = new NativeMenuItem("Save…") { Gesture = new KeyGesture(Key.S, command) };
+        _saveItem.Click += (_, _) => OnSaveClicked(this, new RoutedEventArgs());
+        _exportItem = new NativeMenuItem("Export…") { Gesture = new KeyGesture(Key.E, command) };
+        _exportItem.Click += (_, _) => OnExportClicked(this, new RoutedEventArgs());
+        _discardItem = new NativeMenuItem("Discard Transcript");
+        _discardItem.Click += (_, _) => OnDiscardClicked(this, new RoutedEventArgs());
+
+        var file = new NativeMenuItem("File")
+        {
+            Menu = new NativeMenu
+            {
+                Items =
+                {
+                    _openItem, _recordItem, new NativeMenuItemSeparator(),
+                    _saveItem, _exportItem, new NativeMenuItemSeparator(), _discardItem,
+                },
+            },
+        };
+
+        NativeMenu.SetMenu(this, new NativeMenu { Items = { file, edit } });
+    }
+
+    private NativeMenuItem? _openItem;
+    private NativeMenuItem? _recordItem;
+    private NativeMenuItem? _saveItem;
+    private NativeMenuItem? _exportItem;
+    private NativeMenuItem? _discardItem;
+
+    /// <summary>The File menu follows the toolbar: a shortcut must never do what its button cannot.</summary>
+    private void SyncMenu()
+    {
+        if (_openItem is null)
+        {
+            return;
+        }
+
+        _openItem.IsEnabled = OpenButton.IsEnabled;
+        _recordItem!.IsEnabled = RecordButton.IsEnabled;
+        _recordItem.Header = _viewModel.IsRecording ? "Stop Recording" : "Record";
+        _saveItem!.IsEnabled = SaveButton.IsEnabled;
+        _exportItem!.IsEnabled = ExportButton.IsEnabled;
+        _discardItem!.IsEnabled = DiscardButton.IsEnabled;
     }
 
     /// <summary>
@@ -1615,19 +2032,9 @@ public sealed partial class MainWindow : Window
             _highlightedRuns.Add(lit.Run);
         }
 
-        if (currentParagraph >= 0)
+        if (currentParagraph >= 0 && _followPlayback)
         {
-            if (_followPlayback && !IsVisibleInTranscript(_paragraphBorders[currentParagraph]))
-            {
-                // The highlight left the viewport without us moving it: the reader scrolled
-                // away, and the view is theirs until they ask to hear something again.
-                _followPlayback = false;
-            }
-
-            if (_followPlayback)
-            {
-                _paragraphBorders[currentParagraph].BringIntoView();
-            }
+            KeepInView(currentParagraph, lit);
         }
 
         if (_viewModel.Player.IsPlaying || seconds >= 0)
@@ -1804,6 +2211,8 @@ public sealed partial class MainWindow : Window
             run.Run.Background = CurrentSearchBrush;
         }
 
+        // Going to a match is the reader taking the view, as scrolling is.
+        _followPlayback = false;
         _paragraphBorders[paragraph].BringIntoView();
         StatusText.Text = $"Match {_searchIndex + 1} of {_searchMatches.Count}.";
     }

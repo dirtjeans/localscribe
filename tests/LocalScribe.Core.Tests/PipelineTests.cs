@@ -1,6 +1,5 @@
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Pipeline;
-using LocalScribe.Core.Refinement;
 using LocalScribe.Core.Transcription;
 using Xunit;
 
@@ -71,33 +70,6 @@ internal sealed class FakeTranscriber : ITranscriber
 
     public void Dispose()
     {
-    }
-}
-
-/// <summary>A language model that echoes a scripted transformation.</summary>
-internal sealed class FakeLanguageModel : ILanguageModel
-{
-    private readonly Func<string, string, string> _respond;
-
-    public FakeLanguageModel(Func<string, string, string>? respond = null)
-    {
-        _respond = respond ?? ((_, user) => user.ToUpperInvariant());
-    }
-
-    public List<string> SystemPrompts { get; } = [];
-
-    public string Description => "fake model";
-
-    public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
-
-    public Task<string> CompleteAsync(
-        string systemPrompt,
-        string userPrompt,
-        int maxTokens = 1024,
-        CancellationToken cancellationToken = default)
-    {
-        SystemPrompts.Add(systemPrompt);
-        return Task.FromResult(_respond(systemPrompt, userPrompt));
     }
 }
 
@@ -210,11 +182,11 @@ public sealed class TranscriptionPipelineTests
         var transcriber = new FakeTranscriber((chunk, index) =>
             [new TranscriptSegment($"window {index}", chunk.StartSeconds, chunk.StartSeconds + 1)]);
 
-        var result = await new TranscriptionPipeline(transcriber).RunAsync(Audio(90));
+        var result = await new TranscriptionPipeline(transcriber).TranscribeAsync(Audio(90));
 
         Assert.Equal(4, transcriber.CallCount);
-        Assert.Contains("window 0", result.Transcript.FullText, StringComparison.Ordinal);
-        Assert.Contains("window 3", result.Transcript.FullText, StringComparison.Ordinal);
+        Assert.Contains("window 0", result.FullText, StringComparison.Ordinal);
+        Assert.Contains("window 3", result.FullText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -224,7 +196,7 @@ public sealed class TranscriptionPipelineTests
         var progress = new Progress<TranscriptionProgress>(reports.Add);
         var transcriber = new FakeTranscriber((_, i) => [new TranscriptSegment($"w{i}", 0, 1)]);
 
-        await new TranscriptionPipeline(transcriber).RunAsync(Audio(90), progress: progress);
+        await new TranscriptionPipeline(transcriber).TranscribeAsync(Audio(90), progress: progress);
 
         // Progress<T> marshals through the synchronisation context, so allow it to drain.
         await Task.Delay(100);
@@ -240,7 +212,7 @@ public sealed class TranscriptionPipelineTests
         var transcriber = new FakeTranscriber((_, _) => [new TranscriptSegment("invented", 0, 1)]);
         var chunker = new AudioChunker(overlapSeconds: 0);
 
-        await new TranscriptionPipeline(transcriber, chunker: chunker).RunAsync(Audio(30.5));
+        await new TranscriptionPipeline(transcriber, chunker: chunker).TranscribeAsync(Audio(30.5));
 
         Assert.Equal(1, transcriber.CallCount);
     }
@@ -260,43 +232,7 @@ public sealed class TranscriptionPipelineTests
         });
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            new TranscriptionPipeline(transcriber).RunAsync(Audio(300), cancellationToken: cts.Token));
-    }
-
-    [Fact]
-    public async Task WithoutARefinerTheRawTranscriptIsStillReturned()
-    {
-        var transcriber = new FakeTranscriber((_, _) => [new TranscriptSegment("hello there", 0, 1)]);
-
-        var result = await new TranscriptionPipeline(transcriber).RunAsync(Audio(10));
-
-        Assert.Null(result.Refinement);
-        Assert.Equal("hello there", result.BestText);
-    }
-
-    [Fact]
-    public async Task WithARefinerTheCleanedTextIsPreferred()
-    {
-        var transcriber = new FakeTranscriber((_, _) => [new TranscriptSegment("hello there", 0, 1)]);
-        var refiner = new TranscriptRefiner(new FakeLanguageModel());
-
-        var result = await new TranscriptionPipeline(transcriber, refiner).RunAsync(Audio(10));
-
-        Assert.Equal("HELLO THERE", result.BestText);
-    }
-
-    [Fact]
-    public async Task SilentRecordingSkipsCleanupEntirely()
-    {
-        // Nothing was said, so there is nothing to clean up and no reason to wake the model.
-        var model = new FakeLanguageModel();
-        var transcriber = new FakeTranscriber((_, _) => []);
-
-        var result = await new TranscriptionPipeline(transcriber, new TranscriptRefiner(model))
-            .RunAsync(Audio(10));
-
-        Assert.Empty(model.SystemPrompts);
-        Assert.Equal(string.Empty, result.BestText);
+            new TranscriptionPipeline(transcriber).TranscribeAsync(Audio(300), cancellationToken: cts.Token));
     }
 
     [Fact]
@@ -305,138 +241,9 @@ public sealed class TranscriptionPipelineTests
         var transcriber = new FakeTranscriber((_, _) => []);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            new TranscriptionPipeline(transcriber).RunAsync(new PcmAudio(new float[16000], 8000)));
+            new TranscriptionPipeline(transcriber).TranscribeAsync(new PcmAudio(new float[16000], 8000)));
 
         Assert.Equal(0, transcriber.CallCount);
-    }
-}
-
-public sealed class TranscriptRefinerTests
-{
-    [Fact]
-    public void GlossaryTermsReachThePrompt()
-    {
-        var prompt = TranscriptRefiner.BuildCleanupSystemPrompt(
-            ["Kubernetes", "Grafana", "Nadia Okonkwo"],
-            RefinementOutputs.Default);
-
-        Assert.Contains("Kubernetes", prompt, StringComparison.Ordinal);
-        Assert.Contains("Nadia Okonkwo", prompt, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void ThePromptForbidsRewording()
-    {
-        // A transcript that reads well but is not what the speaker said is worse than useless.
-        var prompt = TranscriptRefiner.BuildCleanupSystemPrompt(null, RefinementOutputs.Default);
-
-        Assert.Contains("Do not reword", prompt, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void GlossaryInstructionsAreOmittedWhenThereIsNoGlossary()
-    {
-        var prompt = TranscriptRefiner.BuildCleanupSystemPrompt([], RefinementOutputs.Default);
-
-        Assert.DoesNotContain("Correct misheard names", prompt, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void LongTranscriptsAreSplitIntoModelSizedWindows()
-    {
-        // Twenty segments of ten words: two hundred words at fifty per window.
-        var segments = Enumerable.Range(0, 20)
-            .Select(i => new TranscriptSegment(
-                string.Join(' ', Enumerable.Range(0, 10).Select(w => $"w{i}_{w}")),
-                i * 5.0,
-                (i + 1) * 5.0))
-            .ToList();
-
-        var windows = TranscriptRefiner.SplitSegmentsIntoWindows(segments, 50);
-
-        Assert.Equal(4, windows.Count);
-        Assert.All(windows, window => Assert.Equal(5, window.Count));
-    }
-
-    /// <summary>
-    /// Segments are never cut in half. A segment is the unit that carries a timing, and half of
-    /// one has nowhere to put its words back afterwards.
-    /// </summary>
-    [Fact]
-    public void SplittingLosesNoSegments()
-    {
-        var segments = Enumerable.Range(0, 37)
-            .Select(i => new TranscriptSegment($"segment {i} text here", i, i + 1))
-            .ToList();
-
-        var windows = TranscriptRefiner.SplitSegmentsIntoWindows(segments, 40);
-
-        Assert.Equal(segments, windows.SelectMany(window => window).ToList());
-    }
-
-    /// <summary>A segment longer than a whole window still travels intact, on its own.</summary>
-    [Fact]
-    public void AnOversizedSegmentGetsItsOwnWindow()
-    {
-        var segments = new List<TranscriptSegment>
-        {
-            new("short one", 0, 1),
-            new(string.Join(' ', Enumerable.Range(0, 200).Select(w => $"w{w}")), 1, 20),
-            new("short two", 20, 21),
-        };
-
-        var windows = TranscriptRefiner.SplitSegmentsIntoWindows(segments, 50);
-
-        Assert.Equal(segments, windows.SelectMany(window => window).ToList());
-        Assert.Contains(windows, window => window.Count == 1 && window[0] == segments[1]);
-    }
-
-    /// <summary>
-    /// The cleanup model is asked to repair a transcript and nothing else. It used to also write
-    /// summaries and pull out action items on every run — a different product, costing about
-    /// twice what the transcript did, and the only part large enough to overflow the model's
-    /// context and lose the run with it.
-    /// </summary>
-    [Fact]
-    public async Task TheModelIsOnlyEverAskedToRepairTheTranscript()
-    {
-        var model = new FakeLanguageModel();
-        var transcript = new Transcript([new TranscriptSegment("we agreed to ship on friday", 0, 3)]);
-
-        await new TranscriptRefiner(model).RefineAsync(transcript, null, RefinementOutputs.Everything);
-
-        Assert.NotEmpty(model.SystemPrompts);
-        Assert.All(model.SystemPrompts, prompt =>
-        {
-            Assert.DoesNotContain("summar", prompt, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("action item", prompt, StringComparison.OrdinalIgnoreCase);
-        });
-    }
-
-    /// <summary>There is nothing left for "everything" to mean beyond repairing the words.</summary>
-    [Fact]
-    public async Task EverythingIsTheSameAsTheDefault()
-    {
-        var transcript = new Transcript([new TranscriptSegment("we agreed to ship on friday", 0, 3)]);
-
-        var everything = new FakeLanguageModel();
-        await new TranscriptRefiner(everything).RefineAsync(transcript, null, RefinementOutputs.Everything);
-
-        var byDefault = new FakeLanguageModel();
-        await new TranscriptRefiner(byDefault).RefineAsync(transcript, null, RefinementOutputs.Default);
-
-        Assert.Equal(everything.SystemPrompts.Count, byDefault.SystemPrompts.Count);
-    }
-
-    [Fact]
-    public async Task AnEmptyTranscriptNeverReachesTheModel()
-    {
-        var model = new FakeLanguageModel();
-
-        var result = await new TranscriptRefiner(model).RefineAsync(Transcript.Empty);
-
-        Assert.Empty(model.SystemPrompts);
-        Assert.Equal(string.Empty, result.CleanedText);
     }
 }
 

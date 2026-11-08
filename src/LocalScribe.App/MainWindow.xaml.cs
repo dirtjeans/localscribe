@@ -204,29 +204,6 @@ public sealed partial class MainWindow : Window
     /// Marshals view-model changes onto the UI thread. Live transcription raises these from an
     /// audio capture thread, so this hop is required rather than defensive.
     /// </summary>
-    /// <summary>
-    /// Shows what cleanup left undone, and offers to run it again.
-    /// <para>
-    /// The button is disabled rather than hidden while a run is going, so it does not appear and
-    /// disappear under the pointer of somebody reaching for it.
-    /// </para>
-    /// </summary>
-    private void ShowCleanupNotice()
-    {
-        if (_viewModel.CleanupNotice is { Length: > 0 } notice)
-        {
-            CleanupNoticeText.Text = notice;
-            CleanupNotice.Visibility = Visibility.Visible;
-            RetryCleanupButton.IsEnabled = _viewModel.CanRetryCleanup;
-            return;
-        }
-
-        CleanupNotice.Visibility = Visibility.Collapsed;
-    }
-
-    private async void OnRetryCleanup(object sender, RoutedEventArgs e) =>
-        await _viewModel.RetryCleanupAsync();
-
     private async void OnToggleTranslate(object sender, RoutedEventArgs e) =>
         await _viewModel.TranslateAgainAsync(TranslateButton.IsChecked == true);
 
@@ -245,12 +222,13 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.CanOfferTranslation):
                     ShowTranslateOffer();
                     break;
-                case nameof(MainViewModel.CleanupNotice):
-                case nameof(MainViewModel.CanRetryCleanup):
-                    ShowCleanupNotice();
-                    break;
                 case nameof(MainViewModel.Status):
-                    StatusText.Text = _viewModel.Status;
+                case nameof(MainViewModel.ProgressHint):
+                    // What the reader can already do leads the line: a progress report on its
+                    // own reads as an instruction to wait.
+                    StatusText.Text = _viewModel.ProgressHint is { } hint
+                        ? $"{hint} {_viewModel.Status}"
+                        : _viewModel.Status;
                     break;
                 case nameof(MainViewModel.HardwareSummary):
                     _models = ModelRoster.From(_viewModel.HardwareSummary, ModelRoot);
@@ -2495,16 +2473,8 @@ public sealed partial class MainWindow : Window
     {
         PaceSlider.Value = (int)_viewModel.Pace;
         PaceDescriptionText.Text = _viewModel.PaceDescription;
-        CleanupToggle.IsChecked = _viewModel.CleanupEnabled;
         _paceShown = true;
     }
-
-    /// <summary>
-    /// Turns cleanup on or off for the next run. Shared with the Mac, which reads the same
-    /// preference; on there by default only on Windows, where the app was tuned with it.
-    /// </summary>
-    private void OnCleanupToggled(object sender, RoutedEventArgs e) =>
-        _viewModel.CleanupEnabled = CleanupToggle.IsChecked == true;
 
     /// <summary>
     /// False until the slider has been shown the saved pace. A slider reports its first value
@@ -2524,10 +2494,6 @@ public sealed partial class MainWindow : Window
         PaceDescriptionText.Text = _viewModel.PaceDescription;
     }
 
-    /// <summary>
-    /// Collects the terms the cleanup model should spell correctly: names, products, jargon.
-    /// This is the cheapest accuracy win available, and no larger Whisper model substitutes for it.
-    /// </summary>
     /// <summary>
     /// Asks how many people are talking, then works the speakers out again.
     /// <para>
@@ -2581,120 +2547,5 @@ public sealed partial class MainWindow : Window
         var speakers = choices.SelectedIndex == 0 ? (int?)null : choices.SelectedIndex;
 
         await _viewModel.FindSpeakersAsync(speakers);
-    }
-
-    /// <summary>
-    /// Collects the terms the cleanup model should spell correctly: names, products, jargon.
-    /// <para>
-    /// This is the cheapest accuracy win available and no larger Whisper model substitutes for
-    /// it — the model has never heard of your colleagues or your product, and will keep guessing
-    /// at them however big it gets. It is also the least obvious feature in the app, so the
-    /// dialog explains itself rather than presenting an empty box.
-    /// </para>
-    /// </summary>
-    private async void OnEditGlossary(object sender, RoutedEventArgs e)
-    {
-        var textBox = new TextBox
-        {
-            AcceptsReturn = true,
-            Height = 200,
-            Text = string.Join(Environment.NewLine, _viewModel.Glossary),
-            PlaceholderText = "One per line, e.g.\r\nSiobhan\r\nKubernetes\r\nLocalScribe",
-        };
-
-        var explanation = new TextBlock
-        {
-            Text = "Whisper has never heard of your colleagues, your products or your acronyms, "
-                + "and guesses at them — usually the same way every time. Terms listed here are "
-                + "given to the cleanup model, which corrects them to your spelling wherever the "
-                + "transcript clearly meant them.",
-            TextWrapping = TextWrapping.Wrap,
-            Opacity = 0.85,
-        };
-
-        var content = new StackPanel { Spacing = 12, Children = { explanation, textBox } };
-
-        // The part worth saying loudest: without a cleanup model this list does nothing at all,
-        // and neither do the summary or the punctuation repair.
-        if (_viewModel.CleanupModel is { } model)
-        {
-            content.Children.Add(new TextBlock
-            {
-                Text = $"Cleanup is running on {model}.",
-                TextWrapping = TextWrapping.Wrap,
-                Opacity = 0.7,
-                Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-            });
-        }
-        var dialog = new ContentDialog
-        {
-            XamlRoot = Content.XamlRoot,
-            Title = "Glossary",
-            Content = content,
-            PrimaryButtonText = "Save",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-        };
-
-        if (!_viewModel.CleanupEnabled)
-        {
-            // Off by choice, not missing: offering to download a model would answer the wrong
-            // question. The glossary only works through cleanup, so the way back is one click.
-            var enable = new Button { Content = "Turn cleanup on" };
-
-            enable.Click += (_, _) =>
-            {
-                _viewModel.CleanupEnabled = true;
-                dialog.Hide();
-                StatusText.Text = "Cleanup is on from the next transcription.";
-            };
-
-            content.Children.Add(new InfoBar
-            {
-                IsOpen = true,
-                IsClosable = false,
-                Severity = InfoBarSeverity.Informational,
-                Title = "Cleanup is off",
-                Message = "The glossary is applied by the cleanup model, so it has no effect "
-                    + "while cleanup is off. Cleanup also repairs punctuation, and adds time to "
-                    + "each transcription. It can be switched on here or under processing speed.",
-                ActionButton = enable,
-            });
-        }
-        else if (_viewModel.CleanupModel is null)
-        {
-            // The one-click way out, not just the diagnosis. Everything the button does is
-            // named in the message, runs on this machine, and reports into the status line —
-            // the model is a download, not an account or a service.
-            var fetch = new Button { Content = "Download and start it" };
-
-            fetch.Click += async (_, _) =>
-            {
-                dialog.Hide();
-                await _viewModel.ProvisionCleanupAsync();
-            };
-
-            content.Children.Add(new InfoBar
-            {
-                IsOpen = true,
-                IsClosable = false,
-                Severity = InfoBarSeverity.Warning,
-                Title = "No cleanup model is running",
-                Message = "The glossary has no effect until one is. Transcription itself is "
-                    + "unaffected — only the glossary corrections and punctuation repair "
-                    + "need it. Downloading fetches Foundry Local's small instruct model "
-                    + "(about a gigabyte, one time) and runs it here; progress lands in the "
-                    + "status line. If you use GenieX instead, just start it and reopen the app.",
-                ActionButton = fetch,
-            });
-        }
-
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-        {
-            _viewModel.Glossary.Clear();
-            _viewModel.Glossary.AddRange(
-                textBox.Text.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries
-                    | StringSplitOptions.TrimEntries));
-        }
     }
 }

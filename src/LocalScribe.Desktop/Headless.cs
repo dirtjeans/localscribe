@@ -28,7 +28,12 @@ internal static class Headless
         var last = string.Empty;
         var lastActive = MainViewModel.ModelRoles.None;
         var lastClickable = string.Empty;
+        var lastSteps = string.Empty;
+        string? lastHint = null;
         var renamed = false;
+        var corrected = false;
+        viewModel.RunEnded += outcome =>
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss} [ended] {outcome.SourceName}, succeeded: {outcome.Succeeded}: {outcome.Message}");
         viewModel.PropertyChanged += (_, e) =>
         {
             // Status, the model roster, and which models are working: progress fires many
@@ -37,6 +42,22 @@ internal static class Headless
             {
                 last = viewModel.Status;
                 Console.WriteLine($"{DateTime.Now:HH:mm:ss} {last}");
+            }
+            else if (e.PropertyName == nameof(MainViewModel.ProgressSteps))
+            {
+                // Whole-state changes only: the fractions tick far too often to read here.
+                var steps = string.Join(" | ", viewModel.ProgressSteps.Select(step => $"{step.Label}: {step.State}"));
+
+                if (steps != lastSteps)
+                {
+                    lastSteps = steps;
+                    Console.WriteLine($"{DateTime.Now:HH:mm:ss} [steps] {steps}");
+                }
+            }
+            else if (e.PropertyName == nameof(MainViewModel.ProgressHint) && viewModel.ProgressHint != lastHint)
+            {
+                lastHint = viewModel.ProgressHint;
+                Console.WriteLine($"{DateTime.Now:HH:mm:ss} [hint] {lastHint}");
             }
             else if (e.PropertyName == nameof(MainViewModel.ActiveModels) && viewModel.ActiveModels != lastActive)
             {
@@ -54,6 +75,22 @@ internal static class Headless
                 {
                     lastClickable = clickable;
                     Console.WriteLine($"{DateTime.Now:HH:mm:ss} [clickable] {clickable} segments");
+                }
+
+                // LOCALSCRIBE_HEADLESS_CORRECT=<wrong>=<right> corrects those words everywhere
+                // the first time they appear, the way a reader would, so the claim that a
+                // correction survives the rest of the run is checked by the run itself. Off the
+                // event's thread, for the same reason as the rename below.
+                if (!corrected
+                    && Environment.GetEnvironmentVariable("LOCALSCRIBE_HEADLESS_CORRECT")?.Split('=') is [var wrong, var right]
+                    && viewModel.PlacesOf(wrong) > 0)
+                {
+                    corrected = true;
+                    _ = Task.Run(() =>
+                    {
+                        viewModel.CorrectWords(wrong, right, everywhere: true, seconds: 0);
+                        Console.WriteLine($"{DateTime.Now:HH:mm:ss} [corrected] {wrong} -> {right}: {viewModel.Status}");
+                    });
                 }
             }
             else if (e.PropertyName == nameof(MainViewModel.SpeakerCount))
@@ -98,6 +135,17 @@ internal static class Headless
         finally
         {
             SleepAssertion.While(false);
+        }
+
+        if (Environment.GetEnvironmentVariable("LOCALSCRIBE_HEADLESS_CORRECT")?.Split('=') is [var from, var to])
+        {
+            var everything = viewModel.Paragraphs.SelectMany(p => p.Segments).ToList();
+            var words = viewModel.WordsIn(everything);
+
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss} [correction] {from}: {viewModel.PlacesOf(from)} left, "
+                + $"{to}: {viewModel.PlacesOf(to)} now; timed: {everything.Count(viewModel.IsTimed)} of {everything.Count} segments; "
+                + string.Join(", ", words.Where(word => word.Text.Contains(to.Split(' ')[0], StringComparison.Ordinal))
+                    .Take(5).Select(word => $"{word.Text} at {word.StartSeconds:F2}")));
         }
 
         Console.WriteLine($"{DateTime.Now:HH:mm:ss} [done] {viewModel.Paragraphs.Count} paragraph(s), "

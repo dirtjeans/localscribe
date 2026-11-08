@@ -2,7 +2,6 @@ using System.Diagnostics;
 using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Pipeline;
-using LocalScribe.Core.Refinement;
 using LocalScribe.Core.Transcription;
 using LocalScribe.Onnx;
 
@@ -147,7 +146,7 @@ internal static class TranscribeCommand
         var pipeline = new TranscriptionPipeline(transcriber);
 
         var decoding = Stopwatch.StartNew();
-        TranscriptionResult result;
+        Transcript transcript;
 
         var progress = new Progress<TranscriptionProgress>(update =>
             Console.WriteLine($"  window {update.ChunksCompleted} of about {update.ChunksTotal}: "
@@ -155,9 +154,7 @@ internal static class TranscribeCommand
 
         try
         {
-            result = await pipeline
-                .RunAsync(audio, glossary: null, RefinementOutputs.Punctuation, progress)
-                .ConfigureAwait(false);
+            transcript = await pipeline.TranscribeAsync(audio, progress).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -170,7 +167,6 @@ internal static class TranscribeCommand
 
         decoding.Stop();
 
-        var transcript = result.Transcript;
 
 
         Heading("Transcript");

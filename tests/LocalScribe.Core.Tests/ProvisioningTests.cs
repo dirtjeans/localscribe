@@ -1,6 +1,5 @@
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Provisioning;
-using LocalScribe.Core.Refinement;
 using Xunit;
 
 namespace LocalScribe.Core.Tests;
@@ -312,44 +311,9 @@ public sealed class HuggingFaceCatalogTests
     }
 }
 
-public sealed class FoundryEndpointTests
-{
-    [Theory]
-    [InlineData("Model management service is running on http://localhost:52144/openai/status", 52144)]
-    [InlineData("Service is running at http://127.0.0.1:5273", 5273)]
-    [InlineData("endpoint: http://localhost:61234/v1", 61234)]
-    public void ThePortIsReadFromTheStatusTextRatherThanAssumed(string output, int expectedPort)
-    {
-        // Foundry Local binds a dynamic port, so a hard-coded guess reports a running service
-        // as absent.
-        var endpoint = FoundryLocalManager.ParseEndpoint(output);
-
-        Assert.NotNull(endpoint);
-        Assert.Equal(expectedPort, endpoint.Port);
-    }
-
-    [Theory]
-    [InlineData("")]
-    [InlineData("Service is not running.")]
-    public void NoEndpointIsFoundWhenTheServiceIsDown(string output)
-    {
-        Assert.Null(FoundryLocalManager.ParseEndpoint(output));
-    }
-
-    [Fact]
-    public void ADiscoveredApiPathIsStrippedBackToTheOrigin()
-    {
-        // Left in place, "/v1" would produce requests to /v1/v1/chat/completions, because a
-        // relative request URI resolves against the base address rather than appending to it.
-        var normalised = FoundryLocalClient.NormaliseEndpoint(new Uri("http://localhost:61234/v1"));
-
-        Assert.Equal("http://localhost:61234/", normalised!.ToString());
-    }
-}
-
 public sealed class ProvisioningPlanTests
 {
-    private static DeviceCapabilities Snapdragon(bool driver = false, bool foundryRunning = false) => new()
+    private static DeviceCapabilities Snapdragon(bool driver = false) => new()
     {
         SocName = "Snapdragon X Elite X1E-78-100",
         Family = SocFamily.SnapdragonXElite,
@@ -357,19 +321,16 @@ public sealed class ProvisioningPlanTests
         TotalCoreCount = 12,
         TotalMemoryBytes = 32L * 1024 * 1024 * 1024,
         HexagonDriverPresent = driver,
-        LocalLanguageModelPresent = foundryRunning,
     };
 
     private static ProvisioningPlan Build(
         DeviceCapabilities capabilities,
         string modelDirectory,
-        bool foundryInstalled = false,
         bool arm64 = true) =>
         Provisioner.BuildPlan(
             capabilities,
             AcceleratorPlanner.Plan(capabilities),
             modelDirectory,
-            foundryInstalled,
             arm64);
 
     [Fact]
@@ -422,28 +383,6 @@ public sealed class ProvisioningPlanTests
         stocked.Touch("decoder.onnx");
         stocked.Touch("vocab.json");
         Assert.True(Build(Snapdragon(driver: false), stocked.Path).CanTranscribe);
-    }
-
-    [Fact]
-    public void TheCleanupModelCannotBeInstalledBeforeItsEngine()
-    {
-        using var directory = new TemporaryDirectory();
-
-        var plan = Build(Snapdragon(), directory.Path, foundryInstalled: false);
-        var model = plan.Components.Single(c => c.Id == "foundry-model");
-
-        Assert.False(model.CanInstallAutomatically);
-        Assert.Contains("Install Foundry Local first", model.ManualInstructions!, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void OnceTheEngineIsPresentItsModelBecomesInstallable()
-    {
-        using var directory = new TemporaryDirectory();
-
-        var plan = Build(Snapdragon(), directory.Path, foundryInstalled: true);
-
-        Assert.Contains(plan.Installable, c => c.Id == "foundry-model");
     }
 
     [Fact]

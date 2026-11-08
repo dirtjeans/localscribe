@@ -161,7 +161,13 @@ internal static class AlignerNpuCommand
     /// same yardstick as <c>--aligner-trial</c>. Letters per frame can disagree and the words
     /// still land in the same place, because the aligner knows which words to look for.
     /// </summary>
-    public static int Grade(string archivePath, string modelRoot, Core.Hardware.ExecutionPlan plan, double windowSeconds)
+    /// <param name="coreMlUnits">
+    /// Null for the NPU. Otherwise the Mac's Core ML provider instead, on these compute units
+    /// (CPUAndGPU, CPUAndNeuralEngine or ALL), with the CPU's 4-bit scan timed beside it, since
+    /// that is what the Mac runs today. The question there is whether the full-size model on the
+    /// GPU can take the scan off the CPU, where it competes with everything else.
+    /// </param>
+    public static int Grade(string archivePath, string modelRoot, Core.Hardware.ExecutionPlan plan, double windowSeconds, string? coreMlUnits = null)
     {
         var contents = Core.Archive.TranscriptArchive.Load(archivePath);
         var audio = contents.Audio;
@@ -169,7 +175,18 @@ internal static class AlignerNpuCommand
         var directory = Path.Combine(modelRoot, "alignment");
 
         Console.WriteLine();
-        Console.WriteLine($"Aligner on the NPU, graded — {Path.GetFileName(archivePath)}, {audio.DurationSeconds:F0} s");
+        var device = coreMlUnits is null ? "NPU" : $"Core ML {coreMlUnits}";
+
+        // LOCALSCRIBE_OPEN_ONLY: how long Core ML takes to open the model, and nothing else,
+        // because that turned out to be the question.
+        if (coreMlUnits is not null && Environment.GetEnvironmentVariable("LOCALSCRIBE_OPEN_ONLY") is { Length: > 0 })
+        {
+            var timer = Stopwatch.StartNew();
+            using var session = OpenCoreMl(Environment.GetEnvironmentVariable("LOCALSCRIBE_NPU_MODEL") ?? Path.Combine(directory, "model_fp16.onnx"), (int)((windowSeconds + (2 * MarginSeconds)) * SampleRate), coreMlUnits);
+            Console.WriteLine($"  {device} opened in {timer.Elapsed.TotalSeconds:F1} s");
+            return 0;
+        }
+        Console.WriteLine($"Aligner on the {device}, graded — {Path.GetFileName(archivePath)}, {audio.DurationSeconds:F0} s");
         Console.WriteLine();
 
         var reference = AlignerTrialCommand.RunMms(directory, audio, segments, plan, out var referenceSeconds, "model_fp16.onnx");
@@ -181,6 +198,12 @@ internal static class AlignerNpuCommand
 
         Console.WriteLine($"  {"MMS fp16, CPU (reference)",-28} {referenceSeconds,6:F1} s   {reference.Count} words");
 
+        if (coreMlUnits is not null && File.Exists(Path.Combine(directory, "model_q4.onnx")))
+        {
+            var current = AlignerTrialCommand.RunMms(directory, audio, segments, plan, out var currentSeconds, "model_q4.onnx");
+            AlignerTrialCommand.Report("MMS q4, CPU (the app today)", currentSeconds, current, reference);
+        }
+
         var length = (int)((windowSeconds + (2 * MarginSeconds)) * SampleRate);
         var npuModel = Environment.GetEnvironmentVariable("LOCALSCRIBE_NPU_MODEL") is { Length: > 0 } rewritten
             ? rewritten
@@ -190,9 +213,14 @@ internal static class AlignerNpuCommand
             $"{Path.GetFileNameWithoutExtension(npuModel)}.qnn-{length}.onnx");
 
         var watch = Stopwatch.StartNew();
-        using var npu = OpenNpu(File.Exists(cache) ? cache : npuModel, length, File.Exists(cache) ? null : cache);
+        using var npu = coreMlUnits is null
+            ? OpenNpu(File.Exists(cache) ? cache : npuModel, length, File.Exists(cache) ? null : cache)
+            : OpenCoreMl(npuModel, length, coreMlUnits);
         var opened = watch.Elapsed.TotalSeconds;
         watch.Restart();
+
+        // CPU time as well as wall time: the point of an accelerator here is the cores it frees.
+        var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
 
         var input = npu.InputMetadata.Keys.First();
         var frames = audio.Samples.Length / SamplesPerFrame;
@@ -219,6 +247,7 @@ internal static class AlignerNpuCommand
         }
 
         var scanned = watch.Elapsed.TotalSeconds;
+        var cpuSeconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalSeconds;
 
         using var aligner = LocalScribe.Onnx.ForcedAligner.Load(directory, plan, "model_fp16.onnx");
         var placed = aligner.AlignAll(grid!.Scores, segments);
@@ -231,9 +260,48 @@ internal static class AlignerNpuCommand
             .Where(w => w.Word.Length > 0)
             .ToList();
 
-        Console.WriteLine($"  NPU opened in {opened:F1} s; scanned in {scanned:F1} s");
-        AlignerTrialCommand.Report($"MMS fp16, NPU ({windowSeconds:F0} s windows)", scanned, words, reference);
+        Console.WriteLine($"  {device} opened in {opened:F1} s; scanned in {scanned:F1} s, using {cpuSeconds:F1} s of CPU time");
+        AlignerTrialCommand.Report($"MMS fp16, {device} ({windowSeconds:F0} s windows)", scanned, words, reference);
         return 0;
+    }
+
+    /// <summary>
+    /// The fp16 aligner through Core ML, at one fixed window length: Core ML plans for exact
+    /// shapes as the NPU does. The CPU fallback stays off unless LOCALSCRIBE_ALLOW_FALLBACK is
+    /// set, so a graph Core ML takes only in part is reported rather than timed as if it ran there;
+    /// LOCALSCRIBE_QNN_VERBOSE prints how many nodes Core ML took.
+    /// </summary>
+    private static InferenceSession OpenCoreMl(string modelPath, int length, string units)
+    {
+        var options = new SessionOptions();
+
+        if (Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_VERBOSE") is { Length: > 0 })
+        {
+            options.LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_VERBOSE;
+        }
+
+        options.AddFreeDimensionOverrideByName("batch_size", 1);
+        options.AddFreeDimensionOverrideByName("sequence_length", length);
+
+        if (Environment.GetEnvironmentVariable("LOCALSCRIBE_ALLOW_FALLBACK") is not { Length: > 0 })
+        {
+            options.AddSessionConfigEntry("session.disable_cpu_ep_fallback", "1");
+        }
+
+        // The compiled Core ML model is cached beside the system's own caches, keyed by the
+        // model, so a second run times the scan rather than the compile.
+        var cache = Path.Combine(Path.GetTempPath(), "localscribe-coreml-cache");
+        Directory.CreateDirectory(cache);
+
+        options.AppendExecutionProvider("CoreML", new Dictionary<string, string>
+        {
+            ["ModelFormat"] = Environment.GetEnvironmentVariable("LOCALSCRIBE_COREML_FORMAT") ?? "MLProgram",
+            ["MLComputeUnits"] = units,
+            ["RequireStaticInputShapes"] = "1",
+            ["ModelCacheDirectory"] = cache,
+        });
+
+        return new InferenceSession(modelPath, options);
     }
 
     /// <summary>
@@ -241,27 +309,33 @@ internal static class AlignerNpuCommand
     /// compiled graph if it is missing, then <see cref="LocalScribe.Onnx.ForcedAligner.LoadNpu"/>
     /// scanning — against the CPU's fp16 reference, so what ships is what was measured.
     /// </summary>
-    public static int GradeApp(string archivePath, string modelRoot, Core.Hardware.ExecutionPlan plan)
+    /// <param name="gpu">The Mac's GPU path (<see cref="LocalScribe.Onnx.GpuAligner"/>) instead of the NPU's.</param>
+    public static int GradeApp(string archivePath, string modelRoot, Core.Hardware.ExecutionPlan plan, bool gpu = false)
     {
+        var device = gpu ? "GPU" : "NPU";
+
         var contents = Core.Archive.TranscriptArchive.Load(archivePath);
         var audio = contents.Audio;
         var segments = contents.Segments;
         var directory = Path.Combine(modelRoot, "alignment");
 
         Console.WriteLine();
-        Console.WriteLine($"Aligner on the NPU, the app's path — {Path.GetFileName(archivePath)}, {audio.DurationSeconds:F0} s");
+        Console.WriteLine($"Aligner on the {device}, the app's path — {Path.GetFileName(archivePath)}, {audio.DurationSeconds:F0} s");
         Console.WriteLine();
 
         var watch = Stopwatch.StartNew();
-        if (!LocalScribe.Onnx.NpuAligner.IsReady(directory))
+        var isReady = gpu ? LocalScribe.Onnx.GpuAligner.IsReady(directory) : LocalScribe.Onnx.NpuAligner.IsReady(directory);
+        if (!isReady)
         {
-            var ready = LocalScribe.Onnx.NpuAligner
-                .PrepareAsync(directory, plan, message => Console.WriteLine($"  {watch.Elapsed.TotalSeconds,6:F1} s  {message}"))
+            void Log(string message) => Console.WriteLine($"  {watch.Elapsed.TotalSeconds,6:F1} s  {message}");
+            var ready = (gpu
+                    ? LocalScribe.Onnx.GpuAligner.PrepareAsync(directory, plan, Log)
+                    : LocalScribe.Onnx.NpuAligner.PrepareAsync(directory, plan, Log))
                 .GetAwaiter().GetResult();
 
             if (!ready)
             {
-                Console.Error.WriteLine("The aligner could not be compiled for the NPU.");
+                Console.Error.WriteLine($"The aligner could not be compiled for the {device}.");
                 return 1;
             }
         }
@@ -276,16 +350,20 @@ internal static class AlignerNpuCommand
         Console.WriteLine($"  {"MMS fp16, CPU (reference)",-28} {referenceSeconds,6:F1} s   {reference.Count} words");
 
         watch.Restart();
-        using var aligner = LocalScribe.Onnx.ForcedAligner.LoadNpu(directory, plan);
+        using var aligner = gpu
+            ? LocalScribe.Onnx.ForcedAligner.LoadGpu(directory, plan)
+            : LocalScribe.Onnx.ForcedAligner.LoadNpu(directory, plan);
         var opened = watch.Elapsed.TotalSeconds;
         watch.Restart();
 
+        var cpuBefore = Process.GetCurrentProcess().TotalProcessorTime;
         var scores = aligner.Scan(audio);
         var scanned = watch.Elapsed.TotalSeconds;
+        var cpuSeconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalSeconds;
 
         if (scores is null)
         {
-            Console.Error.WriteLine("The NPU scan returned nothing.");
+            Console.Error.WriteLine($"The {device} scan returned nothing.");
             return 1;
         }
 
@@ -297,8 +375,8 @@ internal static class AlignerNpuCommand
             .Where(w => w.Word.Length > 0)
             .ToList();
 
-        Console.WriteLine($"  NPU opened in {opened:F1} s; scanned in {scanned:F1} s");
-        AlignerTrialCommand.Report("MMS fp16, NPU (app)", scanned, words, reference);
+        Console.WriteLine($"  {device} opened in {opened:F1} s; scanned in {scanned:F1} s, using {cpuSeconds:F1} s of CPU time");
+        AlignerTrialCommand.Report($"MMS fp16, {device} (app)", scanned, words, reference);
         return 0;
     }
 

@@ -3,8 +3,7 @@ namespace LocalScribe.Core.Transcription;
 /// <summary>
 /// Pairs a segment's words with the times measured for it.
 /// <para>
-/// The text is the segment's and only the times are borrowed. Cleanup rewrites punctuation after
-/// alignment has run and it is the cleaned text that should be read.
+/// The text is the segment's and only the times are borrowed.
 /// </para>
 /// <para>
 /// Words used to be fetched out of one pool covering the whole recording, by asking which of them

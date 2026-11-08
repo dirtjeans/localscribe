@@ -35,6 +35,12 @@ SHA-256 of every file (`SortformerModelSource`). The C# driver (`SortformerDiari
 JavaScript reference on the debate and on all of Karl: 137,837 frames, every probability
 bit-identical. The exporter checked that reference against NVIDIA's transformers code.
 
+**Which build.** The Snapdragon runs the int8 transformer (`step_int8.onnx`). The Mac runs float32
+(`step.onnx`), because the same int8 file invents speakers there: three on the two-person debate,
+seven on Karl where float32 and the Snapdragon find six. It costs two to three times the time and
+about 300 MB more memory; [model-trials.md](model-trials.md) has the numbers. A Mac that installed
+before the change keeps finding speakers with int8 until the larger download succeeds.
+
 **A user-given speaker count** is met by folding extra speakers, smallest first, into whoever
 they sound most like, using the pipeline's WeSpeaker voice model (`SpeakerMerging`). Nemotron
 is never asked to split: if it heard fewer people than the user names, the status line says so.

@@ -4,8 +4,48 @@
              x:Class="LocalScribe.Desktop.App"
              Name="LocalScribe"
              RequestedThemeVariant="Default">
+  <!-- The palette and the shared text styles live here rather than on the window, so a
+       flyout, a dialog and the window all resolve the same colours in either appearance. -->
+  <Application.Resources>
+    <ResourceDictionary>
+      <!-- One palette, defined per theme. Dark is the Mac's charcoal rather than black: pure
+           black behind white text is the harshest pairing a screen can show. -->
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="WindowBg" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="SecondaryText" Color="#8C000000" />
+          <SolidColorBrush x:Key="Separator" Color="#17000000" />
+          <SolidColorBrush x:Key="HoverFill" Color="#0D000000" />
+          <SolidColorBrush x:Key="PressFill" Color="#1A000000" />
+          <SolidColorBrush x:Key="PlayerBg" Color="#F4F4F6" />
+          <SolidColorBrush x:Key="FieldBg" Color="#0A000000" />
+          <SolidColorBrush x:Key="AccentWash" Color="#1A0A84FF" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="WindowBg" Color="#1E1E20" />
+          <SolidColorBrush x:Key="SecondaryText" Color="#99FFFFFF" />
+          <SolidColorBrush x:Key="Separator" Color="#1FFFFFFF" />
+          <SolidColorBrush x:Key="HoverFill" Color="#14FFFFFF" />
+          <SolidColorBrush x:Key="PressFill" Color="#24FFFFFF" />
+          <SolidColorBrush x:Key="PlayerBg" Color="#2A2A2D" />
+          <SolidColorBrush x:Key="FieldBg" Color="#14FFFFFF" />
+          <SolidColorBrush x:Key="AccentWash" Color="#330A84FF" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+
   <Application.Styles>
     <FluentTheme />
+    <!-- Every window, the dialogs and About included, on the palette's background rather than
+         Fluent's, whose dark default is pure black. -->
+    <Style Selector=":is(Window)">
+      <Setter Property="Background" Value="{DynamicResource WindowBg}" />
+    </Style>
+    <Style Selector="TextBlock.flyoutTitle">
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
   </Application.Styles>
 
   <!-- Replaces the default app menu, whose first line introduced us as "About Avalonia". -->

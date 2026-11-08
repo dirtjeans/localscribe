@@ -18,8 +18,8 @@ internal sealed class WaveformView : Control
     private double _positionSeconds = -1;
     private bool _dragging;
 
-    private static readonly IBrush PeakBrush = new SolidColorBrush(Color.FromArgb(120, 120, 144, 180));
-    private static readonly IPen CursorPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 64, 128, 255)), 2);
+    private const double BarWidth = 2.5;
+    private const double BarGap = 1.5;
 
     /// <summary>A press-and-release without movement: play from here.</summary>
     public event Action<double>? TapSeek;
@@ -62,38 +62,45 @@ internal sealed class WaveformView : Control
             return;
         }
 
-        // One bucket per two pixels reads as a waveform rather than a comb.
-        var buckets = Math.Max(16, width / 2);
+        // Rounded bars with air between them read as a recording at a glance; one bucket per
+        // two pixels, drawn edge to edge, read as a comb.
+        var buckets = Math.Max(16, (int)(Bounds.Width / (BarWidth + BarGap)));
 
         if (_peaks.Length != buckets)
         {
             _peaks = PeakSource(buckets);
         }
 
+        // What has played takes the accent; what is still ahead stays neutral, so the bar
+        // itself says how far through the recording the listener is.
+        var accent = this.TryFindResource("SystemAccentColor", ActualThemeVariant, out var found) && found is Color color
+            ? color
+            : Color.FromRgb(10, 132, 255);
+        var dark = ActualThemeVariant == Avalonia.Styling.ThemeVariant.Dark;
+        var ahead = new SolidColorBrush(dark ? Color.FromArgb(80, 255, 255, 255) : Color.FromArgb(60, 0, 0, 0));
+        var played = new SolidColorBrush(accent);
+        var playedTo = _positionSeconds >= 0
+            ? Math.Clamp(_positionSeconds / _durationSeconds, 0, 1) * Bounds.Width
+            : -1;
+
         var middle = height / 2;
+        var step = Bounds.Width / _peaks.Length;
 
         for (var i = 0; i < _peaks.Length; i++)
         {
-            var x = i * Bounds.Width / _peaks.Length;
-            var half = Math.Max(0.5, _peaks[i] * middle);
+            var x = i * step;
+            var half = Math.Max(1, _peaks[i] * (middle - 1));
+            var bar = new Rect(x, middle - half, Math.Min(BarWidth, step), half * 2);
 
-            context.FillRectangle(
-                PeakBrush,
-                new Rect(x, middle - half, Math.Max(1, Bounds.Width / _peaks.Length - 1), half * 2));
+            context.DrawRectangle(x + (BarWidth / 2) <= playedTo ? played : ahead, null, new RoundedRect(bar, BarWidth / 2));
         }
 
-        if (_positionSeconds >= 0)
+        if (playedTo >= 0)
         {
-            var x = Math.Clamp(_positionSeconds / _durationSeconds, 0, 1) * Bounds.Width;
-            context.DrawLine(CursorPen, new Point(x, 0), new Point(x, height));
+            context.DrawRectangle(played, null, new RoundedRect(new Rect(playedTo - 1, 0, 2, height), 1));
         }
     }
 
-    /// <summary>
-    /// A press is ambiguous until the pointer moves: held still it is a tap (play from
-    /// here), moved it is a scrub. Four pixels tells them apart — small enough that a scrub
-    /// feels immediate, large enough that a click with an unsteady hand stays a click.
-    /// </summary>
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         _dragging = true;

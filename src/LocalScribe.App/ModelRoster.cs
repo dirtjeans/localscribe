@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using LocalScribe.Core.Models;
 using LocalScribe.Onnx;
 
@@ -12,7 +11,7 @@ namespace LocalScribe.App;
 public sealed record ModelEntry(MainViewModel.ModelRoles Role, string Name, string Title, string Detail);
 
 /// <summary>
-/// Reads the view model's one-line roster — "transcriber · speaker model · cleanup" — into the
+/// Reads the view model's one-line roster — "transcriber · speaker model" — into the
 /// models a window shows, with the word aligner added.
 /// <para>
 /// Written first in the Mac window, which took the line apart by its separator rather than
@@ -107,49 +106,7 @@ public static class ModelRoster
                 part.Replace(" speakers", string.Empty, StringComparison.Ordinal) + " — on the CPU");
         }
 
-        if (p.Contains("cleanup off"))
-        {
-            return new(MainViewModel.ModelRoles.None, "cleanup off", "Punctuation cleanup",
-                "Off — Whisper's own punctuation is used. It can be turned on with the processing "
-                + "speed settings, and adds time to each transcription.");
-        }
-
-        if (p.Contains("no cleanup"))
-        {
-            return new(MainViewModel.ModelRoles.None, "no cleanup", "Punctuation cleanup",
-                "No local language model is running, so transcripts keep Whisper's punctuation.");
-        }
-
-        if (p.Contains("cleanup") || p.Contains("qwen"))
-        {
-            var model = part.Replace("cleanup: ", string.Empty, StringComparison.Ordinal);
-            return new(MainViewModel.ModelRoles.Cleanup, CleanupName(model), "Punctuation cleanup", model);
-        }
-
         // An unknown shape — a new model — keeps its first few words rather than vanishing.
         return new(MainViewModel.ModelRoles.None, string.Join(' ', part.Split(' ').Take(3)), "Model", part);
-    }
-
-    /// <summary>"qwen2.5-1.5b-instruct via Foundry Local" reads as "Qwen 1.5B" in a chip.</summary>
-    private static string CleanupName(string model)
-    {
-        var p = model.ToLowerInvariant();
-
-        if (p.Contains("qwen"))
-        {
-            var size = Regex.Match(p, @"(\d+(\.\d+)?)b");
-            return size.Success ? $"Qwen {size.Groups[1].Value}B" : "Qwen";
-        }
-
-        if (p.Contains("phi"))
-        {
-            var version = Regex.Match(p, @"phi-(\d+(\.\d+)?)(-(mini|small|medium))?");
-            return version.Success
-                ? $"Phi-{version.Groups[1].Value}{(version.Groups[4].Success ? " " + version.Groups[4].Value : string.Empty)}"
-                : "Phi";
-        }
-
-        var name = model.Split(" via ", StringSplitOptions.TrimEntries)[0];
-        return name.Length <= 16 ? name : name[..16] + "…";
     }
 }

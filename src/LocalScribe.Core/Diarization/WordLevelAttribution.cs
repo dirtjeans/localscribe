@@ -330,7 +330,7 @@ public static class WordLevelAttribution
             : item.Segment.Text.Length;
 
         // Sliced out of the original rather than rebuilt from the words, so the punctuation and
-        // spacing the reader sees are the ones cleanup produced.
+        // spacing the reader sees stay exactly as written.
         if (from < 0 || to > item.Segment.Text.Length || to <= from)
         {
             return null;

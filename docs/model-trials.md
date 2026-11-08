@@ -68,11 +68,12 @@ at one ASR instance per speaker.
 
 | Model | Where | Verdict |
 |---|---|---|
-| MMS-300m forced aligner, 4-bit (`model_q4.onnx`) | Mac; Windows ARM64 | **In use** |
+| MMS-300m forced aligner, 4-bit (`model_q4.onnx`) | Windows ARM64; the Mac's fallback | **In use** |
 | MMS-300m forced aligner, fp16 | Windows x64; the trials' reference | In use there |
 | MMS-300m, q4f16 | — | No better than q4, slower |
 | MMS-300m, int8 builds | — | Do not load on ARM64 |
 | Whisper's cross-attention (DTW) word times | Mac | **In use as the first look** |
+| MMS-300m fp16 on the GPU through Core ML | Mac | **In use** since 2026-11-07; the 4-bit CPU scan is its fallback |
 | Nemotron 3.5 ASR's own token times | — | Rejected with the model (above) |
 
 **MMS 4-bit** quantises only the MatMuls (MatMulNBits, which has ARM64 kernels). On the Mac,
@@ -98,15 +99,52 @@ against 60 s on the podcast, because the timed decode ends segments differently 
 takes 18 windows instead of 16. Not available on the Snapdragon: the QNN decoder exports no
 cross-attention weights.
 
-Not tried: the aligner on the GPU through ONNX Runtime's Core ML provider (fp16 only — Core ML
-cannot take MatMulNBits), which would let the scan run beside the CPU stages instead of
-competing with them.
+**MMS fp16 on the GPU** (ONNX Runtime 1.29's Core ML provider, MLProgram format, 34 s windows at a
+fixed shape; `localscribe-doctor --aligner-coreml <scrb> --units CPUAndGPU|ALL`). Core ML takes
+1,385 of the graph's 1,391 nodes; the other six are the first feature-extractor convolutions, whose
+input is longer than Core ML's 16,384 limit, and they run on the CPU. As exported, the model took 2–3
+minutes to open every time, cache or not: Core ML transposes each MatMul weight for its `linear` op
+and writes the result into the compiled program as text, 3.7 GB of it. Rewriting the 146 MatMuls
+that have a weight as Reshape, Gemm with `transB=1` on the weight pre-transposed, Reshape (the same
+arithmetic) keeps the weights in binary: open 6 s the first time, 0.6 s after, a 1.2 GB cache
+instead of 4.1 GB. The app does this rewrite itself (`GemmRewrite`, `GpuAligner`), once, in the
+background: 12 s on the M2, then 1.8 GB on disk for the rewritten model and Core ML's cache.
+
+Measured with the machine far from idle (Defender and Spotlight, load averages from 9 to 100), so
+compare within a row, where the runs were back to back:
+
+| Recording | 4-bit on the CPU (the app) | fp16 on the GPU | Within 0.1 s of the reference, CPU / GPU |
+|---|---|---|---|
+| Debate, 1:56 | 47.1 s | 14.0 s | 92% / 97% |
+| Podcast, 7:23 | 167.7 s | 47.0 s | 99% / 100% |
+
+Quieter, earlier, on the debate: 24.8 s against 7.9 s. The GPU scan still kept about two cores busy
+(94.6 s of CPU time over the podcast's 47 s), for the six CPU nodes and the windowing. Through
+`ALL`, which adds the Neural Engine, it was no faster (52.0 s on the podcast), took 322 s to compile
+the first time, and would contend with Whisper's encoder, which lives there.
+
+The app's own path (`--aligner-coreml <scrb> --app`), the machine quieter: podcast scanned in
+21.8 s with 52 s of CPU time, every one of 1,178 words within 0.1 s of the reference.
+
+Whole runs on the podcast at Balanced (`LOCALSCRIBE_PACE=balanced`, headless), two each,
+alternating:
+
+| Order | Done | Labels | Peak memory |
+|---|---|---|---|
+| CPU 4-bit scan after transcription (before) | 3:42, 4:15 | 48 s, 42 s | 2.5 GB |
+| GPU scan after transcription (adopted) | 1:35, 1:52 | 26 s, 41 s | 2.5 GB |
+| GPU scan alongside transcription | 2:02, 1:47 | 118 s, 103 s | 2.9 GB |
+
+Alongside, the scan slowed Whisper (raw transcript 1:44–1:53 against 0:58–1:10) and the speaker
+model with it, so the Mac keeps scanning after transcription. Recordings shorter than one 34 s
+window are scanned on the CPU.
 
 ## Speakers
 
 | Model | Where | Verdict |
 |---|---|---|
-| NVIDIA Nemotron 3 Diarization (Sortformer), int8 | ARM64, both machines | **In use** |
+| NVIDIA Nemotron 3 Diarization (Sortformer), float32 | Mac | **In use** since 2026-11-03 |
+| NVIDIA Nemotron 3 Diarization (Sortformer), int8 | Snapdragon | **In use**; invents speakers on the Mac |
 | pyannote segmentation + WeSpeaker embeddings (sherpa-onnx) | x64 | In use; tuning frozen |
 
 **Nemotron 3** is one end-to-end model, at most eight speakers, on the CPU. On the Mac it
@@ -116,11 +154,35 @@ Found at load on both machines now — labels 11–18 s into transcription on th
 92–120 s when it waited for transcription to end. See [diarization.md](diarization.md) for the
 pyannote pipeline, whose tuning is frozen and judged only by `--diarize` turn diffs.
 
+**The 8-bit build's answer depends on the machine.** Run 2026-11-03 on the M2, each build alone,
+turns compared every 0.1 s (`--diarize-trial --only nemotron --turns`, with `--float32` for full
+precision; thread count changed nothing, 0.00% between 2 and 5 threads):
+
+| Recording | Speakers, int8 / float32 | Differ on | Took at 2 threads, int8 / float32 |
+|---|---|---|---|
+| Debate, 1:56 | **3** / 2 | 6.8% | 2.3 s / 4.3 s |
+| Podcast Aug 10, 7:23 | 5 / 5 | 1.4% | 8.4 s / 17.0 s |
+| Podcast Aug 17, 7:36 | 5 / 5 | 0.3% | 9.0 s / 19.3 s |
+| Karl (phone), 21:02 | **7** / 6 | 4.3% | 41 s / 121 s |
+| Zero Trust panel, 61:42 | 3 / 3 | 0.2% | 120 s / 286 s |
+
+The debate has two people; int8's third is a 4.8 s phantom taken from one of them, and it reaches
+the finished transcript. The Snapdragon's int8 found 2 on the debate and 6 on Karl, the counts
+float32 finds here, so the difference is in how int8 executes on each machine (ONNX Runtime 1.22
+there, 1.29 here; the cause has not been traced). On the debate and the podcast float32 is also
+far closer to the Snapdragon's turns than the Mac's int8 is (0.9% against 5.9%, 0.2% against
+1.4%); on Karl they tie. It is not better everywhere: at 3:59 on the podcast int8 labels 3.5 s of
+voice-over that float32 leaves empty. On the two synthetic clips with true labels
+(`samples/two-speakers.json`, `rapid.json`) both builds get every turn right. Peak memory is about
+300 MB higher with float32 (roughly 750 MB against 450 MB), and the file is 396 MB against 103 MB.
+Adopted on the Mac on 2026-11-03 (`SortformerModelSource.PreferFullPrecision`). In the app the
+debate then finishes with two speakers. The Snapdragon stays on int8, whose counts were right there.
+
 ## Cleanup
 
 | Model | Where | Verdict |
 |---|---|---|
-| Qwen 2.5 7B Instruct, through Foundry Local | either | Optional, **off by default** |
+| Qwen 2.5 7B Instruct, through Foundry Local | either | **Removed** 2026-11-03 |
 | Qwen 2.5 1.5B | — | Not tried; made moot |
 
 **Qwen 7B** was what Foundry already served (StyleHelper installed it). It holds about 7.2 GB,
@@ -129,3 +191,6 @@ and it takes roughly half the recording's length on the M2. Measured on the podc
 about one token in eleven, nearly all punctuation Whisper already had right. Off by default on
 the Mac first, then on Windows (podcast, done at about 150 s without it and 236 s with it). The
 1.5B was the candidate for keeping cleanup on cheaply; making cleanup optional removed the need.
+After a stretch off by default with nobody missing it, the stage was removed, along with Foundry
+Local, GenieX and the glossary, which only ever worked through it. The last commit with it is
+`454d6ef`.

@@ -14,7 +14,6 @@ public sealed class AcceleratorPlannerTests
         bool driver = true,
         bool assets = true,
         bool directMl = true,
-        bool foundry = true,
         bool onBattery = false,
         int memoryGib = 32) => new()
         {
@@ -27,7 +26,6 @@ public sealed class AcceleratorPlannerTests
             HexagonDriverPresent = driver,
             WhisperQnnAssetsPresent = assets,
             DirectMlPresent = directMl,
-            LocalLanguageModelPresent = foundry,
             OnBattery = onBattery,
         };
 
@@ -86,7 +84,7 @@ public sealed class AcceleratorPlannerTests
     [Fact]
     public void NoAcceleratorAtAll_RunsEverythingOnCpuAndSaysSo()
     {
-        var plan = AcceleratorPlanner.Plan(SnapdragonXElite(qnn: false, directMl: false, foundry: false));
+        var plan = AcceleratorPlanner.Plan(SnapdragonXElite(qnn: false, directMl: false));
 
         Assert.True(plan.IsCpuOnly);
         Assert.Contains(plan.Warnings, w => w.Contains("No accelerator available", StringComparison.Ordinal));
@@ -187,16 +185,6 @@ public sealed class AcceleratorPlannerTests
     }
 
     [Fact]
-    public void WithoutALocalLanguageModel_CleanupIsDisabledButTranscriptionStillPlanned()
-    {
-        var plan = AcceleratorPlanner.Plan(SnapdragonXElite(foundry: false));
-
-        Assert.Equal(ComputeDevice.Npu, plan.Encoder.Device);
-        Assert.Contains("Disabled", plan.LanguageModel.Reason, StringComparison.Ordinal);
-        Assert.Contains(plan.Warnings, w => w.Contains("local language-model service", StringComparison.Ordinal));
-    }
-
-    [Fact]
     public void EveryStagePlanExplainsItself()
     {
         // These strings are shown to the user in the doctor tool, so an empty one is a bug.
@@ -204,7 +192,6 @@ public sealed class AcceleratorPlannerTests
 
         Assert.NotEmpty(plan.Encoder.Reason);
         Assert.NotEmpty(plan.Decoder.Reason);
-        Assert.NotEmpty(plan.LanguageModel.Reason);
         Assert.NotEmpty(plan.Summary);
     }
 

@@ -22,7 +22,6 @@ public class WorkPaceTests
         HexagonDriverPresent = npu,
         WhisperQnnAssetsPresent = npu,
         DirectMlPresent = false,
-        LocalLanguageModelPresent = true,
     };
 
     [Theory]
@@ -48,7 +47,6 @@ public class WorkPaceTests
 
             Assert.Equal(planned.Encoder, paced.Encoder);
             Assert.Equal(planned.Decoder, paced.Decoder);
-            Assert.Equal(planned.LanguageModel, paced.LanguageModel);
             Assert.Equal(planned.WhisperModel, paced.WhisperModel);
         }
     }
