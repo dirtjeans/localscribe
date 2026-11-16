@@ -45,6 +45,14 @@ public sealed partial class MainWindow : Window
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "localscribe.ico"));
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        _viewModel.RunEnded += OnRunEnded;
+
+        // This window does: right-click a word (see FillCorrectionMenu). The hint says so.
+        _viewModel.OffersWordCorrection = true;
+
+        SetUpTitleBar();
+        WatchForReaderScrolling();
+        AlertCheck.IsChecked = FinishedAlert.Wanted;
 
         // Words are drawn with a colour taken from the theme when the row is built, so a theme
         // changed afterwards leaves every paragraph in the old ink.
@@ -61,7 +69,9 @@ public sealed partial class MainWindow : Window
             _viewModel.Player.PositionChanged -= OnPlaybackPosition;
             _viewModel.Player.Stopped -= OnPlaybackStopped;
             _viewModel.Player.Failed -= OnPlaybackFailed;
+            _viewModel.RunEnded -= OnRunEnded;
             _viewModel.Dispose();
+            FinishedAlert.Unregister();
         };
 
         SizeToContent();
@@ -223,12 +233,15 @@ public sealed partial class MainWindow : Window
                     ShowTranslateOffer();
                     break;
                 case nameof(MainViewModel.Status):
+                    StatusText.Text = _viewModel.Status;
+
+                    // The ellipsis keeps the layout honest; the tooltip keeps the words available.
+                    ToolTipService.SetToolTip(StatusText, _viewModel.Status);
+                    break;
+                case nameof(MainViewModel.ProgressSteps):
                 case nameof(MainViewModel.ProgressHint):
-                    // What the reader can already do leads the line: a progress report on its
-                    // own reads as an instruction to wait.
-                    StatusText.Text = _viewModel.ProgressHint is { } hint
-                        ? $"{hint} {_viewModel.Status}"
-                        : _viewModel.Status;
+                    ShowSteps();
+                    UpdateWorkBar();
                     break;
                 case nameof(MainViewModel.HardwareSummary):
                     _models = ModelRoster.From(_viewModel.HardwareSummary, ModelRoot);
@@ -239,21 +252,25 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.Paragraphs):
                     ShowParagraphs();
+                    UpdateTitle();
                     break;
                 case nameof(MainViewModel.HasTranscript):
                     CopyButton.IsEnabled = _viewModel.HasTranscript;
                     SaveButton.IsEnabled = _viewModel.HasTranscript;
                     DiscardButton.IsEnabled = _viewModel.HasTranscript;
                     SpeakersButton.IsEnabled = _viewModel.CanFindSpeakers;
+                    UpdateTitle();
                     break;
                 case nameof(MainViewModel.SpeakerCount):
                     UpdateSpeakerCount();
+                    UpdateTitle();
                     break;
                 case nameof(MainViewModel.ProvisionalText):
                     ProvisionalTextBlock.Text = _viewModel.ProvisionalText;
                     break;
                 case nameof(MainViewModel.Progress):
                     ProgressBarControl.Value = _viewModel.Progress;
+                    UpdateWorkBar();
 
                     // Re-judged on progress too, because the state the glow watches has no
                     // notification of its own: the player receives its audio a moment after
@@ -262,10 +279,11 @@ public sealed partial class MainWindow : Window
                     break;
                 case nameof(MainViewModel.IsBusy):
                     OpenFileButton.IsEnabled = !_viewModel.IsBusy;
-                    OpenTranscriptButton.IsEnabled = !_viewModel.IsBusy;
+                    EmptyOpenButton.IsEnabled = !_viewModel.IsBusy;
                     CancelButton.Visibility = _viewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
                     UpdateRecordButton();
                     UpdateGlow();
+                    UpdateTitle();
                     break;
                 case nameof(MainViewModel.IsRecording):
                 case nameof(MainViewModel.IsPreparing):
@@ -273,6 +291,7 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.IsModelReady):
                     UpdateRecordButton();
                     UpdateGlow();
+                    UpdateTitle();
 
                     // Recording lights the transcriber without a working-role change of its
                     // own: the microphone is the transcriber working.
@@ -281,6 +300,176 @@ public sealed partial class MainWindow : Window
             }
         });
     }
+
+    /* ---- the title bar, the steps, the alert ------------------------------------------- */
+
+    /// <summary>
+    /// Moves the toolbar into the title bar, as the Mac window has it. Only the name in the
+    /// middle drags the window; the buttons either side stay buttons. The caption buttons are
+    /// drawn tall so they sit on the toolbar's line, and the last column keeps clear of them.
+    /// </summary>
+    private void SetUpTitleBar()
+    {
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(TitleDragRegion);
+
+        var bar = AppWindow.TitleBar;
+        bar.PreferredHeightOption = TitleBarHeightOption.Tall;
+
+        // The caption buttons over the toolbar's own background rather than a band of their own.
+        bar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        PaintCaptionButtons();
+
+        TitleBar.SizeChanged += (_, _) => FitCaptionColumn();
+        TitleBar.ActualThemeChanged += (_, _) => PaintCaptionButtons();
+        Activated += (_, _) => FitCaptionColumn();
+    }
+
+    /// <summary>
+    /// The caption glyphs in the theme's ink. Given a transparent background, Windows has
+    /// nothing to derive their colour from and drew them invisible.
+    /// </summary>
+    private void PaintCaptionButtons()
+    {
+        var dark = TitleBar.ActualTheme == ElementTheme.Dark;
+        var ink = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
+        var faint = dark ? Windows.UI.Color.FromArgb(255, 0x9A, 0x9A, 0x9A) : Windows.UI.Color.FromArgb(255, 0x76, 0x76, 0x76);
+        var hover = dark ? Windows.UI.Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF) : Windows.UI.Color.FromArgb(0x10, 0, 0, 0);
+        var press = dark ? Windows.UI.Color.FromArgb(0x10, 0xFF, 0xFF, 0xFF) : Windows.UI.Color.FromArgb(0x0A, 0, 0, 0);
+
+        var bar = AppWindow.TitleBar;
+        bar.ButtonForegroundColor = ink;
+        bar.ButtonHoverForegroundColor = ink;
+        bar.ButtonPressedForegroundColor = ink;
+        bar.ButtonInactiveForegroundColor = faint;
+        bar.ButtonHoverBackgroundColor = hover;
+        bar.ButtonPressedBackgroundColor = press;
+    }
+
+    /// <summary>The caption buttons' width, which Windows reports in device pixels.</summary>
+    private void FitCaptionColumn()
+    {
+        var scale = TitleBar.XamlRoot?.RasterizationScale ?? 1;
+        var inset = AppWindow.TitleBar.RightInset / scale;
+
+        if (inset > 0)
+        {
+            CaptionColumn.Width = new GridLength(inset);
+        }
+    }
+
+    /// <summary>
+    /// The document's name, with how long it is and how many people are in it. The window's
+    /// own title carries the name too, for the taskbar and Alt+Tab.
+    /// </summary>
+    private void UpdateTitle()
+    {
+        var named = _viewModel.HasTranscript || _viewModel.Player.HasAudio || _viewModel.IsRecording;
+        var name = named ? _viewModel.SourceName : "LocalScribe";
+
+        TitleText.Text = name;
+        Title = named ? $"{name} — LocalScribe" : "LocalScribe";
+
+        var facts = new List<string>();
+
+        if (_viewModel.Player.HasAudio)
+        {
+            facts.Add(Core.Pipeline.RunTimes.Clock(_viewModel.Player.DurationSeconds));
+        }
+
+        if (_viewModel.SpeakerCount > 0)
+        {
+            facts.Add(_viewModel.SpeakerCount == 1 ? "1 speaker" : $"{_viewModel.SpeakerCount} speakers");
+        }
+
+        SubtitleText.Text = string.Join(" · ", facts);
+        SubtitleText.Visibility = named && facts.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Draws the run's steps, or takes them away when no run is under way.</summary>
+    private void ShowSteps()
+    {
+        var steps = _viewModel.ProgressSteps;
+        StepsPanel.Visibility = steps.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (steps.Count == 0)
+        {
+            return;
+        }
+
+        (TextBlock Label, TextBlock State, ProgressBar Bar)[] rows =
+        [
+            (StepLabel0, StepState0, StepBar0),
+            (StepLabel1, StepState1, StepBar1),
+            (StepLabel2, StepState2, StepBar2),
+        ];
+
+        for (var i = 0; i < rows.Length && i < steps.Count; i++)
+        {
+            var (label, state, bar) = rows[i];
+            var step = steps[i];
+
+            label.Text = step.Label;
+            label.Opacity = step.State == MainViewModel.ProgressStepState.Waiting ? 0.5 : 1;
+            bar.Value = step.State == MainViewModel.ProgressStepState.Done ? 1 : step.Fraction;
+            state.Text = step.State switch
+            {
+                MainViewModel.ProgressStepState.Done when step.TookSeconds is { } took => $"✓ {Core.Pipeline.RunTimes.Clock(took)}",
+                MainViewModel.ProgressStepState.Done => "✓",
+                MainViewModel.ProgressStepState.Working => $"{(int)(step.Fraction * 100)}%",
+                _ => string.Empty,
+            };
+        }
+
+        ProgressHintText.Text = _viewModel.ProgressHint ?? string.Empty;
+        ProgressHintText.Visibility = _viewModel.ProgressHint is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>
+    /// The status bar's own progress: for loading, and for single jobs that have one number to
+    /// give. A run shows its steps instead, and two bars for one run would disagree.
+    /// </summary>
+    private void UpdateWorkBar()
+    {
+        var single = _viewModel.Progress is > 0 and < 1 && _viewModel.ProgressSteps.Count == 0;
+        ProgressBarControl.Visibility = ProgressBarControl.IsIndeterminate || single
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private void OnAlertToggled(object sender, RoutedEventArgs e)
+    {
+        var wanted = AlertCheck.IsChecked == true;
+        FinishedAlert.Wanted = wanted;
+
+        if (wanted && FinishedAlert.Register() is { } why)
+        {
+            StatusText.Text = $"You'll get a sound and a flashing taskbar button instead of a notification. {why} "
+                + "You can change this in Settings, under System > Notifications.";
+        }
+    }
+
+    /// <summary>
+    /// Says the run has ended, if that was asked for and nobody is looking at the window: the
+    /// words on screen already say so to anyone who is.
+    /// </summary>
+    private void OnRunEnded(MainViewModel.RunOutcome outcome) =>
+        _dispatcher.TryEnqueue(() =>
+        {
+            var window = WindowNative.GetWindowHandle(this);
+
+            if (AlertCheck.IsChecked == true && GetForegroundWindow() != window)
+            {
+                FinishedAlert.Show(
+                    window,
+                    outcome.Succeeded ? $"{outcome.SourceName} is ready" : $"{outcome.SourceName} stopped",
+                    outcome.Message);
+            }
+        });
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
 
     /* ---- the models chip ------------------------------------------------------------- */
 
@@ -502,9 +691,11 @@ public sealed partial class MainWindow : Window
             StartLabel.Text = "Getting ready…";
             StartIcon.Glyph = "";                  // stopwatch
             StartButton.IsEnabled = false;
+            EmptyRecordButton.IsEnabled = false;
             OpenFileButton.IsEnabled = false;
-            OpenTranscriptButton.IsEnabled = false;
+            EmptyOpenButton.IsEnabled = false;
             ProgressBarControl.IsIndeterminate = true;
+            UpdateWorkBar();
 
             ShowCue(
                 WaitBackground,
@@ -523,13 +714,14 @@ public sealed partial class MainWindow : Window
             StartButton.Visibility = Visibility.Visible;
             StopButton.Visibility = Visibility.Collapsed;
 
-            StartLabel.Text = "Start listening";
+            StartLabel.Text = "Record";
             StartIcon.Glyph = "";                // microphone
 
             // Greyed out rather than live but useless. Recording cannot start before the model
             // is loaded, so an enabled button would take the click and appear to do nothing;
             // disabled, with the reason on hover, says so where the user is already looking.
             StartButton.IsEnabled = false;
+            EmptyRecordButton.IsEnabled = false;
             ToolTipService.SetToolTip(
                 StartButton,
                 "Warming up — the model takes a few seconds the first time");
@@ -537,15 +729,17 @@ public sealed partial class MainWindow : Window
             // The file picker stays open. Choosing a recording takes long enough that the load
             // finishes underneath it, and a run queued meanwhile simply waits.
             OpenFileButton.IsEnabled = true;
-            OpenTranscriptButton.IsEnabled = true;
+            EmptyOpenButton.IsEnabled = true;
 
             ProgressBarControl.IsIndeterminate = true;
+            UpdateWorkBar();
             PulseStoryboard.Stop();
             CueBanner.Visibility = Visibility.Collapsed;
             return;
         }
 
         ProgressBarControl.IsIndeterminate = false;
+        UpdateWorkBar();
 
         // Red is the one colour that means recording, so it belongs on the control the user is
         // looking at when they wonder whether it is. The banner says the same thing in words;
@@ -559,20 +753,22 @@ public sealed partial class MainWindow : Window
         var canRecord = _viewModel.IsModelReady && !_viewModel.IsBusy;
 
         StartButton.IsEnabled = canRecord;
+        EmptyRecordButton.IsEnabled = canRecord;
         ToolTipService.SetToolTip(
             StartButton,
             canRecord
-                ? null
+                ? "Record from the microphone, transcribing as you speak"
                 : _viewModel.IsBusy
                     ? "Busy with the current transcription"
                     : "Loading the speech model — recording will be ready in a moment");
-        StartLabel.Text = "Start listening";
+        StartLabel.Text = "Record";
         StartIcon.Glyph = "";                      // microphone
-        OpenFileButton.IsEnabled = !_viewModel.IsRecording;
-        OpenTranscriptButton.IsEnabled = !_viewModel.IsRecording;
+        OpenFileButton.IsEnabled = !_viewModel.IsRecording && !_viewModel.IsBusy;
+        EmptyOpenButton.IsEnabled = OpenFileButton.IsEnabled;
 
         if (_viewModel.IsRecording)
         {
+            RecordingDotStoryboard.Begin();
             ShowCue(
                 ListenBackground,
                 "Speak now — listening",
@@ -581,6 +777,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
+            RecordingDotStoryboard.Stop();
             PulseStoryboard.Stop();
             CueBanner.Visibility = Visibility.Collapsed;
         }
@@ -671,6 +868,7 @@ public sealed partial class MainWindow : Window
         }
 
         _paragraphs = views;
+        OrderSpeakers();
         ApplySearch();
 
         if (following && _paragraphs.Count > 0)
@@ -738,6 +936,7 @@ public sealed partial class MainWindow : Window
         }
 
         TransportBar.Visibility = Visibility.Visible;
+        UpdateTitle();
 
         // Recomputed only when the audio changes. It is a pass over every sample in the
         // recording, which is not something to do on a redraw.
@@ -951,8 +1150,157 @@ public sealed partial class MainWindow : Window
 
     private void StartPlayback(double seconds)
     {
+        // Asking to hear something takes the view back from the reader.
+        _followPlayback = true;
         _viewModel.Player.PlayFrom(seconds);
         UpdatePlayIcon();
+    }
+
+    /// <summary>
+    /// Whether the transcript follows the word being heard. Re-engaged by asking to hear
+    /// something; surrendered the moment the reader scrolls. Told by their input, not by where
+    /// the view ended up, which is the lesson the Mac window paid for: a test of "has the
+    /// highlight left the viewport" never fires in a paragraph taller than the window, so every
+    /// scroll the reader made was pulled straight back.
+    /// </summary>
+    private bool _followPlayback = true;
+
+    /// <summary>True while a scroll this window started is still moving, so it is not mistaken for the reader's.</summary>
+    private bool _scrollingForPlayback;
+
+    /// <summary>Hands the view to the reader the moment they scroll it themselves, by any means.</summary>
+    private void WatchForReaderScrolling()
+    {
+        // Handled events too: the list and the selectable text both claim these.
+        TranscriptList.AddHandler(
+            UIElement.PointerWheelChangedEvent,
+            new PointerEventHandler((_, _) => _followPlayback = false),
+            handledEventsToo: true);
+
+        TranscriptList.AddHandler(
+            UIElement.PointerPressedEvent,
+            new PointerEventHandler((_, e) =>
+            {
+                if (InScrollBar(e.OriginalSource as DependencyObject))
+                {
+                    _followPlayback = false;
+                }
+            }),
+            handledEventsToo: true);
+
+        TranscriptList.AddHandler(
+            UIElement.KeyDownEvent,
+            new KeyEventHandler((_, e) =>
+            {
+                if (e.Key is Windows.System.VirtualKey.PageUp or Windows.System.VirtualKey.PageDown
+                    or Windows.System.VirtualKey.Home or Windows.System.VirtualKey.End
+                    or Windows.System.VirtualKey.Up or Windows.System.VirtualKey.Down)
+                {
+                    _followPlayback = false;
+                }
+            }),
+            handledEventsToo: true);
+
+        // Touch and the touchpad pan through direct manipulation, which raises no wheel event.
+        TranscriptList.Loaded += (_, _) =>
+        {
+            if (TranscriptScroller() is { } scroller)
+            {
+                scroller.DirectManipulationStarted += (_, _) =>
+                {
+                    if (!_scrollingForPlayback)
+                    {
+                        _followPlayback = false;
+                    }
+                };
+
+                scroller.ViewChanged += (_, e) =>
+                {
+                    if (!e.IsIntermediate)
+                    {
+                        _scrollingForPlayback = false;
+                    }
+                };
+            }
+        };
+    }
+
+    private static bool InScrollBar(DependencyObject? element)
+    {
+        for (var at = element; at is not null; at = VisualTreeHelper.GetParent(at))
+        {
+            if (at is ScrollBar)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Keeps the word being heard on screen with a few lines around it, scrolling only when it
+    /// is about to leave. The word rather than its paragraph: a paragraph taller than the window
+    /// brought into view shows its top, and the voice can be a screen further down.
+    /// </summary>
+    private void KeepPlayingWordInView()
+    {
+        const double context = 75;
+
+        if (_lit is null || TranscriptScroller() is not { } scroller)
+        {
+            return;
+        }
+
+        if (TranscriptList.ContainerFromItem(_lit) is not ContentControl { ContentTemplateRoot: FrameworkElement root })
+        {
+            // Not even laid out, so well off screen: the list can bring the row, and the next
+            // position lines the word up within it.
+            TranscriptList.ScrollIntoView(_lit, ScrollIntoViewAlignment.Leading);
+            return;
+        }
+
+        if (FindBodyText(root) is not { } body
+            || !_spokenWords.TryGetValue(_lit, out var spans)
+            || _markedWord < 0
+            || _markedWord >= spans.Count
+            || RunAt(body, spans[_markedWord].Offset) is not { } run)
+        {
+            return;
+        }
+
+        var rect = run.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+        var top = body.TransformToVisual(scroller).TransformPoint(new Windows.Foundation.Point(rect.X, rect.Y)).Y;
+        var viewport = scroller.ViewportHeight;
+
+        if (top >= context && top + rect.Height <= viewport - context)
+        {
+            return;
+        }
+
+        // A third of the way down, so what comes next is in view as well as what was just said.
+        _scrollingForPlayback = true;
+        scroller.ChangeView(null, Math.Max(0, scroller.VerticalOffset + top - (viewport / 3)), null);
+    }
+
+    /// <summary>The run holding a character of the block's text.</summary>
+    private static Run? RunAt(TextBlock body, int offset)
+    {
+        var at = 0;
+
+        foreach (var run in body.Inlines.OfType<Run>())
+        {
+            var length = run.Text?.Length ?? 0;
+
+            if (offset < at + length)
+            {
+                return run;
+            }
+
+            at += length;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1167,8 +1515,12 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>Selects the paragraph covering a position, without disturbing the reader otherwise.</summary>
-    private void HighlightAt(double seconds)
+    /// <summary>
+    /// Selects the paragraph covering a position. Brought into view when someone moved there
+    /// themselves; while playback carries on, the word does the following instead (see
+    /// <see cref="KeepPlayingWordInView"/>), and only for as long as the reader lets it.
+    /// </summary>
+    private void HighlightAt(double seconds, bool bringIntoView = true)
     {
         var playing = _paragraphs.FirstOrDefault(p => p.Contains(seconds))
             ?? _paragraphs.LastOrDefault(p => p.StartSeconds <= seconds);
@@ -1176,7 +1528,11 @@ public sealed partial class MainWindow : Window
         if (playing is not null && !ReferenceEquals(TranscriptList.SelectedItem, playing))
         {
             TranscriptList.SelectedItem = playing;
-            TranscriptList.ScrollIntoView(playing);
+
+            if (bringIntoView)
+            {
+                TranscriptList.ScrollIntoView(playing);
+            }
         }
     }
 
@@ -1248,10 +1604,101 @@ public sealed partial class MainWindow : Window
             _realised.Add(paragraph);
             FillWithWords(body, paragraph);
             HighlightMatches(body, paragraph);
+            PaintSpeaker(root, paragraph);
             return;
         }
 
         HighlightMatches(body);
+    }
+
+    /// <summary>Speakers in the order they first speak, for their colours.</summary>
+    private readonly Dictionary<string, int> _speakerOrder = new(StringComparer.Ordinal);
+
+    // The Mac's eight hues, one per voice Nemotron can tell apart, chosen to stay distinct from
+    // each other and readable on both backgrounds; dark mode takes the lighter set.
+    private static readonly uint[] LightSpeakerColors =
+        [0x2563EB, 0xC2410C, 0x047857, 0x7C3AED, 0xBE185D, 0xA16207, 0x0E7490, 0x4D7C0F];
+
+    private static readonly uint[] DarkSpeakerColors =
+        [0x7AA7FF, 0xFF9466, 0x4FD1A5, 0xB99AFB, 0xF57CB8, 0xF2BE4A, 0x5FCDE4, 0xA9CF4B];
+
+    /// <summary>
+    /// Orders the speakers by when each first speaks, so a colour belongs to a voice from the
+    /// top of the transcript down and a rename keeps it. Recoloured on screen only when the
+    /// order actually changed — a label arriving mid-run, or two merged into one.
+    /// </summary>
+    private void OrderSpeakers()
+    {
+        var order = new List<string>();
+
+        foreach (var paragraph in _paragraphs)
+        {
+            if (paragraph.Speaker.Length > 0 && !order.Contains(paragraph.Speaker))
+            {
+                order.Add(paragraph.Speaker);
+            }
+        }
+
+        if (order.Count == _speakerOrder.Count && order.Select((name, i) => _speakerOrder.GetValueOrDefault(name, -1) == i).All(same => same))
+        {
+            return;
+        }
+
+        _speakerOrder.Clear();
+
+        for (var i = 0; i < order.Count; i++)
+        {
+            _speakerOrder[order[i]] = i;
+        }
+
+        PaintRealisedSpeakers();
+    }
+
+    private void PaintRealisedSpeakers()
+    {
+        foreach (var paragraph in _realised.ToList())
+        {
+            if (TranscriptList.ContainerFromItem(paragraph) is ContentControl { ContentTemplateRoot: FrameworkElement root })
+            {
+                PaintSpeaker(root, paragraph);
+            }
+        }
+    }
+
+    private void PaintSpeaker(DependencyObject root, ParagraphView paragraph)
+    {
+        if (FindTagged<HyperlinkButton>(root, "speaker") is { } name && paragraph.Speaker.Length > 0)
+        {
+            name.Foreground = SpeakerBrush(paragraph.Speaker);
+        }
+    }
+
+    private SolidColorBrush SpeakerBrush(string speaker)
+    {
+        var index = _speakerOrder.TryGetValue(speaker, out var known) ? known : _speakerOrder.Count;
+        var palette = TranscriptList.ActualTheme == ElementTheme.Dark ? DarkSpeakerColors : LightSpeakerColors;
+        var rgb = palette[index % palette.Length];
+
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(255, (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
+    }
+
+    private static T? FindTagged<T>(DependencyObject element, string tag)
+        where T : FrameworkElement
+    {
+        if (element is T found && Equals(found.Tag, tag))
+        {
+            return found;
+        }
+
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+        {
+            if (FindTagged<T>(VisualTreeHelper.GetChild(element, i), tag) is { } inner)
+            {
+                return inner;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1358,6 +1805,9 @@ public sealed partial class MainWindow : Window
     /// <summary>Where the press began, for the body being pressed; null when none is.</summary>
     private Windows.Foundation.Point? _pressedAt;
 
+    /// <summary>Where the last right-button press landed, and on which body.</summary>
+    private (TextBlock Body, Windows.Foundation.Point At)? _menuAt;
+
     /// <summary>The body holding the latest selection, which the Copy button serves.</summary>
     private TextBlock? _selecting;
 
@@ -1379,9 +1829,9 @@ public sealed partial class MainWindow : Window
             UIElement.PointerPressedEvent,
             new PointerEventHandler((_, e) =>
             {
-                _pressedAt = e.GetCurrentPoint(body).Properties.IsLeftButtonPressed
-                    ? e.GetCurrentPoint(body).Position
-                    : null;
+                var press = e.GetCurrentPoint(body);
+                _pressedAt = press.Properties.IsLeftButtonPressed ? press.Position : null;
+                _menuAt = press.Properties.IsRightButtonPressed ? (body, press.Position) : null;
 
                 // A press anywhere else in the transcript lets go of the last selection. The
                 // block that held it stops drawing its highlight once another takes focus but
@@ -1398,6 +1848,161 @@ public sealed partial class MainWindow : Window
             UIElement.PointerReleasedEvent,
             new PointerEventHandler((_, e) => OnBodyReleased(body, e)),
             handledEventsToo: true);
+
+        // The block's own menu replaced, not intercepted: a selectable block opens its Copy and
+        // Select All menu itself, before ContextRequested reaches anyone. The menu is filled as
+        // it opens, since what it offers depends on where it was asked for.
+        var menu = new MenuFlyout();
+        menu.Opening += (_, _) => FillCorrectionMenu(menu, body);
+        body.ContextFlyout = menu;
+    }
+
+    /// <summary>
+    /// Right-click a word, or a selection, to correct it — here or everywhere, the same two
+    /// reaches a speaker's name has. A left click is already taken: it plays the word. The
+    /// block's own Copy moves into this menu, since one control has one menu.
+    /// </summary>
+    private void FillCorrectionMenu(MenuFlyout menu, TextBlock body)
+    {
+        menu.Items.Clear();
+
+        var text = body.Text ?? string.Empty;
+        var (low, high) = SelectedRange(body);
+
+        // From the keyboard there is no point, and the selection is all there is to go on.
+        Windows.Foundation.Point? point = _menuAt is { } at && ReferenceEquals(at.Body, body) ? at.At : null;
+        _menuAt = null;
+        var clicked = point is { } p ? CharacterAt(body, p) : null;
+
+        // On the selection means the selection; anywhere else means the word clicked.
+        var found = high > low && (clicked is null || (clicked >= low && clicked <= high))
+            ? WordCorrections.WordsAround(text, low, high)
+            : clicked is { } index
+                ? WordCorrections.WordsAround(text, index, index)
+                : null;
+
+        if (found is var (start, words) && body.DataContext is ParagraphView paragraph)
+        {
+            var seconds = _spokenWords.TryGetValue(paragraph, out var spans)
+                && spans.FirstOrDefault(w => start >= w.Offset && start < w.Offset + w.Length) is { } word
+                    ? word.From
+                    : paragraph.StartSeconds
+                        + ((paragraph.EndSeconds - paragraph.StartSeconds) * start / Math.Max(1, text.Length));
+
+            var shown = words.Length > 40 ? $"{words[..39]}…" : words;
+            var places = _viewModel.PlacesOf(words);
+
+            var here = new MenuFlyoutItem { Text = $"Correct “{shown}” here…" };
+            var everywhere = new MenuFlyoutItem
+            {
+                Text = places == 1
+                    ? $"Correct “{shown}” everywhere…"
+                    : $"Correct “{shown}” everywhere ({places} places)…",
+            };
+
+            here.Click += async (_, _) => await AskForCorrection(words, everywhere: false, seconds);
+            everywhere.Click += async (_, _) => await AskForCorrection(words, everywhere: true, seconds);
+
+            menu.Items.Add(here);
+            menu.Items.Add(everywhere);
+            menu.Items.Add(new MenuFlyoutSeparator());
+        }
+
+        var copy = new MenuFlyoutItem
+        {
+            Text = "Copy",
+            Icon = new FontIcon { Glyph = "" },
+            IsEnabled = high > low,
+        };
+        var selected = body.SelectedText;
+        copy.Click += (_, _) =>
+        {
+            var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            package.SetText(selected);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+        };
+        menu.Items.Add(copy);
+    }
+
+    /// <summary>
+    /// The selection as character indexes into the block's text. Measured by selecting from the
+    /// start to each end and counting, as <see cref="WordAt(TextBlock, ParagraphView)"/> does,
+    /// because a text pointer's offset counts the runs' boundaries as well as their letters.
+    /// </summary>
+    private static (int Low, int High) SelectedRange(TextBlock body)
+    {
+        if (string.IsNullOrEmpty(body.SelectedText) || body.SelectionStart is not { } from || body.SelectionEnd is not { } to)
+        {
+            return (0, 0);
+        }
+
+        body.Select(body.ContentStart, from);
+        var low = body.SelectedText.Length;
+        body.Select(body.ContentStart, to);
+        var high = body.SelectedText.Length;
+        body.Select(from, to);
+
+        return (Math.Min(low, high), Math.Max(low, high));
+    }
+
+    /// <summary>
+    /// The character under a point. A right-click does not move the caret the way a left click
+    /// does, so it is found from where each character is drawn. Asked once per menu, so a pass
+    /// over a paragraph's characters costs nothing anyone could notice.
+    /// </summary>
+    private static int? CharacterAt(TextBlock body, Windows.Foundation.Point point)
+    {
+        var offset = 0;
+        int? found = null;
+
+        foreach (var run in body.Inlines.OfType<Run>())
+        {
+            var length = run.Text?.Length ?? 0;
+
+            for (var k = 0; k < length; k++)
+            {
+                // The rect is the caret's, as wide as a line and no wider, so a character is
+                // the last one on the clicked line that starts at or before the pointer.
+                var rect = run.ContentStart.GetPositionAtOffset(k, LogicalDirection.Forward).GetCharacterRect(LogicalDirection.Forward);
+
+                if (point.Y >= rect.Top && point.Y <= rect.Bottom && rect.Left <= point.X)
+                {
+                    found = offset + k;
+                }
+            }
+
+            offset += length;
+        }
+
+        return found;
+    }
+
+    private async Task AskForCorrection(string words, bool everywhere, double seconds)
+    {
+        var input = new TextBox { Text = words, SelectionStart = 0, SelectionLength = words.Length };
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = everywhere ? "Correct everywhere" : "Correct",
+            Content = new StackPanel
+            {
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock { Text = $"What should “{words}” say?", TextWrapping = TextWrapping.Wrap },
+                    input,
+                },
+            },
+            PrimaryButtonText = "Correct",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary && !string.IsNullOrWhiteSpace(input.Text))
+        {
+            _viewModel.CorrectWords(words, input.Text.Trim(), everywhere, seconds);
+        }
     }
 
     /// <summary>
@@ -1519,6 +2124,7 @@ public sealed partial class MainWindow : Window
             {
                 FillWithWords(body, paragraph);
                 HighlightMatches(body, paragraph);
+                PaintSpeaker(root, paragraph);
             }
         }
     }
@@ -2204,8 +2810,13 @@ public sealed partial class MainWindow : Window
 
             _position = latest;
             MovePlayhead(latest);
-            HighlightAt(latest);
+            HighlightAt(latest, bringIntoView: false);
             FollowSpokenWord();
+
+            if (_followPlayback)
+            {
+                KeepPlayingWordInView();
+            }
         });
     }
 
@@ -2402,9 +3013,18 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnOpenRecording(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// One Open for both kinds of file, as on the Mac: which one it is decides what happens,
+    /// and the picker shows both, so nobody has to know in advance which button to reach for.
+    /// </summary>
+    private async void OnOpen(object sender, RoutedEventArgs e)
     {
-        var picker = PickerFor(AudioFileLoader.SupportedExtensions);
+        if (_viewModel.IsBusy || _viewModel.IsRecording)
+        {
+            return;
+        }
+
+        var picker = PickerFor(AudioFileLoader.SupportedExtensions.Concat(TranscriptArchive.Extensions));
 
         var file = await picker.PickSingleFileAsync();
         if (file is null)
@@ -2412,10 +3032,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // A saved transcript can arrive here too — dropped filters do not stop typing a name —
-        // and it is opened, not transcribed again: it already has its words, its timings and
-        // its speakers, and running the model over it would only spend minutes arriving
-        // somewhere worse.
+        // A saved transcript is opened, not transcribed again: it already has its words, its
+        // timings and its speakers, and running the model over it would only spend minutes
+        // arriving somewhere worse.
         if (TranscriptArchive.IsArchive(file.Name))
         {
             OpenArchive(file.Path);
@@ -2425,17 +3044,20 @@ public sealed partial class MainWindow : Window
         await _viewModel.TranscribeFileAsync(file.Path);
     }
 
-    private async void OnOpenTranscript(object sender, RoutedEventArgs e)
+    private void OnOpenAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
-        var picker = PickerFor(TranscriptArchive.Extensions);
+        OnOpen(sender, new RoutedEventArgs());
+        args.Handled = true;
+    }
 
-        var file = await picker.PickSingleFileAsync();
-        if (file is null)
+    private async void OnSaveAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+
+        if (SaveButton.IsEnabled)
         {
-            return;
+            await SaveViaPickerAsync();
         }
-
-        OpenArchive(file.Path);
     }
 
     private FileOpenPicker PickerFor(IEnumerable<string> extensions)

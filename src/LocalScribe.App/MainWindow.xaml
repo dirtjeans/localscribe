@@ -8,11 +8,13 @@
     mc:Ignorable="d"
     Title="LocalScribe">
 
-    <Grid Padding="24" RowSpacing="16" AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
+    <Grid AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop">
         <Grid.KeyboardAccelerators>
             <KeyboardAccelerator Modifiers="Control" Key="F" Invoked="OnFindAccelerator" />
             <KeyboardAccelerator Key="Escape" Invoked="OnEscapeAccelerator" />
             <KeyboardAccelerator Modifiers="Control" Key="Space" Invoked="OnPlayAccelerator" />
+            <KeyboardAccelerator Modifiers="Control" Key="O" Invoked="OnOpenAccelerator" />
+            <KeyboardAccelerator Modifiers="Control" Key="S" Invoked="OnSaveAccelerator" />
         </Grid.KeyboardAccelerators>
 
         <Grid.Resources>
@@ -24,55 +26,97 @@
                     To="0.15"
                     Duration="0:0:0.65" />
             </Storyboard>
+
+            <!-- The recording dot on the Stop button breathes while the microphone is live. -->
+            <Storyboard x:Name="RecordingDotStoryboard" RepeatBehavior="Forever" AutoReverse="True">
+                <DoubleAnimation
+                    Storyboard.TargetName="RecordingDot"
+                    Storyboard.TargetProperty="Opacity"
+                    From="1.0"
+                    To="0.25"
+                    Duration="0:0:0.7" />
+            </Storyboard>
+
+            <!--
+                Quiet until hovered, as the Mac's toolbar is: a row of filled slabs made every
+                verb shout, and the things that could not be done yet — greyed slabs — loudest
+                of all. Unavailable reads as faded instead.
+            -->
+            <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="10,6" />
+                <Setter Property="CornerRadius" Value="6" />
+                <Setter Property="VerticalAlignment" Value="Center" />
+            </Style>
+            <Style x:Key="ToolbarIconButton" TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+                <Setter Property="Padding" Value="9,7" />
+            </Style>
+
+            <Style x:Key="StepLabel" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}">
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            </Style>
+            <Style x:Key="StepState" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}">
+                <Setter Property="Margin" Value="6,0,0,0" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            </Style>
         </Grid.Resources>
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <!--
-            Two groups, not one row. The left makes a transcript; the right does something with
-            the one you have, and every button in it is dead until there is one. Reading them as
-            a single list of seven meant hunting for the two that mattered at any moment.
+            The title bar carries the whole toolbar, as on the Mac. The verbs that start
+            everything keep their words on the left; the document's name sits in the middle,
+            which is the only part that drags the window; the tools for the open transcript are
+            glyphs on the right, named by their tooltips. The last column keeps clear of the
+            caption buttons, sized in code from what Windows reports.
         -->
-        <Grid Grid.Row="0" ColumnSpacing="12">
+        <Grid x:Name="TitleBar" Grid.Row="0" Height="48" Padding="8,0,0,0">
+            <Grid.Resources>
+                <!-- Lightweight styling: no slab behind a disabled toolbar verb. -->
+                <SolidColorBrush x:Key="ButtonBackgroundDisabled" Color="Transparent" />
+                <SolidColorBrush x:Key="ButtonBorderBrushDisabled" Color="Transparent" />
+            </Grid.Resources>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" MinWidth="48" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition x:Name="CaptionColumn" Width="138" />
             </Grid.ColumnDefinitions>
 
-            <!-- Making a transcript. -->
-            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
-                <!--
-                    Two buttons rather than one recoloured at runtime. The Button template swaps
-                    its own background on hover and press, so a locally set colour survives only
-                    until the pointer touches it; overriding the brushes the template looks up is
-                    the only way to hold a colour through every state, and those overrides live
-                    on the control.
-                -->
-                <Button
-                    x:Name="StartButton"
-                    Click="OnToggleRecording"
-                    Style="{ThemeResource AccentButtonStyle}"
-                    IsEnabled="False">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                <Button x:Name="OpenFileButton" Style="{StaticResource ToolbarButton}" Click="OnOpen"
+                        ToolTipService.ToolTip="Open a recording or a saved transcript (Ctrl+O)">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon x:Name="StartIcon" Glyph="&#xE720;" FontSize="16" />
-                        <TextBlock x:Name="StartLabel" Text="Start listening" />
+                        <FontIcon Glyph="&#xE8E5;" FontSize="15" />
+                        <TextBlock Text="Open" />
                     </StackPanel>
                 </Button>
 
-                <Button
-                    x:Name="StopButton"
-                    Click="OnToggleRecording"
-                    Style="{ThemeResource AccentButtonStyle}"
-                    Visibility="Collapsed">
-                    <!-- Windows' own critical red, held through hover, press and keyboard focus. -->
+                <Button x:Name="StartButton" Style="{StaticResource ToolbarButton}" Click="OnToggleRecording"
+                        IsEnabled="False">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon x:Name="StartIcon" Glyph="&#xE720;" FontSize="15" />
+                        <TextBlock x:Name="StartLabel" Text="Record" />
+                    </StackPanel>
+                </Button>
+
+                <!--
+                    Red while the microphone is live: the one colour that means recording, on
+                    the control someone looks at when they wonder whether it is. Overriding the
+                    brushes the template looks up is the only way to hold it through hover and
+                    press, and those overrides live on the control.
+                -->
+                <Button x:Name="StopButton" Click="OnToggleRecording" Style="{ThemeResource AccentButtonStyle}"
+                        VerticalAlignment="Center" Padding="12,6" Visibility="Collapsed">
                     <Button.Resources>
                         <SolidColorBrush x:Key="AccentButtonBackground" Color="#C42B1C" />
                         <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#B0271A" />
@@ -85,74 +129,64 @@
                         <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="White" />
                     </Button.Resources>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Ellipse Width="12" Height="12" Fill="White" VerticalAlignment="Center" />
-                        <TextBlock Text="Stop listening" />
-                    </StackPanel>
-                </Button>
-
-                <Button x:Name="OpenFileButton" Click="OnOpenRecording">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <!-- Line art like every other toolbar glyph, so the pair reads as kin
-                             to the mic rather than to the coloured file icons: the document
-                             glyph carrying a play triangle — a file with sound in it. -->
-                        <Grid Width="16" Height="16" VerticalAlignment="Center">
-                            <FontIcon Glyph="&#xE8A5;" FontSize="16" />
-                            <Polygon
-                                Points="0,0 5,3 0,6"
-                                Fill="{ThemeResource TextFillColorPrimaryBrush}"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                Margin="1.5,3,0,0" />
-                        </Grid>
-                        <TextBlock Text="Open a recording" />
-                    </StackPanel>
-                </Button>
-
-                <!-- Separate from opening a recording, because they are different promises: a
-                     recording costs minutes of transcription, a saved transcript opens at once. -->
-                <Button x:Name="OpenTranscriptButton" Click="OnOpenTranscript">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <!-- Its sibling: the same document, carrying the transcript's speech
-                             bars instead of the play triangle. -->
-                        <Grid Width="16" Height="16" VerticalAlignment="Center">
-                            <FontIcon Glyph="&#xE8A5;" FontSize="16" />
-                            <StackPanel
-                                Orientation="Horizontal"
-                                Spacing="1.2"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                Margin="0,3,0,0">
-                                <Rectangle Width="1.5" Height="3" RadiusX="0.75" RadiusY="0.75" Fill="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
-                                <Rectangle Width="1.5" Height="6" RadiusX="0.75" RadiusY="0.75" Fill="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
-                                <Rectangle Width="1.5" Height="4" RadiusX="0.75" RadiusY="0.75" Fill="{ThemeResource TextFillColorPrimaryBrush}" VerticalAlignment="Center" />
-                            </StackPanel>
-                        </Grid>
-                        <TextBlock Text="Open a transcript" />
+                        <Ellipse x:Name="RecordingDot" Width="9" Height="9" Fill="White" VerticalAlignment="Center" />
+                        <TextBlock Text="Stop" />
                     </StackPanel>
                 </Button>
 
                 <!-- Only ever relevant to work in progress, so it only ever appears with it. -->
-                <Button
-                    x:Name="CancelButton"
-                    Click="OnCancel"
-                    Content="Cancel"
-                    Visibility="Collapsed" />
+                <Button x:Name="CancelButton" Style="{StaticResource ToolbarButton}" Click="OnCancel"
+                        Content="Cancel" Visibility="Collapsed" />
+            </StackPanel>
 
-                <!--
-                    How hard making a transcript may work the machine, so it ends the group that
-                    makes them. Here rather than at the far right, where it first went: a narrow
-                    window clips the toolbar from the right, and the right-hand group was already
-                    losing its last label at a common window size. An icon alone, because it is
-                    set once and left: a labelled button would claim attention every session for
-                    a choice made in the first.
-                -->
-                <Button
-                    x:Name="PaceButton"
-                    ToolTipService.ToolTip="Processing speed"
-                    AutomationProperties.Name="Processing speed">
-                    <FontIcon Glyph="&#xEC4A;" FontSize="16" />
+            <!--
+                The document's name, with what a reader wants before opening it: how long it is
+                and how many people are in it. Also the drag handle — the only part of this row
+                that is not a control.
+            -->
+            <Grid x:Name="TitleDragRegion" Grid.Column="1" Background="Transparent">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="12,0">
+                    <TextBlock x:Name="TitleText" Text="LocalScribe" FontWeight="SemiBold" FontSize="13"
+                               HorizontalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="SubtitleText" FontSize="11" HorizontalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" Visibility="Collapsed"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </Grid>
+
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                <TextBlock x:Name="SearchCount" VerticalAlignment="Center" Margin="0,0,8,0"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{ThemeResource CaptionTextBlockStyle}" />
+
+                <TextBox x:Name="SearchBox" Width="180" Margin="0,0,6,0" VerticalAlignment="Center"
+                         PlaceholderText="Search" TextChanged="OnSearchChanged"
+                         ToolTipService.ToolTip="Search the transcript (Ctrl+F)" />
+
+                <Button x:Name="SpeakersButton" Style="{StaticResource ToolbarIconButton}" Click="OnEditSpeakers"
+                        IsEnabled="False" AutomationProperties.Name="Speakers">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xE716;" FontSize="15" />
+
+                        <!-- How many were found. Quiet enough to ignore when it is right, and
+                             on the control that fixes it when it is not. -->
+                        <Border x:Name="SpeakerCountBadge" Background="{ThemeResource AccentFillColorDefaultBrush}"
+                                CornerRadius="8" MinWidth="16" Height="16" Padding="4,0"
+                                VerticalAlignment="Center" Visibility="Collapsed">
+                            <TextBlock x:Name="SpeakerCountText" FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </StackPanel>
+                </Button>
+
+                <!-- How hard making a transcript may work the machine. Set once and left. -->
+                <Button x:Name="PaceButton" Style="{StaticResource ToolbarIconButton}"
+                        ToolTipService.ToolTip="Processing speed — how much of the machine to spend"
+                        AutomationProperties.Name="Processing speed">
+                    <FontIcon Glyph="&#xEC4A;" FontSize="15" />
                     <Button.Flyout>
-                        <Flyout Placement="BottomEdgeAlignedLeft" Opening="OnPaceFlyoutOpening">
+                        <Flyout Placement="BottomEdgeAlignedRight" Opening="OnPaceFlyoutOpening">
                             <StackPanel Width="320" Spacing="8">
                                 <TextBlock Text="Processing speed" Style="{ThemeResource BodyStrongTextBlockStyle}" />
                                 <Slider
@@ -180,78 +214,40 @@
                         </Flyout>
                     </Button.Flyout>
                 </Button>
-            </StackPanel>
 
-            <!-- Doing something with the transcript you have. -->
-            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-                <Button x:Name="SpeakersButton" Click="OnEditSpeakers" IsEnabled="False">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE716;" FontSize="16" />
-                        <TextBlock Text="Speakers" />
+                <Border Width="1" Height="18" Margin="5,0" VerticalAlignment="Center"
+                        Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 
-                        <!-- How many were found. Quiet enough to ignore when it is right, and
-                             right next to the control that fixes it when it is not. -->
-                        <Border
-                            x:Name="SpeakerCountBadge"
-                            Background="{ThemeResource AccentFillColorDefaultBrush}"
-                            CornerRadius="9"
-                            MinWidth="18"
-                            Height="18"
-                            Padding="5,0"
-                            VerticalAlignment="Center"
-                            Visibility="Collapsed">
-                            <TextBlock
-                                x:Name="SpeakerCountText"
-                                Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
-                                FontSize="11"
-                                FontWeight="SemiBold"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center" />
-                        </Border>
-                    </StackPanel>
+                <Button x:Name="CopyButton" Style="{StaticResource ToolbarIconButton}" Click="OnCopy" IsEnabled="False"
+                        ToolTipService.ToolTip="Copy — the selected text, or the whole transcript when nothing is selected"
+                        AutomationProperties.Name="Copy">
+                    <FontIcon Glyph="&#xE8C8;" FontSize="15" />
                 </Button>
 
-
-
-                <AppBarSeparator />
-
-                <Button
-                    x:Name="CopyButton"
-                    Click="OnCopy"
-                    IsEnabled="False"
-                    ToolTipService.ToolTip="Copies the selected text, or the whole transcript when nothing is selected">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE8C8;" FontSize="16" />
-                        <TextBlock Text="Copy" />
-                    </StackPanel>
+                <Button x:Name="SaveButton" Style="{StaticResource ToolbarIconButton}" Click="OnSave" IsEnabled="False"
+                        ToolTipService.ToolTip="Save — the transcript and its audio together, or the words alone (Ctrl+S)"
+                        AutomationProperties.Name="Save">
+                    <FontIcon Glyph="&#xE74E;" FontSize="15" />
                 </Button>
 
-                <Button x:Name="SaveButton" Click="OnSave" IsEnabled="False">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE74E;" FontSize="16" />
-                        <TextBlock Text="Save" />
-                    </StackPanel>
-                </Button>
-
-                <Button x:Name="DiscardButton" Click="OnDiscard" IsEnabled="False">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE74D;" FontSize="16" />
-                        <TextBlock Text="Discard" />
-                    </StackPanel>
+                <Button x:Name="DiscardButton" Style="{StaticResource ToolbarIconButton}" Click="OnDiscard" IsEnabled="False"
+                        ToolTipService.ToolTip="Discard — throw the transcript away"
+                        AutomationProperties.Name="Discard">
+                    <FontIcon Glyph="&#xE74D;" FontSize="15" />
                 </Button>
             </StackPanel>
         </Grid>
 
         <!--
-            Whether the microphone is actually running is the one thing the user has to know, and
-            the earlier thin banner did not carry it. Anything said while the model is loading is
-            lost rather than delayed, so the two states are given saturated backgrounds with
-            white text: unmistakable at a glance, and legible in either theme without depending
-            on which one is active.
+            Whether the microphone is actually running is the one thing the user has to know.
+            Anything said while the model is loading is lost rather than delayed, so the two
+            states get saturated backgrounds with white text: unmistakable at a glance, and
+            legible in either theme without depending on which one is active.
         -->
         <Border
             x:Name="CueBanner"
             Grid.Row="1"
+            Margin="24,4,24,4"
             CornerRadius="8"
             Padding="20,16"
             Visibility="Collapsed">
@@ -259,74 +255,44 @@
                 <!-- Pulses while listening, steady while waiting. Motion reads before text. -->
                 <Ellipse x:Name="CueDot" Width="18" Height="18" Fill="White" VerticalAlignment="Center" />
                 <StackPanel Spacing="2">
-                    <TextBlock
-                        x:Name="CueTitle"
-                        FontSize="22"
-                        FontWeight="SemiBold"
-                        Foreground="White" />
-                    <TextBlock
-                        x:Name="CueDetail"
-                        FontSize="14"
-                        Foreground="White"
-                        Opacity="0.92"
-                        TextWrapping="Wrap" />
+                    <TextBlock x:Name="CueTitle" FontSize="22" FontWeight="SemiBold" Foreground="White" />
+                    <TextBlock x:Name="CueDetail" FontSize="14" Foreground="White" Opacity="0.92" TextWrapping="Wrap" />
                 </StackPanel>
             </StackPanel>
         </Border>
 
-        <Grid Grid.Row="3" RowSpacing="12">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
-
-            <!-- Finding a moment in a long transcript, then clicking it to hear it. -->
-            <Grid Grid.Row="0" ColumnSpacing="12" Margin="0,0,0,8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <TextBox
-                    x:Name="SearchBox"
-                    Grid.Column="0"
-                    PlaceholderText="Search the transcript"
-                    TextChanged="OnSearchChanged" />
-
-                <TextBlock
-                    x:Name="SearchCount"
-                    Grid.Column="1"
-                    VerticalAlignment="Center"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    Style="{ThemeResource CaptionTextBlockStyle}" />
-            </Grid>
-
+        <Grid Grid.Row="2" Margin="14,4,14,8">
             <!--
                 One item per paragraph rather than one long block of text. Paragraphs are what
                 make a transcript readable, and giving each its own item is also what lets a
-                click land on a time: the timestamp beside it is the position in the recording,
-                so the text and the audio stay the same object rather than two views of one.
+                click land on a time. The list spans the window, so its scroll bar sits at the
+                edge where a hand reaches for it; each row holds itself to a reading column in
+                the middle, because a line the width of a wide window is one the eye loses on
+                the way back.
             -->
             <ListView
                 x:Name="TranscriptList"
-                Grid.Row="1"
                 SelectionMode="Single"
                 IsItemClickEnabled="True"
                 ItemClick="OnParagraphClick"
                 ContainerContentChanging="OnContainerContentChanging"
                 ShowsScrollingPlaceholders="False">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    </Style>
+                </ListView.ItemContainerStyle>
                 <ListView.ItemTemplate>
                     <DataTemplate x:DataType="local:ParagraphView">
-                        <Grid ColumnSpacing="16" Padding="0,10">
+                        <Grid ColumnSpacing="16" Padding="0,10" MaxWidth="840">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="56" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
 
                             <!--
-                                The timestamp sits in a fixed gutter so the text starts on the
-                                same line down the whole transcript. Ragged left margins are what
-                                make a transcript tiring to read.
+                                Where the paragraph starts, in a fixed gutter so the text starts
+                                on the same line down the whole transcript.
                             -->
                             <TextBlock
                                 Grid.Column="0"
@@ -334,29 +300,32 @@
                                 FontFamily="Consolas"
                                 FontSize="12"
                                 VerticalAlignment="Top"
-                                Margin="0,3,0,0"
+                                Margin="0,4,0,0"
                                 Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
 
                             <StackPanel Grid.Column="1" Spacing="3">
                                 <!--
-                                    A button, because a machine-guessed name is a first draft.
-                                    Diarization splits one person in two often enough that
-                                    correcting a label has to be as easy as reading it.
+                                    A button, because a machine-guessed name is a first draft:
+                                    diarization splits one person in two often enough that
+                                    correcting a label has to be as easy as reading it. Each
+                                    voice keeps its own colour (see SpeakerBrush), so a change
+                                    of speaker is seen before it is read.
                                 -->
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <HyperlinkButton
+                                        Tag="speaker"
                                         Content="{x:Bind Speaker}"
                                         Visibility="{x:Bind HasSpeaker}"
                                         Click="OnRenameSpeaker"
                                         Padding="0"
                                         FontWeight="SemiBold"
-                                        FontSize="12" />
+                                        FontSize="12.5"
+                                        ToolTipService.ToolTip="Rename" />
 
                                     <!--
-                                        Said over somebody else. The words here came out of two
-                                        voices at once, so both the wording and the name on it
-                                        are less certain than the rest of the transcript, and a
-                                        reader about to quote the line should know.
+                                        Said over somebody else: the wording and the name are
+                                        both less certain here, and a reader about to quote the
+                                        line should know.
                                     -->
                                     <Border
                                         Visibility="{x:Bind OverlapVisibility}"
@@ -372,23 +341,18 @@
                                 </StackPanel>
 
                                 <!--
-                                    Held to a readable measure rather than the width of the
-                                    window, and selectable from the moment it appears: quoting
-                                    a line is half of what a transcript is for, and it should
-                                    not wait for the run to finish. A selectable block takes
-                                    the pointer for itself, so the list item behind it is never
-                                    clicked — which is why this once played nothing — and the
-                                    click is found here instead: a press and release that
-                                    barely moved and selected nothing (see OnBodyReleased).
+                                    Selectable from the moment it appears: quoting a line is half
+                                    of what a transcript is for. A selectable block takes the
+                                    pointer for itself, so the click is found here instead (see
+                                    OnBodyReleased), and a right-click offers to correct the word
+                                    under it (see FillCorrectionMenu).
                                 -->
                                 <TextBlock
                                     Tag="body"
                                     IsTextSelectionEnabled="True"
                                     TextWrapping="Wrap"
-                                    MaxWidth="760"
-                                    HorizontalAlignment="Left"
-                                    LineHeight="24"
-                                    Style="{ThemeResource BodyTextBlockStyle}" />
+                                    FontSize="15"
+                                    LineHeight="25" />
                             </StackPanel>
                         </Grid>
                     </DataTemplate>
@@ -400,65 +364,133 @@
                 whole turning slowly and breathing while the models are busy. WinUI has no blur
                 to make a halo of, so the halo is built as one: a crisp ring at the transcript's
                 edge and a stack of one-pixel rings stepping outward, each fainter than the
-                last on a Gaussian, drawn in code into this cell (see BuildGlow). Three thick
-                strokes at three opacities read as stripes, not light. The paint is a conic
-                gradient rendered once into a bitmap and used as each stroke's brush, since
-                XAML has no conic brush and a linear one can only repeat; rotating the brush is
-                the sweep. Nothing sits behind the list, so Mica is never fought.
+                last on a Gaussian, drawn in code into this cell (see BuildGlow).
             -->
-            <Grid
-                x:Name="AiGlowHost"
-                Grid.Row="1"
-                IsHitTestVisible="False"
-                Visibility="Collapsed" />
+            <Grid x:Name="AiGlowHost" IsHitTestVisible="False" Visibility="Collapsed" />
 
+            <!-- What an empty window offers: the two ways in, and the promise that matters. -->
             <StackPanel
                 x:Name="EmptyState"
-                Grid.Row="1"
                 VerticalAlignment="Center"
                 HorizontalAlignment="Center"
-                MaxWidth="420"
-                Spacing="10">
-                <!-- A microphone, not a music note. This is a transcriber; the note read as a
-                     media player, and it also spoke only for half of what the panel offers. The
-                     microphone matches the button that starts the thing. -->
-                <FontIcon
-                    Glyph="&#xE720;"
-                    FontSize="32"
-                    Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                MaxWidth="460"
+                Spacing="14">
+                <Border Width="64" Height="64" CornerRadius="32" HorizontalAlignment="Center"
+                        Background="{ThemeResource AccentFillColorTertiaryBrush}" Opacity="0.9">
+                    <PathIcon Width="28" Height="28" HorizontalAlignment="Center" VerticalAlignment="Center"
+                              Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"
+                              Data="M11,3 L13,3 L13,21 L11,21 Z M7,7 L9,7 L9,17 L7,17 Z M15,6 L17,6 L17,18 L15,18 Z M3,10 L5,10 L5,14 L3,14 Z M19,9 L21,9 L21,15 L19,15 Z" />
+                </Border>
+                <TextBlock Text="Transcribe a recording" HorizontalAlignment="Center"
+                           Style="{ThemeResource SubtitleTextBlockStyle}" />
                 <TextBlock
-                    Text="Nothing transcribed yet"
-                    HorizontalAlignment="Center"
-                    Style="{ThemeResource SubtitleTextBlockStyle}" />
-                <TextBlock
-                    Text="Start listening to transcribe as you speak, or drop an audio or video file here. Everything runs on this machine."
+                    Text="Open an audio or video file, or a saved transcript — or drop one here. Words, speakers and timing are worked out on this PC, and nothing leaves it."
                     TextWrapping="Wrap"
                     TextAlignment="Center"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Style="{ThemeResource BodyTextBlockStyle}" />
+                <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center" Margin="0,4,0,0">
+                    <Button x:Name="EmptyOpenButton" Style="{ThemeResource AccentButtonStyle}" Click="OnOpen" Padding="16,7">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE8E5;" FontSize="14" />
+                            <TextBlock Text="Open…" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="EmptyRecordButton" Click="OnToggleRecording" Padding="16,7" IsEnabled="False">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE720;" FontSize="14" />
+                            <TextBlock Text="Record" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
             </StackPanel>
 
             <!-- Words still moving. Dimmed, because showing them as settled is a small lie. -->
             <TextBlock
                 x:Name="ProvisionalTextBlock"
-                Grid.Row="1"
                 Text=""
                 TextWrapping="Wrap"
                 FontStyle="Italic"
+                FontSize="15"
+                LineHeight="25"
+                MaxWidth="768"
                 VerticalAlignment="Bottom"
-                Margin="0,0,0,8"
-                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                Style="{ThemeResource BodyTextBlockStyle}" />
+                Margin="72,0,0,8"
+                Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
         </Grid>
 
+        <!--
+            A run's steps, each with its own bar: they overlap and finish in no fixed order, so
+            one bar for all of them could only ever show an invented number. The line below says
+            what the reader can already do, because a progress bar otherwise reads as "wait".
+        -->
+        <StackPanel x:Name="StepsPanel" Grid.Row="3" Margin="28,0,28,10" Spacing="7" Visibility="Collapsed">
+            <Grid ColumnSpacing="16">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Spacing="4">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StepLabel0" Style="{StaticResource StepLabel}" />
+                        <TextBlock x:Name="StepState0" Grid.Column="1" Style="{StaticResource StepState}" />
+                    </Grid>
+                    <ProgressBar x:Name="StepBar0" Maximum="1" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="4">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StepLabel1" Style="{StaticResource StepLabel}" />
+                        <TextBlock x:Name="StepState1" Grid.Column="1" Style="{StaticResource StepState}" />
+                    </Grid>
+                    <ProgressBar x:Name="StepBar1" Maximum="1" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StepLabel2" Style="{StaticResource StepLabel}" />
+                        <TextBlock x:Name="StepState2" Grid.Column="1" Style="{StaticResource StepState}" />
+                    </Grid>
+                    <ProgressBar x:Name="StepBar2" Maximum="1" />
+                </StackPanel>
+            </Grid>
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="ProgressHintText" TextWrapping="Wrap" VerticalAlignment="Center"
+                           Style="{ThemeResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                <!-- Here because this is where someone decides to go and do something else. -->
+                <CheckBox x:Name="AlertCheck" Grid.Column="1" Content="Alert me when it's done" FontSize="12"
+                          MinHeight="0" MinWidth="0" Padding="6,0,0,0" VerticalAlignment="Center"
+                          Click="OnAlertToggled"
+                          ToolTipService.ToolTip="A notification and a flashing taskbar button when this run ends, if you're in another window" />
+            </Grid>
+        </StackPanel>
+
+        <!-- The transport lives with the thing it transports: a player-shaped card. -->
         <Border
             x:Name="TransportBar"
             Grid.Row="4"
+            Margin="24,0,24,8"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="1"
-            CornerRadius="8"
-            Padding="12,8"
+            CornerRadius="14"
+            Padding="10,8"
             Visibility="Collapsed">
             <Grid ColumnSpacing="12">
                 <Grid.ColumnDefinitions>
@@ -467,21 +499,23 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Button x:Name="PlayButton" Grid.Column="0" Click="OnPlayPause" Width="44">
-                    <FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="16" />
+                <!-- The one filled control in the window: the thing a listener reaches for. -->
+                <Button x:Name="PlayButton" Grid.Column="0" Click="OnPlayPause"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        Width="38" Height="38" CornerRadius="19" Padding="0" VerticalAlignment="Center">
+                    <FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="14" />
                 </Button>
 
                 <!--
                     The recording drawn as its own shape. Where someone spoke and where they
                     stopped is visible without reading anything, which is what makes it worth
-                    scrubbing along: the target is usually "just after that gap" rather than
-                    "four minutes eleven". Dragging moves the transcript highlight whether or
-                    not anything is playing — the two are one thing seen twice.
+                    scrubbing along. Dragging moves the transcript highlight whether or not
+                    anything is playing — the two are one thing seen twice.
                 -->
                 <Grid
                     x:Name="Waveform"
                     Grid.Column="1"
-                    Height="48"
+                    Height="44"
                     Background="Transparent"
                     SizeChanged="OnWaveformSizeChanged"
                     PointerPressed="OnWaveformPressed"
@@ -490,37 +524,27 @@
                     PointerCaptureLost="OnWaveformReleased"
                     Tapped="OnWaveformTapped">
 
-                    <!--
-                        The drawing is not the control. Shapes are hit-testable by default, so
-                        without this the pointer lands on a polygon and the grid underneath —
-                        the thing that actually handles scrubbing — never hears about it.
-                    -->
-                    <Polygon
-                        x:Name="WaveformShape"
-                        IsHitTestVisible="False"
-                        Fill="{ThemeResource TextFillColorDisabledBrush}" />
+                    <!-- The drawing is not the control: shapes hit-test by default, and the grid
+                         underneath is what handles scrubbing. -->
+                    <Polygon x:Name="WaveformShape" IsHitTestVisible="False"
+                             Fill="{ThemeResource TextFillColorDisabledBrush}" />
 
                     <!-- The same shape again, clipped to what has played. -->
-                    <Polygon
-                        x:Name="WaveformPlayed"
-                        IsHitTestVisible="False"
-                        Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                    <Polygon x:Name="WaveformPlayed" IsHitTestVisible="False"
+                             Fill="{ThemeResource AccentFillColorDefaultBrush}" />
 
                     <!-- Where the search term is said. Under the playhead, over the waveform. -->
                     <Canvas x:Name="WaveformMarks" IsHitTestVisible="False" />
 
-                    <Rectangle
-                        x:Name="Playhead"
-                        Width="2"
-                        IsHitTestVisible="False"
-                        HorizontalAlignment="Left"
-                        Fill="{ThemeResource TextFillColorPrimaryBrush}" />
+                    <Rectangle x:Name="Playhead" Width="2" IsHitTestVisible="False" HorizontalAlignment="Left"
+                               Fill="{ThemeResource TextFillColorPrimaryBrush}" />
                 </Grid>
 
                 <TextBlock
                     x:Name="TransportClock"
                     Grid.Column="2"
                     VerticalAlignment="Center"
+                    Margin="0,0,4,0"
                     FontFamily="Consolas"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                     Style="{ThemeResource CaptionTextBlockStyle}" />
@@ -528,89 +552,78 @@
         </Border>
 
         <!--
-            The status line, and beside it where the work is running. That second thing used to
-            have a card at the top of the window, which gave the most technical sentence in the
-            app the most prominent position in it. It still matters — "is it really using the
-            NPU?" is the question everyone asks — so it stays visible, in the corner, at the size
-            of a footnote.
+            The status gets the line; the models get a chip. The model roster is a question
+            asked now and then — "is it really using the NPU?" — while the status is read
+            constantly, so the chip names the models in a word each and opens the full roster
+            on click. The bar is for single jobs, such as comparing voices, that have only one
+            number to give; a run shows its steps instead.
         -->
-        <Grid Grid.Row="5" ColumnSpacing="16" RowSpacing="8">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <!--
-                The status takes what the models chip leaves. The chip sizes to its content —
-                a handful of one-word names on one line, which cannot wrap — so an automatic
-                column is safe for it in a way it was not for the full hardware sentence that
-                stood here before: that one wrapped to five lines in an automatic column and
-                took the height the transcript should have had. The status trims to fit.
-            -->
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
+        <Border Grid.Row="5" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0"
+                Padding="24,4,14,6">
+            <Grid ColumnSpacing="16" RowSpacing="4">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-            <ProgressBar
-                x:Name="ProgressBarControl"
-                Grid.Row="0"
-                Grid.ColumnSpan="2"
-                Value="0"
-                Maximum="1" />
+                <ProgressBar
+                    x:Name="ProgressBarControl"
+                    Grid.Row="0"
+                    Grid.ColumnSpan="2"
+                    Value="0"
+                    Maximum="1"
+                    Visibility="Collapsed" />
 
-            <TextBlock
-                x:Name="StatusText"
-                Grid.Row="1"
-                Grid.Column="0"
-                Text="Starting up…"
-                Style="{ThemeResource CaptionTextBlockStyle}"
-                TextWrapping="NoWrap"
-                TextTrimming="CharacterEllipsis"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <TextBlock
+                    x:Name="StatusText"
+                    Grid.Row="1"
+                    Grid.Column="0"
+                    Text="Starting up…"
+                    VerticalAlignment="Center"
+                    Style="{ThemeResource CaptionTextBlockStyle}"
+                    TextWrapping="NoWrap"
+                    TextTrimming="CharacterEllipsis"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
-            <!--
-                Offered rather than asked about, and only once there is something to offer: the
-                language is not known until the recording has been listened to, so this appears
-                after transcribing and only when what was spoken was not English. Centred, away
-                from the buttons that act on the transcript, because it makes a new one.
-            -->
-            <ToggleButton
-                x:Name="TranslateButton"
-                Grid.Row="1"
-                Grid.Column="0"
-                Grid.ColumnSpan="2"
-                HorizontalAlignment="Center"
-                Visibility="Collapsed"
-                Content="Translate to English"
-                Click="OnToggleTranslate"
-                ToolTipService.ToolTip="Transcribes the recording again, in English. Turning it off transcribes it again as spoken." />
+                <!--
+                    Offered rather than asked about, and only once there is something to offer:
+                    the language is not known until the recording has been listened to.
+                -->
+                <ToggleButton
+                    x:Name="TranslateButton"
+                    Grid.Row="1"
+                    Grid.Column="0"
+                    Grid.ColumnSpan="2"
+                    HorizontalAlignment="Center"
+                    Visibility="Collapsed"
+                    Content="Translate to English"
+                    Click="OnToggleTranslate"
+                    ToolTipService.ToolTip="Transcribes the recording again, in English. Turning it off transcribes it again as spoken." />
 
-            <!--
-                The models, a word each, lit while they work: the question people ask of this
-                corner is "what is it doing right now, and where?", and a line of hardware
-                detail answered only the second half. Faded at rest so it never competes with
-                the status; the full roster opens on click. Built in code (see RenderModels),
-                because which models there are, and which are lit, changes a few times a run.
-            -->
-            <Button
-                x:Name="ModelsChip"
-                Grid.Row="1"
-                Grid.Column="1"
-                HorizontalAlignment="Right"
-                Padding="8,2"
-                MinHeight="0"
-                Background="Transparent"
-                BorderThickness="0"
-                Opacity="0.7"
-                Visibility="Collapsed"
-                ToolTipService.ToolTip="The models doing the work, and where each runs">
-                <Button.Flyout>
-                    <Flyout Placement="TopEdgeAlignedRight">
-                        <StackPanel x:Name="ModelsPanel" Spacing="12" Width="380" />
-                    </Flyout>
-                </Button.Flyout>
-                <StackPanel x:Name="ModelsChipRow" Orientation="Horizontal" />
-            </Button>
-        </Grid>
+                <Button
+                    x:Name="ModelsChip"
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    HorizontalAlignment="Right"
+                    Padding="8,2"
+                    MinHeight="0"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Opacity="0.7"
+                    Visibility="Collapsed"
+                    ToolTipService.ToolTip="The models doing the work, and where each runs">
+                    <Button.Flyout>
+                        <Flyout Placement="TopEdgeAlignedRight">
+                            <StackPanel x:Name="ModelsPanel" Spacing="12" Width="380" />
+                        </Flyout>
+                    </Button.Flyout>
+                    <StackPanel x:Name="ModelsChipRow" Orientation="Horizontal" />
+                </Button>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

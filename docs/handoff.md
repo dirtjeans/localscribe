@@ -11,8 +11,8 @@ The macOS port has run; its own handoff is [handoff-macos.md](handoff-macos.md).
 **The language-model cleanup stage was removed on 2026-11-03**, with Foundry Local, GenieX and
 the glossary, which only ever worked through it. Older sections below may still describe it as
 history. To a reader, "Cleanup" now names the word-timing scan: see `ProgressSteps` and the
-handoff-macos section on progress. The Windows window was edited without being compiled; build
-it first (`LocalScribe.App`, by path) before trusting it.
+handoff-macos section on progress. The Windows window was restyled to match the Mac's on
+2026-11-16 and has run since; see "The window matches the Mac's" below.
 Every model tried for a stage of the pipeline, and the numbers that kept or rejected it, is in
 [model-trials.md](model-trials.md).
 
@@ -301,7 +301,40 @@ say no" at ~702 s, before printed twice with the copy at 727 s, after once at 70
 "…I'm a sucker for alliteration" ends by 1200 s with silence after, placed up to 1262 s before
 and by 1200.6 after.
 
+## The window matches the Mac's (2026-11-16)
+
+The Mac's restyle and its later features, ported with the Mac's names so the two can be read
+side by side (`handoff-macos.md`, "The window's look" and the sections on progress and
+corrections):
+
+- **The title bar is the toolbar.** Open and Record on the left, the document's name, length and
+  speaker count in the middle, search and the transcript's tools as glyphs on the right. One
+  Open takes a recording or a `.scrb`; Ctrl+O and Ctrl+S. The caption buttons are painted by
+  hand (`PaintCaptionButtons`): with transparent backgrounds WinUI drew them in no colour.
+- **A centred reading column**, a colour per speaker (the Mac's eight, light and dark), and the
+  player as a card. An empty window offers Open and Record.
+- **Three steps with their own bars** from the view model's `ProgressSteps`, and "Alert me when
+  done" (`FinishedAlert`): a Windows notification when allowed, a beep when not, and always a
+  flashing taskbar button. It registers for notifications only once the box is ticked.
+- **Right-click a word or a selection to correct it**, here or everywhere. The menu replaces the
+  text block's own `ContextFlyout` and is filled as it opens: a selectable block opens its Copy
+  and Select All menu itself, before `ContextRequested` reaches anyone. The word under the
+  pointer comes from `GetCharacterRect`, whose rect is the caret's, zero wide, so a character is
+  the last one on the clicked line that starts at or before the pointer.
+- **Playback follows the spoken word** until the reader scrolls (wheel, scroll bar, paging keys,
+  touch). Pressing play hands the view back. The window's own scrolling is fenced off with a
+  flag, or it would count as the reader's.
+
+Checked on the laptop by driving the published app: the menu offers "Correct “Congress”
+everywhere (2 places)…", the highlight tracks the voice, a seek scrolls the word to a third of
+the way down, and a wheel scroll during playback holds. Not yet checked by hand: the alert at
+the end of a real run, and the dark theme.
+
 ## Evaluated and not taken
+
+- **The QNN GPU backend for the aligner** (2026-11-16): refuses the feature extractor's Conv
+  and is slower than the CPU on the rest. DirectML is the GPU route worth taking; see
+  `model-trials.md`, "MMS fp16 on the Snapdragon's GPU".
 
 - **WhisperX** — faster-whisper/CTranslate2 has no usable Windows ARM64 build. Its wav2vec2
   alignment idea was, in effect, adopted: the MMS CTC aligner is that design, done here.
