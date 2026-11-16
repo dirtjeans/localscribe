@@ -62,7 +62,7 @@ internal static class AlignerNpuCommand
         // One cache per model and window length: the compiled graph is for exactly one shape.
         var cache = Path.Combine(
             Path.GetDirectoryName(npuModel)!,
-            $"{Path.GetFileNameWithoutExtension(npuModel)}.qnn-{length}.onnx");
+            $"{Path.GetFileNameWithoutExtension(npuModel)}.{Backend.Tag}-{length}.onnx");
         var cached = File.Exists(cache);
         var watch = Stopwatch.StartNew();
         InferenceSession npu;
@@ -210,7 +210,7 @@ internal static class AlignerNpuCommand
             : Path.Combine(directory, "model_fp16.onnx");
         var cache = Path.Combine(
             Path.GetDirectoryName(npuModel)!,
-            $"{Path.GetFileNameWithoutExtension(npuModel)}.qnn-{length}.onnx");
+            $"{Path.GetFileNameWithoutExtension(npuModel)}.{Backend.Tag}-{length}.onnx");
 
         var watch = Stopwatch.StartNew();
         using var npu = coreMlUnits is null
@@ -386,6 +386,16 @@ internal static class AlignerNpuCommand
         public Core.Alignment.AlignmentScores Scores { get; } = new(frames, alphabet, frameSeconds);
     }
 
+    /// <summary>
+    /// Which Qualcomm backend the trial compiles for: the NPU (HTP) unless
+    /// <c>LOCALSCRIBE_QNN_BACKEND=gpu</c> asks for the Adreno GPU, whose backend ships in the
+    /// same package. Each gets its own compiled cache.
+    /// </summary>
+    private static (string Library, string Tag) Backend =>
+        Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_BACKEND") is "gpu"
+            ? ("QnnGpu.dll", "qnngpu")
+            : ("QnnHtp.dll", "qnn");
+
     private static InferenceSession OpenNpu(string modelPath, int length, string? writeCacheTo)
     {
         var options = new SessionOptions();
@@ -400,10 +410,15 @@ internal static class AlignerNpuCommand
         options.AddFreeDimensionOverrideByName("batch_size", 1);
         options.AddFreeDimensionOverrideByName("sequence_length", length);
 
-        // Entirely on the NPU or not at all: a silent CPU fallback would time the CPU.
-        options.AddSessionConfigEntry("session.disable_cpu_ep_fallback", "1");
+        // Entirely on the NPU or not at all: a silent CPU fallback would time the CPU. A split
+        // graph is measured only when asked for, to see whether part of it is worth moving.
+        var split = Environment.GetEnvironmentVariable("LOCALSCRIBE_ALLOW_FALLBACK") is { Length: > 0 };
+        if (!split)
+        {
+            options.AddSessionConfigEntry("session.disable_cpu_ep_fallback", "1");
+        }
 
-        if (writeCacheTo is not null)
+        if (writeCacheTo is not null && !split)
         {
             // The compile is the slow part and depends only on the model and the shape, so its
             // result is kept, as the Whisper build ships precompiled.
@@ -412,12 +427,14 @@ internal static class AlignerNpuCommand
             options.AddSessionConfigEntry("ep.context_embed_mode", "0");
         }
 
-        options.AppendExecutionProvider("QNN", new Dictionary<string, string>
+        var provider = new Dictionary<string, string> { ["backend_path"] = Backend.Library };
+        if (Backend.Tag == "qnn")
         {
-            ["backend_path"] = "QnnHtp.dll",
-            ["htp_performance_mode"] = "burst",
-            ["enable_htp_fp16_precision"] = "1",
-        });
+            provider["htp_performance_mode"] = "burst";
+            provider["enable_htp_fp16_precision"] = "1";
+        }
+
+        options.AppendExecutionProvider("QNN", provider);
 
         return new InferenceSession(modelPath, options);
     }

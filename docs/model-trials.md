@@ -139,6 +139,29 @@ Alongside, the scan slowed Whisper (raw transcript 1:44–1:53 against 0:58–1:
 model with it, so the Mac keeps scanning after transcription. Recordings shorter than one 34 s
 window are scanned on the CPU.
 
+**MMS fp16 on the Snapdragon's GPU** (Adreno X1-85, 2026-11-16), one 14 s window (699 frames),
+zeros or noise in, timed after a warm-up:
+
+| Route | Per window | Verdict |
+|---|---|---|
+| QNN EP, `QnnGpu.dll` backend (`LOCALSCRIBE_QNN_BACKEND=gpu localscribe-doctor --qnn-probe`) | 19.5 s, transformer only | **Rejected** |
+| CPU, fp16, for comparison | 11 s | — |
+| DirectML (`onnxruntime-directml` 1.24, Python) | 0.49 s | **Promising, not wired** |
+
+The QNN GPU backend refuses the whole graph: ORT's layout transformer rewrites the feature
+extractor's first Conv to NHWC for it, the backend then declines that node (error 3110), and the
+session fails, with CPU fallback allowed or not. Sliced past the feature extractor, the
+transformer alone runs and is slower than the CPU. DirectML took the whole graph and agreed with
+the CPU on over 99% of frames' best token. That Python was an x64 build under emulation (PyPI
+ships no arm64 DirectML wheel), so a native build should be no slower.
+
+What stands in the way: the QNN and DirectML ONNX Runtime packages are separate builds of one
+native library and cannot load into one process. Two ways round it, neither tried: a helper
+process for the scan, or Windows ML 2.x, whose single shared runtime lists DirectML and QNN (NPU
+and GPU) together. The gain would be the NPU left to Whisper alone; the "takes turns" pacing in
+`docs/handoff.md` exists only because the scan shares it. Not yet measured: whether a DirectML scan
+slows Whisper on the NPU the way the Mac's GPU scan slowed its Whisper.
+
 ## Speakers
 
 | Model | Where | Verdict |

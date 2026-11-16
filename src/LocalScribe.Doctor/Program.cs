@@ -258,6 +258,17 @@ internal static class Program
             return fused > 0 ? 0 : 1;
         }
 
+        var probe = ArgumentValue(args, "--qnn-probe");
+        if (probe is not null)
+        {
+            // --dim name=value, repeated: the free dimensions to fix, as the NPU needs.
+            var dims = args
+                .Select((arg, i) => arg == "--dim" && i + 1 < args.Length ? args[i + 1].Split('=') : null)
+                .Where(pair => pair is { Length: 2 })
+                .ToDictionary(pair => pair![0], pair => long.Parse(pair![1], System.Globalization.CultureInfo.InvariantCulture));
+            return QnnProbeCommand.Run(probe, dims, int.TryParse(ArgumentValue(args, "--runs"), out var runs) ? runs : 5);
+        }
+
         var npuTrial = ArgumentValue(args, "--aligner-npu");
         if (npuTrial is not null && Core.Archive.TranscriptArchive.IsArchive(npuTrial) && args.Contains("--app", StringComparer.Ordinal))
         {
