@@ -39,6 +39,18 @@ internal static class QnnProbeCommand
             provider["enable_htp_fp16_precision"] = "1";
         }
 
+        // Any provider option, "key=value;key=value", so profiling or another performance mode
+        // can be tried without a rebuild.
+        foreach (var pair in (Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_OPTIONS") ?? string.Empty)
+                     .Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var cut = pair.IndexOf('=');
+            if (cut > 0)
+            {
+                provider[pair[..cut].Trim()] = pair[(cut + 1)..].Trim();
+            }
+        }
+
         if (Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_BACKEND") is not "cpu")
         {
             options.AppendExecutionProvider("QNN", provider);
@@ -91,8 +103,14 @@ internal static class QnnProbeCommand
             .ToArray();
         var count = shape.Aggregate(1, (a, b) => a * b);
 
-        return meta.ElementDataType == TensorElementType.Float16
-            ? NamedOnnxValue.CreateFromTensor(name, new DenseTensor<Float16>(new Float16[count], shape))
-            : NamedOnnxValue.CreateFromTensor(name, new DenseTensor<float>(new float[count], shape));
+        return meta.ElementDataType switch
+        {
+            TensorElementType.Float16 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<Float16>(new Float16[count], shape)),
+            TensorElementType.Int32 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<int>(new int[count], shape)),
+            TensorElementType.Int64 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<long>(new long[count], shape)),
+            TensorElementType.UInt8 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<byte>(new byte[count], shape)),
+            TensorElementType.UInt16 => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<ushort>(new ushort[count], shape)),
+            _ => NamedOnnxValue.CreateFromTensor(name, new DenseTensor<float>(new float[count], shape)),
+        };
     }
 }
