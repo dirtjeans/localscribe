@@ -414,7 +414,8 @@ public class RecordingOrderTests
 
     private static List<RecordingFacts> Pixel() =>
     [
-        .. PixelClips.Reverse().Select(clip => File(
+        // Enumerable by name: from C# 14 an array's .Reverse() binds to the in-place span method.
+        .. Enumerable.Reverse(PixelClips).Select(clip => File(
             clip.Name,
             recorded: DateTimeOffset.Parse($"2026-11-26T{clip.Stamp}Z", System.Globalization.CultureInfo.InvariantCulture),
             seconds: clip.Seconds)),

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using LocalScribe.Core.Archive;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Transcription;
 using Microsoft.UI.Dispatching;
@@ -173,41 +174,130 @@ public sealed partial class MainWindow : Window
     /// Dropping a recording on the window is the shortest path from a file to a transcript, and
     /// the one that does not involve a picker.
     /// </summary>
-    private void OnDragOver(object sender, DragEventArgs e)
+    private async void OnDragOver(object sender, DragEventArgs e)
     {
-        e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
-        e.DragUIOverride.Caption = "Transcribe this";
-        e.DragUIOverride.IsGlyphVisible = true;
+        // Reading the items is asynchronous, and the answer is due when this handler returns.
+        var deferral = e.GetDeferral();
+
+        try
+        {
+            var paths = await DroppedPathsAsync(e.DataView);
+            var opens = OpenFileButton.IsEnabled && paths.Any(path => IsRecording(path) || TranscriptArchive.IsArchive(path));
+
+            e.AcceptedOperation = opens
+                ? Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy
+                : Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
+            e.DragUIOverride.Caption = paths.Count > 1 ? "Transcribe these as one" : "Transcribe this";
+            e.DragUIOverride.IsGlyphVisible = true;
+        }
+        finally
+        {
+            deferral.Complete();
+        }
     }
 
+    /// <summary>Dropped files open exactly as Open would open them, and only when Open could.</summary>
     private async void OnDrop(object sender, DragEventArgs e)
     {
-        if (!e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+        if (OpenFileButton.IsEnabled && await DroppedPathsAsync(e.DataView) is { Count: > 0 } paths)
+        {
+            await OpenPathsAsync(paths);
+        }
+    }
+
+    private static async Task<List<string>> DroppedPathsAsync(Windows.ApplicationModel.DataTransfer.DataPackageView data)
+    {
+        if (!data.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems))
+        {
+            return [];
+        }
+
+        var items = await data.GetStorageItemsAsync();
+        return [.. items.OfType<Windows.Storage.StorageFile>().Select(file => file.Path)];
+    }
+
+    private static bool IsRecording(string path) =>
+        AudioFileLoader.SupportedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// One file opens as it always has. Several recordings are parts of one: their order is
+    /// proposed from what they say about themselves and shown before anything runs.
+    /// </summary>
+    private async Task OpenPathsAsync(IReadOnlyList<string> chosen)
+    {
+        // Windows paths ignore case, so one file picked twice in different cases is still one.
+        var paths = chosen.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        if (_choosingOrder || paths.Count == 0)
         {
             return;
         }
 
-        var items = await e.DataView.GetStorageItemsAsync();
-        var file = items.OfType<Windows.Storage.StorageFile>().FirstOrDefault();
-
-        if (file is null)
+        if (paths.Count == 1)
         {
+            await OpenPathAsync(paths[0]);
             return;
         }
 
-        if (TranscriptArchive.IsArchive(file.Name))
+        if (paths.Any(TranscriptArchive.IsArchive))
         {
-            OpenArchive(file.Path);
+            StatusText.Text = "Saved transcripts open one at a time; only recordings can be joined.";
             return;
         }
 
-        if (!AudioFileLoader.SupportedExtensions.Contains(Path.GetExtension(file.Name), StringComparer.OrdinalIgnoreCase))
+        if (paths.FirstOrDefault(path => !IsRecording(path)) is { } stranger)
         {
-            StatusText.Text = $"{file.Name} is not an audio or video file LocalScribe can read.";
+            StatusText.Text = $"{Path.GetFileName(stranger)} is not an audio or video file LocalScribe can read.";
             return;
         }
 
-        await _viewModel.TranscribeFileAsync(file.Path);
+        // Open, Record and drop wait until the order is settled: reading the headers of files
+        // that live only in OneDrive downloads them, and a run started meanwhile would have the
+        // joined one started over it when the sheet was confirmed.
+        _choosingOrder = true;
+        UpdateRecordButton();
+        StatusText.Text = $"Reading {paths.Count} files…";
+
+        try
+        {
+            var proposal = await Task.Run(() => RecordingOrder.Decide([.. paths.Select(RecordingFacts.Read)]));
+            StatusText.Text = _viewModel.Status;
+
+            if (await OrderDialog.AskAsync(Content.XamlRoot, proposal) is not { } ordered)
+            {
+                return;
+            }
+
+            _choosingOrder = false;
+            await _viewModel.TranscribeFilesAsync(ordered);
+        }
+        finally
+        {
+            _choosingOrder = false;
+            UpdateRecordButton();
+        }
+    }
+
+    /// <summary>True from opening several files until their order is confirmed or cancelled.</summary>
+    private bool _choosingOrder;
+    private async Task OpenPathAsync(string path)
+    {
+        // A saved transcript is opened, not transcribed again: it already has its words, its
+        // timings and its speakers, and running the model over it would only spend minutes
+        // arriving somewhere worse.
+        if (TranscriptArchive.IsArchive(path))
+        {
+            OpenArchive(path);
+            return;
+        }
+
+        if (!IsRecording(path))
+        {
+            StatusText.Text = $"{Path.GetFileName(path)} is not an audio or video file LocalScribe can read.";
+            return;
+        }
+
+        await _viewModel.TranscribeFileAsync(path);
     }
 
     /// <summary>
@@ -278,8 +368,7 @@ public sealed partial class MainWindow : Window
                     UpdateGlow();
                     break;
                 case nameof(MainViewModel.IsBusy):
-                    OpenFileButton.IsEnabled = !_viewModel.IsBusy;
-                    EmptyOpenButton.IsEnabled = !_viewModel.IsBusy;
+                    // Open's enabling is UpdateRecordButton's, which weighs everything that holds it.
                     CancelButton.Visibility = _viewModel.IsBusy ? Visibility.Visible : Visibility.Collapsed;
                     UpdateRecordButton();
                     UpdateGlow();
@@ -728,8 +817,8 @@ public sealed partial class MainWindow : Window
 
             // The file picker stays open. Choosing a recording takes long enough that the load
             // finishes underneath it, and a run queued meanwhile simply waits.
-            OpenFileButton.IsEnabled = true;
-            EmptyOpenButton.IsEnabled = true;
+            OpenFileButton.IsEnabled = !_choosingOrder;
+            EmptyOpenButton.IsEnabled = !_choosingOrder;
 
             ProgressBarControl.IsIndeterminate = true;
             UpdateWorkBar();
@@ -750,7 +839,9 @@ public sealed partial class MainWindow : Window
         // Grey until a click would actually record: before the model is loaded, the button
         // took the click and then made the user watch it get ready — while anything they said
         // was lost, not queued. Busy transcribing a file is the same promise unkeepable.
-        var canRecord = _viewModel.IsModelReady && !_viewModel.IsBusy;
+        // Choosing the order of several files holds it too: a recording started under the sheet
+        // would have the joined run started over it when the sheet was confirmed.
+        var canRecord = _viewModel.IsModelReady && !_viewModel.IsBusy && !_choosingOrder;
 
         StartButton.IsEnabled = canRecord;
         EmptyRecordButton.IsEnabled = canRecord;
@@ -763,7 +854,7 @@ public sealed partial class MainWindow : Window
                     : "Loading the speech model — recording will be ready in a moment");
         StartLabel.Text = "Record";
         StartIcon.Glyph = "";                      // microphone
-        OpenFileButton.IsEnabled = !_viewModel.IsRecording && !_viewModel.IsBusy;
+        OpenFileButton.IsEnabled = !_viewModel.IsRecording && !_viewModel.IsBusy && !_choosingOrder;
         EmptyOpenButton.IsEnabled = OpenFileButton.IsEnabled;
 
         if (_viewModel.IsRecording)
@@ -3019,29 +3110,22 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void OnOpen(object sender, RoutedEventArgs e)
     {
-        if (_viewModel.IsBusy || _viewModel.IsRecording)
+        // The button's own state, so the keyboard shortcut obeys the same rules as the click.
+        if (!OpenFileButton.IsEnabled)
         {
             return;
         }
 
-        var picker = PickerFor(AudioFileLoader.SupportedExtensions.Concat(TranscriptArchive.Extensions));
+        var paths = OpenFilesDialog.Show(
+            WindowNative.GetWindowHandle(this),
+            "Open a recording or transcript, or several parts of one recording",
+            "Recordings and transcripts",
+            AudioFileLoader.SupportedExtensions.Concat(TranscriptArchive.Extensions));
 
-        var file = await picker.PickSingleFileAsync();
-        if (file is null)
+        if (paths.Count > 0)
         {
-            return;
+            await OpenPathsAsync(paths);
         }
-
-        // A saved transcript is opened, not transcribed again: it already has its words, its
-        // timings and its speakers, and running the model over it would only spend minutes
-        // arriving somewhere worse.
-        if (TranscriptArchive.IsArchive(file.Name))
-        {
-            OpenArchive(file.Path);
-            return;
-        }
-
-        await _viewModel.TranscribeFileAsync(file.Path);
     }
 
     private void OnOpenAccelerator(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -3060,21 +3144,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private FileOpenPicker PickerFor(IEnumerable<string> extensions)
-    {
-        var picker = new FileOpenPicker();
-
-        // A picker created in an unpackaged app has no window of its own and must be told which
-        // window owns it, or the call fails at runtime rather than at compile time.
-        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-
-        foreach (var extension in extensions)
-        {
-            picker.FileTypeFilter.Add(extension);
-        }
-
-        return picker;
-    }
 
     private async void OnToggleRecording(object sender, RoutedEventArgs e)
     {

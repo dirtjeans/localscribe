@@ -330,12 +330,31 @@ everywhere (2 places)…", the highlight tracks the voice, a seek scrolls the wo
 the way down, and a wheel scroll during playback holds. Not yet checked by hand: the alert at
 the end of a real run, and the dark theme.
 
-## Several files as one recording: what the Windows window still needs (2026-11-26)
+## Several files as one recording (2026-11-26)
 
 On the Mac you can now open or drop several recordings and have them transcribed as one: the
 parts a recorder split a session into, or a phone's clips of one meeting. `handoff-macos.md`,
-"Several files as one recording", describes it. Most of it is already shared, and **none of the
-shared part has been compiled on Windows yet**: build `LocalScribe.App` before anything else.
+"Several files as one recording", describes it.
+
+**Done on Windows, the same day.** The WinUI window now does all five steps below: Open and drop
+take several files, Open, Record and drop wait while the order is chosen, and `OrderDialog` is
+the Mac's sheet as a `ContentDialog`. Checked by hand: the debate cut in three, names scrambled,
+opened together, proposed as zebra, apple, mango by save time with the doubt shown, transcribed
+as one (all 388 words, times running on across both joins, two speakers), and saved. The plan
+as the Mac left it follows, for the reasoning.
+
+- **Open uses the classic dialog** (`OpenFilesDialog`, `IFileOpenDialog` over COM), not
+  `FileOpenPicker`. On this Windows 11 build the WinRT picker runs in `pickerhost.exe`, and for
+  this unpackaged app `PickMultipleFilesAsync` closed without ever returning: no files, no
+  error, no exception. Save still uses `FileSavePicker`, which worked in the same session.
+- **The .NET 10 SDK broke one test.** From C# 14 an array's `.Reverse()` binds to the in-place
+  span method, which returns nothing, so `RecordingOrderTests` called `Enumerable.Reverse` by
+  name. The Mac's SDK still binds the LINQ one; anything new that reverses an array should do
+  the same.
+- **`doctor --order` on Windows' own files**: Snipping Tool's screen recordings
+  ("Screen Recording 2025-11-20 133954") carry an MP4 start time and are named for when they
+  stopped, so name and stamp disagree by the length. The rule that reads a stamp as a stop only
+  fires when the name is the stamp *less* the length, so these are read correctly as starts.
 
 **Already shared, nothing to port:**
 

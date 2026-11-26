@@ -21,7 +21,7 @@ three while the machine stutters.
 - Caps CPU usage so the rest of Windows stays responsive
 - On the Mac: correct a misheard word or name by right-clicking it, here or everywhere, and get an
   alert when a run in the background is done
-- On the Mac: open several parts of one recording and they are put in order from what the files
+- Open several parts of one recording and they are put in order from what the files
   say about themselves, shown for you to confirm, and transcribed as one
 
 ## Getting started

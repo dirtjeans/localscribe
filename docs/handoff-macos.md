@@ -561,9 +561,9 @@ by subtraction, every parser keeps what it read before a bad field, and neither 
 throws. `localscribe-doctor --order <files>` prints what each file says and the proposed order;
 `--headless a b c` joins as the window would.
 
-**Windows:** the view model has `TranscribeFilesAsync`, but the WinUI window offers one file at a
-time and has no order sheet. The view model's new guards (no run over a running one or a recording
-being prepared) apply there too. Not compiled on Windows.
+**Windows:** done the same day, and checked by hand on the laptop; `handoff.md`, "Several files as
+one recording", has what differed there (the classic Open dialog, and one test the .NET 10 SDK
+compiled differently).
 
 ### Word timing on the GPU (2026-11-07)
 
