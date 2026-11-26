@@ -293,6 +293,12 @@ internal static class Program
                 double.TryParse(ArgumentValue(args, "--npu-window"), System.Globalization.CultureInfo.InvariantCulture, out var seconds) ? seconds : 30);
         }
 
+        var orderAt = Array.IndexOf(args, "--order");
+        if (orderAt >= 0)
+        {
+            return OrderCommand.Run([.. args.Skip(orderAt + 1).TakeWhile(a => !a.StartsWith("--", StringComparison.Ordinal))]);
+        }
+
         var gpuTrial = ArgumentValue(args, "--aligner-coreml");
         if (gpuTrial is not null && args.Contains("--app", StringComparer.Ordinal))
         {
@@ -419,6 +425,7 @@ internal static class Program
         Console.WriteLine("  --window <a-b>   With --align: the seconds to decode, as 12.5-18.5.");
         Console.WriteLine("  --check-words <f>  Check a saved .scrb transcript against its own audio.");
         Console.WriteLine("  --aligner-trial <f>  Time candidate word aligners on a .scrb and grade them against the reference.");
+        Console.WriteLine("  --order <f> <f>…   What each recording says about itself, and the order the app would propose.");
         Console.WriteLine("  --aligner-coreml <f>  Grade the fp16 aligner through Core ML on a .scrb; --units CPUAndGPU|CPUAndNeuralEngine|ALL; --app for the app's own GPU path.");
         Console.WriteLine("  --asr-trial <f>  Transcribe a .scrb with Nemotron 3.5 ASR and Whisper; compare speed, words, timing.");
         Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");

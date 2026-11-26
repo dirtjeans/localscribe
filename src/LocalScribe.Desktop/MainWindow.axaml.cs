@@ -9,6 +9,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using LocalScribe.App;
+using LocalScribe.Core.Audio;
 using LocalScribe.Core.Diarization;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Models;
@@ -130,32 +131,30 @@ public sealed partial class MainWindow : Window
         SearchBox.Width = width >= 700 ? 170 : 120;
     }
 
-    private string? DroppedFile(DragEventArgs e)
-    {
-        if (e.DataTransfer.TryGetFiles()?.FirstOrDefault()?.TryGetLocalPath() is not { } path)
-        {
-            return null;
-        }
+    private static List<string> DroppedFiles(DragEventArgs e) =>
+        [.. (e.DataTransfer.TryGetFiles() ?? [])
+            .Select(file => file.TryGetLocalPath())
+            .OfType<string>()
+            .Where(path => IsRecording(path) || IsArchive(path))];
 
-        var extension = Path.GetExtension(path);
-        var known = AudioFileLoader.SupportedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
-            || extension.Equals(".scrb", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".lscribe", StringComparison.OrdinalIgnoreCase);
+    private static bool IsRecording(string path) =>
+        AudioFileLoader.SupportedExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
-        return known ? path : null;
-    }
+    private static bool IsArchive(string path) =>
+        Path.GetExtension(path) is var extension
+        && (extension.Equals(".scrb", StringComparison.OrdinalIgnoreCase) || extension.Equals(".lscribe", StringComparison.OrdinalIgnoreCase));
 
     private void OnDragOver(object? sender, DragEventArgs e) =>
-        e.DragEffects = OpenButton.IsEnabled && DroppedFile(e) is not null
+        e.DragEffects = OpenButton.IsEnabled && DroppedFiles(e).Count > 0
             ? DragDropEffects.Copy
             : DragDropEffects.None;
 
-    /// <summary>A dropped file opens exactly as Open would open it, and only when Open could.</summary>
+    /// <summary>Dropped files open exactly as Open would open them, and only when Open could.</summary>
     private async void OnDrop(object? sender, DragEventArgs e)
     {
-        if (OpenButton.IsEnabled && DroppedFile(e) is { } path)
+        if (OpenButton.IsEnabled && DroppedFiles(e) is { Count: > 0 } paths)
         {
-            await OpenPathAsync(path);
+            await OpenPathsAsync(paths);
         }
     }
 
@@ -277,8 +276,8 @@ public sealed partial class MainWindow : Window
 
         var picked = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Open a recording or transcript",
-            AllowMultiple = false,
+            Title = "Open a recording or transcript, or several parts of one recording",
+            AllowMultiple = true,
             FileTypeFilter =
             [
                 new FilePickerFileType("Recordings and transcripts")
@@ -288,11 +287,64 @@ public sealed partial class MainWindow : Window
             ],
         });
 
-        if (picked is [{ } file] && file.TryGetLocalPath() is { } path)
+        if (picked.Select(file => file.TryGetLocalPath()).OfType<string>().ToList() is { Count: > 0 } paths)
         {
-            await OpenPathAsync(path);
+            await OpenPathsAsync(paths);
         }
     }
+
+    /// <summary>
+    /// One file opens as it always has. Several recordings are parts of one: their order is
+    /// proposed from what they say about themselves and shown before anything runs.
+    /// </summary>
+    private async Task OpenPathsAsync(IReadOnlyList<string> paths)
+    {
+        if (_choosingOrder)
+        {
+            return;
+        }
+
+        if (paths.Count == 1)
+        {
+            await OpenPathAsync(paths[0]);
+            return;
+        }
+
+        if (paths.Any(IsArchive))
+        {
+            StatusText.Text = "Saved transcripts open one at a time; only recordings can be joined.";
+            return;
+        }
+
+        // Open, Record and drop wait until the order is settled: reading the headers of files
+        // that live only in OneDrive downloads them, and a run started meanwhile would have the
+        // joined one started over it when the sheet was confirmed.
+        _choosingOrder = true;
+        RefreshControls();
+        StatusText.Text = $"Reading {paths.Count} files…";
+
+        try
+        {
+            var proposal = await Task.Run(() => RecordingOrder.Decide([.. paths.Distinct(StringComparer.Ordinal).Select(RecordingFacts.Read)]));
+            StatusText.Text = _viewModel.Status;
+
+            if (await OrderDialog.AskAsync(this, proposal) is not { } ordered)
+            {
+                return;
+            }
+
+            _choosingOrder = false;
+            await _viewModel.TranscribeFilesAsync(ordered);
+        }
+        finally
+        {
+            _choosingOrder = false;
+            RefreshControls();
+        }
+    }
+
+    /// <summary>True from opening several files until their order is confirmed or cancelled.</summary>
+    private bool _choosingOrder;
 
     private async Task OpenPathAsync(string path)
     {
@@ -700,8 +752,12 @@ public sealed partial class MainWindow : Window
         // audio is disk work, and the player receiving the samples is the moment it ends —
         // model stages start immediately after. Preparing to record is model loading too.
         UpdateGlow((_viewModel.IsBusy && _viewModel.Player.HasAudio) || _viewModel.IsPreparing);
-        OpenButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsRecording;
-        RecordButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsPreparing;
+        // Open waits for Record's model load too: a file run started over a recording being set
+        // up would lose both, and the start screen's buttons follow the toolbar's.
+        OpenButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsRecording && !_viewModel.IsPreparing && !_choosingOrder;
+        RecordButton.IsEnabled = !_viewModel.IsBusy && !_viewModel.IsPreparing && !_choosingOrder;
+        EmptyOpenButton.IsEnabled = OpenButton.IsEnabled;
+        EmptyRecordButton.IsEnabled = RecordButton.IsEnabled;
         RecordLabel.Text = _viewModel.IsRecording ? "Stop" : "Record";
         RecordIcon.Data = (Geometry)this.FindResource(_viewModel.IsRecording ? "IconStop" : "IconMic")!;
         RecordingDot.IsVisible = _viewModel.IsRecording;

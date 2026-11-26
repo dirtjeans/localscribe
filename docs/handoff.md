@@ -330,6 +330,88 @@ everywhere (2 places)…", the highlight tracks the voice, a seek scrolls the wo
 the way down, and a wheel scroll during playback holds. Not yet checked by hand: the alert at
 the end of a real run, and the dark theme.
 
+## Several files as one recording: what the Windows window still needs (2026-11-26)
+
+On the Mac you can now open or drop several recordings and have them transcribed as one: the
+parts a recorder split a session into, or a phone's clips of one meeting. `handoff-macos.md`,
+"Several files as one recording", describes it. Most of it is already shared, and **none of the
+shared part has been compiled on Windows yet**: build `LocalScribe.App` before anything else.
+
+**Already shared, nothing to port:**
+
+- `MainViewModel.TranscribeFilesAsync(paths)` decodes each file with the platform's
+  `AudioFileLoader`, joins them end to end with nothing between, and runs once.
+  `TranscribeFileAsync(path)` is now a call to it with one path. The queued file (`_waitingFor`)
+  and Translate again (`_sourcePaths`) are lists, so a joined recording is re-run joined. The
+  source name comes from what the names share (`RecordingOrder.CombinedName`): "PXL_20261126"
+  for a Pixel's clips.
+- New guards in the view model: `TranscribeFilesAsync` refuses while `IsBusy`, `IsRecording` or
+  `IsPreparing`, and `StartRecordingAsync` refuses while `IsBusy`. The window's own enabling
+  should already prevent both. If something stops working, check these first.
+- `RecordingFacts` and `RecordingOrder` (Core, no dependencies) read each file's recording time,
+  part number and length from its header, without decoding it, and propose the order. They read
+  `File.GetLastWriteTimeUtc` as the last-saved time, which works the same on NTFS.
+
+**What the WinUI window needs:**
+
+1. **Several files from Open.** Use `PickMultipleFilesAsync` instead of `PickSingleFileAsync`
+   (see `PickerFor`). One file opens as today. If several files include a `.scrb`, refuse and
+   say so: saved transcripts open one at a time.
+2. **Several from a drop.** `OnDrop` reads every storage item, not the first; `OnDragOver`
+   accepts when any is a recording or a transcript.
+3. **Hold Open, Record and drop** from the moment several files are chosen until their order is
+   confirmed or cancelled: the Mac's `_choosingOrder`. That includes the empty window's own Open
+   and Record buttons, which the Mac first missed. Reading the headers of OneDrive files that
+   are online only downloads them, which can take a while, and a run started meanwhile was
+   overwritten when the sheet was confirmed. Read the headers in `Task.Run`:
+   `RecordingOrder.Decide([.. paths.Distinct().Select(RecordingFacts.Read)])`.
+4. **The order sheet**, a `ContentDialog` modelled on the Mac's `OrderDialog`:
+   - Show `Proposal.Reason` and each of `Proposal.Doubts` as a warning.
+   - Each file gets a row with ▲/▼ to move it. Show its name, then "recorded …" from
+     `Proposal.StartOf(file)`, not `RecordedAt`. A Pixel stamps its videos when they stop, and
+     `StartOf` corrects for that when `StampsMarkEnds` is set. Then its part number and its
+     length (`RunTimes.Clock`, which handles a day or more).
+   - Show a gap line between rows from `Proposal.GapsBefore` when it is 5 s or more either way.
+     Gaps are null unless recording times decided the order. Hide them once the user moves a
+     file, because they would then measure between files that are no longer neighbours.
+   - The total length goes beside the reason when every file has one. Buttons: Cancel and
+     "Transcribe as One".
+5. **Then** `await _viewModel.TranscribeFilesAsync(ordered)`.
+
+**How the order is decided** (`RecordingOrder.Decide`). The strongest clue every file carries
+wins: the recording times stored in the files, then part numbers written into them, then the
+names, then when each was last saved. The rules learned on the way are in its comments. The
+ones most likely to surprise:
+
+- A stored time counts only if it has a time of day and is written year first, so 05/12/2026
+  is not guessed at.
+- A stamp is read as a stop time only where the file's name vouches for it: a time in the name
+  equal to the stamp less the length, allowing for a time zone. That is the Pixel case, where nine
+  clips raised a false overlap warning. Stamps alone cannot tell it from a second microphone that
+  started later and stopped sooner, so without a name the overlap warning stays and gives both
+  readings.
+- Names count only when they are the same apart from a short part number, a zero-padded counter
+  (ZOOM0001), a lone part letter (Session B), or a year-first date and time, written with
+  separators (2026-11-20 09.45) or in the compact phone form (PXL_20261126_180604104,
+  20261126_180535). Four-digit numbers, phone numbers and day-first dates do not count.
+
+**Windows file names worth trying on the laptop:**
+
+- Sound Recorder's.
+- Teams and Stream recordings downloaded in parts.
+- Phone clips copied over USB. Check that the last-saved times survive the copy; if they do not,
+  only the stamps and names are left to decide.
+
+**How to check it** (the Mac's own headless run cannot drive the WinUI window):
+
+- `localscribe-doctor --order <file> <file> …` prints what each file says about itself and the
+  proposed order. Run it on real files from the Windows side before trusting the sheet.
+- The Core tests cover the reader and the rules (`RecordingOrderTests`, including the nine Pixel
+  clips as they came off the phone) and pass on any machine.
+- Then drive the published app: drop three parts and confirm.
+  - The status should show "joined X at …" lines in `%TEMP%\localscribe-stages.txt`.
+  - The transcript should be one run: one set of speakers, times running on across the joins.
+
 ## Evaluated and not taken
 
 - **The QNN GPU backend for the aligner** (2026-11-16): refuses the feature extractor's Conv

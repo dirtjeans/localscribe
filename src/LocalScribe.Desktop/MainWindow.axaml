@@ -373,7 +373,7 @@
                  HorizontalAlignment="Center" />
       <TextBlock TextWrapping="Wrap" TextAlignment="Center" FontSize="13" LineHeight="19"
                  Foreground="{DynamicResource SecondaryText}"
-                 Text="Open an audio or video file, or a saved transcript — or drop one here. Words, speakers and timing are worked out on this Mac, and nothing leaves it." />
+                 Text="Open an audio or video file, several parts of one recording, or a saved transcript — or drop them here. Words, speakers and timing are worked out on this Mac, and nothing leaves it." />
       <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center" Margin="0,4,0,0">
         <Button x:Name="EmptyOpenButton" Classes="accent" Click="OnOpenClicked" Padding="16,7">
           <StackPanel Orientation="Horizontal" Spacing="7">

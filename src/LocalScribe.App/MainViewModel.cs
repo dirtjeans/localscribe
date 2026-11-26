@@ -1955,7 +1955,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </para>
     /// </summary>
     public bool CanOfferTranslation =>
-        _sourcePath is { Length: > 0 }
+        _sourcePaths is { Count: > 0 }
         && SpokenLanguage is { Length: > 0 } language
         && !language.Equals("en", StringComparison.OrdinalIgnoreCase);
 
@@ -2847,10 +2847,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _npuAlignerPreparing ??= PrepareNpuAlignerAsync();
         _gpuAlignerPreparing ??= PrepareGpuAlignerAsync();
 
-        if (_waitingFor is { Length: > 0 } held)
+        if (_waitingFor is { Count: > 0 } held)
         {
             _waitingFor = null;
-            await TranscribeFileAsync(held).ConfigureAwait(true);
+            await TranscribeFilesAsync(held).ConfigureAwait(true);
         }
     }
 
@@ -2865,10 +2865,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// A file opened before there was anything to transcribe it with, kept until there is.
     /// <para>
     /// One, not a queue: opening a second file before the first has started means the second is
-    /// the one wanted.
+    /// the one wanted. Several files opened together are one recording, and wait as one.
     /// </para>
     /// </summary>
-    private string? _waitingFor;
+    private IReadOnlyList<string>? _waitingFor;
 
     /// <summary>
     /// Transcribes the open recording again, in English this time, or back as spoken.
@@ -2880,22 +2880,47 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     public async Task TranslateAgainAsync(bool intoEnglish)
     {
-        if (_sourcePath is not { Length: > 0 } path || IsBusy)
+        if (_sourcePaths is not { Count: > 0 } paths || IsBusy)
         {
             return;
         }
 
         TranslateToEnglish = intoEnglish;
 
-        await TranscribeFileAsync(path).ConfigureAwait(true);
+        await TranscribeFilesAsync(paths).ConfigureAwait(true);
     }
 
-    /// <summary>Where the open recording was read from, so it can be transcribed again.</summary>
-    private string? _sourcePath;
+    /// <summary>Where the open recording was read from, in order, so it can be transcribed again.</summary>
+    private IReadOnlyList<string>? _sourcePaths;
 
     /// <summary>Transcribes a file from disk.</summary>
-    public async Task TranscribeFileAsync(string path)
+    public Task TranscribeFileAsync(string path) => TranscribeFilesAsync([path]);
+
+    /// <summary>
+    /// Transcribes several files as one recording, in the order given: the parts a recorder split
+    /// a long session into, or a meeting recorded in pieces. Joined end to end before anything
+    /// runs, so the transcript, its times, the speakers and the saved archive are one recording's,
+    /// and a speaker heard in the first part is the same speaker in the last. The order is the
+    /// caller's to decide; <see cref="RecordingOrder"/> proposes one.
+    /// </summary>
+    public async Task TranscribeFilesAsync(IReadOnlyList<string> paths)
     {
+        ArgumentNullException.ThrowIfNull(paths);
+
+        if (paths.Count == 0)
+        {
+            return;
+        }
+
+        // A run already under way owns the transcript, the audio and the cancellation; one
+        // started over it would take all three and leave the first beyond reach. The windows
+        // disable Open while busy, but a sheet confirmed late does not ask them first.
+        if (IsBusy || IsRecording || IsPreparing)
+        {
+            Status = "Already working — wait for this one to finish, or stop it, before opening another.";
+            return;
+        }
+
         if (_plan is null)
         {
             // Held rather than refused. A file is still there in a few seconds' time, and the
@@ -2905,8 +2930,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // The microphone is the opposite case and stays refused: audio arriving before there
             // is anything to transcribe it with is audio lost, and a recording that silently
             // began late would be worse than one that plainly did not start.
-            _waitingFor = path;
-            Status = $"{Path.GetFileNameWithoutExtension(path)} is queued — still checking hardware.";
+            _waitingFor = paths;
+            Status = $"{NameOf(paths)} is queued — still checking hardware.";
             return;
         }
 
@@ -2934,12 +2959,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
-            Status = AudioFileLoader.IsVideo(path) ? "Extracting audio…" : "Loading audio…";
-            var audio = await Task.Run(() => AudioFileLoader.Load(path), _cancellation.Token);
+            var audio = await LoadInOrderAsync(paths, _cancellation.Token);
 
-            SourceName = Path.GetFileNameWithoutExtension(path);
+            SourceName = NameOf(paths);
             _audio = audio;
-            _sourcePath = path;
+            _sourcePaths = paths;
 
             // Held so a line in the transcript can be clicked and heard. The timings refer to
             // these samples, not to the file, which is why the decoded audio is what is kept.
@@ -3145,6 +3169,48 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private static string NameOf(IReadOnlyList<string> paths) =>
+        RecordingOrder.CombinedName([.. paths.Select(Path.GetFileNameWithoutExtension).OfType<string>()]);
+
+    /// <summary>
+    /// Every file decoded, then joined end to end. No silence is put between them: a recorder that
+    /// splits a session leaves none, and inventing some would push every later word off its sound.
+    /// </summary>
+    private async Task<PcmAudio> LoadInOrderAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        var parts = new List<PcmAudio>(paths.Count);
+
+        foreach (var (file, index) in paths.Select((file, index) => (file, index)))
+        {
+            var verb = AudioFileLoader.IsVideo(file) ? "Extracting audio" : "Loading audio";
+            Status = paths.Count == 1 ? $"{verb}…" : $"{verb}… {index + 1} of {paths.Count}";
+            parts.Add(await Task.Run(() => AudioFileLoader.Load(file), cancellationToken));
+        }
+
+        if (parts.Count == 1)
+        {
+            return parts[0];
+        }
+
+        var rate = parts[0].SampleRate;
+        if (parts.Any(part => part.SampleRate != rate))
+        {
+            throw new InvalidDataException("These files decoded at different sample rates and cannot be joined.");
+        }
+
+        var samples = new float[parts.Sum(part => part.Samples.Length)];
+        var at = 0;
+
+        foreach (var (part, file) in parts.Zip(paths))
+        {
+            Stage($"joined {Path.GetFileName(file)} at {at / (double)rate:F1} s, {part.DurationSeconds:F1} s long");
+            part.Samples.CopyTo(samples, at);
+            at += part.Samples.Length;
+        }
+
+        return new PcmAudio(samples, rate);
+    }
+
     /// <summary>One line per finishing-stage event, so a run that never assembles says which lane it waited on.</summary>
     public static string StageLogPath { get; } =
         Path.Combine(Path.GetTempPath(), "localscribe-stages.txt");
@@ -3200,7 +3266,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Recording is a decision made now, so it displaces a file that was only ever waiting.
         _waitingFor = null;
 
-        if (_plan is null || IsRecording || IsPreparing)
+        if (_plan is null || IsRecording || IsPreparing || IsBusy)
         {
             return;
         }

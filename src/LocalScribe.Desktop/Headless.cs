@@ -1,4 +1,5 @@
 using LocalScribe.App;
+using LocalScribe.Core.Audio;
 
 namespace LocalScribe.Desktop;
 
@@ -15,12 +16,29 @@ namespace LocalScribe.Desktop;
 /// </summary>
 internal static class Headless
 {
-    public static int Run(string path, string? saveTo = null)
+    public static int Run(IReadOnlyList<string> paths, string? saveTo = null)
     {
-        if (!File.Exists(path))
+        if (paths.Count == 0)
         {
-            Console.Error.WriteLine($"No such file: {path}");
+            Console.Error.WriteLine("No file given.");
             return 1;
+        }
+
+        if (paths.FirstOrDefault(path => !File.Exists(path)) is { } missing)
+        {
+            Console.Error.WriteLine($"No such file: {missing}");
+            return 1;
+        }
+
+        IReadOnlyList<string> ordered = paths;
+
+        if (paths.Count > 1)
+        {
+            var proposal = RecordingOrder.Decide([.. paths.Select(RecordingFacts.Read)]);
+            ordered = [.. proposal.Ordered.Select(file => file.Path)];
+            Console.WriteLine($"[order] {proposal.Reason} "
+                + string.Join(", ", proposal.Ordered.Select(file => file.Name))
+                + string.Concat(proposal.Doubts.Select(doubt => $" ! {doubt}")));
         }
 
         using var viewModel = new MainViewModel(MainWindow.FindModelRoot(), MainWindow.OpenEngine);
@@ -129,7 +147,7 @@ internal static class Headless
             Task.Run(async () =>
             {
                 await viewModel.InitialiseAsync();
-                await viewModel.TranscribeFileAsync(path);
+                await viewModel.TranscribeFilesAsync(ordered);
             }).GetAwaiter().GetResult();
         }
         finally

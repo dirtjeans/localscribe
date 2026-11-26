@@ -524,6 +524,47 @@ The view model carries all of this for Windows too (`CorrectWords`, `PlacesOf`, 
 status line, which needs nothing), but only the Mac window has the menu and the box. The hint offers
 correcting only where `OffersWordCorrection` is set.
 
+### Several files as one recording (2026-11-26)
+
+Open or drop several recordings and they are transcribed as one: decoded, joined end to end with
+nothing between them, and run once, so the times, the speakers and the saved archive are one
+recording's (`MainViewModel.TranscribeFilesAsync`). Before anything runs, a sheet (`OrderDialog`)
+shows the proposed order, what decided it, and anything that argues otherwise, with a way to move
+a file. On the debate cut in three, names scrambled, the joined transcript matched the single file
+word for word.
+
+The order comes from what the files say about themselves (`RecordingFacts`, Core, no decoding):
+an MP4's movie-header creation time, a WAV's `bext` stamp, an ID3 or FLAC date — each only with a
+time of day and written year first — then part numbers in the files, then the names, then when each
+was saved (`RecordingOrder`). Names count only when they are the same apart from a part number or
+letter: three digits, a zero-padded counter (ZOOM0001), a lone letter (Session B), or a year-first
+date and time, with separators or in the compact phone form (PXL_20261126_180604104); four-digit
+numbers, phone groups and day-first dates do not.
+
+**Not every stamp is a start.** A Pixel writes its videos' movie header as it closes them: nine
+clips of one meeting, each named for when it started, each stamped with when it stopped, raised
+"some of these overlap" on the first real run. Stamps and lengths alone cannot tell that from a
+second microphone that started later and stopped sooner: the first fix, which read stamps as stops
+whenever that removed the overlap, hid exactly that, and review caught it. So a stamp is read as a
+stop only where the file's own name vouches for it (a time in the name equal to the stamp less the
+length, allowing for the name being in local time), and file by file (`Proposal.EndStamped`); the
+sheet shows each file's start (`Proposal.StartOf`). Without a name to vouch, overlapping files are
+still raised, with both readings put to the reader. Those nine clips, with their real stamps,
+lengths and names, are a test case.
+
+Doubts raised: names or part
+numbers disagreeing with the recorded times, save times disagreeing with the names, files that
+overlap or start together (two microphones on one session), and gaps of over half an hour.
+
+The header reader was reviewed twice by adversarial reviewers, who fuzzed it: every size is checked
+by subtraction, every parser keeps what it read before a bad field, and neither `Read` overload
+throws. `localscribe-doctor --order <files>` prints what each file says and the proposed order;
+`--headless a b c` joins as the window would.
+
+**Windows:** the view model has `TranscribeFilesAsync`, but the WinUI window offers one file at a
+time and has no order sheet. The view model's new guards (no run over a running one or a recording
+being prepared) apply there too. Not compiled on Windows.
+
 ### Word timing on the GPU (2026-11-07)
 
 The scan runs on the GPU now (`GpuAligner`, `ForcedAligner.LoadGpu`): the fp16 aligner through

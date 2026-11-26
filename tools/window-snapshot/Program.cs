@@ -79,6 +79,28 @@ void Save(TopLevel top, string name)
     Console.WriteLine(path);
 }
 
+// --order-sheet <file> <file>…: the sheet shown before several files are joined, as it would
+// propose them, in both appearances. Nothing else is drawn.
+if (Array.IndexOf(args, "--order-sheet") is var sheetAt and >= 0)
+{
+    var parts = args.Skip(sheetAt + 1).TakeWhile(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList();
+    var proposal = LocalScribe.Core.Audio.RecordingOrder.Decide([.. parts.Select(LocalScribe.Core.Audio.RecordingFacts.Read)]);
+    var dialogType = typeof(MainWindow).Assembly.GetType("LocalScribe.Desktop.OrderDialog")!;
+
+    foreach (var theme in new[] { ThemeVariant.Light, ThemeVariant.Dark })
+    {
+        Application.Current!.RequestedThemeVariant = theme;
+        var sheet = (Window)Activator.CreateInstance(dialogType, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic, null, [proposal], null)!;
+        sheet.Show();
+        Pump(1);
+        Save(sheet, $"order-{(theme == ThemeVariant.Light ? "light" : "dark")}.png");
+        sheet.Close();
+        Pump(0.3);
+    }
+
+    return;
+}
+
 foreach (var theme in new[] { ThemeVariant.Light, ThemeVariant.Dark })
 {
     Application.Current!.RequestedThemeVariant = theme;
