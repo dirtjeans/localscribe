@@ -19,7 +19,8 @@ Every model tried for a stage of the pipeline, and the numbers that kept or reje
 ## Where things stand
 
 The app transcribes on the Hexagon NPU (Whisper large-v3-turbo through a cached QNN export,
-encoder and decoder both), times every word with an MMS CTC aligner on the CPU, attributes
+encoder and decoder both), times every word with an MMS CTC aligner on the Adreno GPU (the NPU
+or the CPU where the GPU is unavailable; see "ONNX Runtime from Windows ML" below), attributes
 speakers with NVIDIA's Nemotron 3 Diarization on ARM64 (pyannote segmentation plus WeSpeaker
 embeddings elsewhere), and plays back with a word-level
 highlight that tracks the voice. Transcripts save as `.scrb` archives — a zip of the audio, the
@@ -329,6 +330,48 @@ Checked on the laptop by driving the published app: the menu offers "Correct “
 everywhere (2 places)…", the highlight tracks the voice, a seek scrolls the word to a third of
 the way down, and a wheel scroll during playback holds. Not yet checked by hand: the alert at
 the end of a real run, and the dark theme.
+
+## ONNX Runtime from Windows ML (2026-11-26)
+
+On Windows, ONNX Runtime no longer comes from the `Microsoft.ML.OnnxRuntime.QNN` package. It
+comes from Windows ML (`Microsoft.Windows.AI.MachineLearning` 2.1.74, native ONNX Runtime 1.24,
+with the managed API from `Microsoft.ML.OnnxRuntime.Managed` 1.24.4). One runtime then carries
+Qualcomm's provider and DirectML in one process, which the QNN and DirectML packages never could
+(each ships its own `onnxruntime.dll`). That let the word scan leave the NPU for the GPU.
+
+- **Measured, in the app, podcast:** words clickable at 6–8 s (was 20), labels 12–13 s (16),
+  scan done 27–28 s on the GPU, text done 46 s (98), run done 48 s (100). The text finishes
+  twice as fast because Whisper no longer shares the NPU with the scan. Word placement on the
+  debate (`--aligner-coreml <file.scrb> --app`, which is the DirectML path on Windows): 94%
+  within 0.1 s of the CPU fp16 reference in 5.9 s, against the NPU's 93% in 15.4 s. Podcast
+  transcript, `--diarize` turns on podcast and debate, and `--align` read-back: identical to
+  the old runtime. Ken's verdict on using it: "a lot faster".
+- **Qualcomm's provider is not in the app folder.** Windows ML's catalog installs Microsoft's
+  certified build as a system package (`Microsoft.WinML.Qualcomm.QNN.EP.2`, QNN 2.51) and each
+  process readies and registers it — `WindowsMl.Prepare`, through Windows ML's flat C API so the
+  libraries stay on plain net8.0. Fetched once (14 s here) by `--fetch-models` or the app's first
+  run; every other launch reaches no network. The stage log's first line says what registered.
+  The old precompiled Whisper export opens under it: decoder step 9 ms (was 10), encoder 814 ms
+  (771). The NPU aligner's compiled graph opens too.
+- **Read the catalog by handle.** In 2.1.74 the info struct its enumeration passes had null
+  paths and fields that shifted between passes, and finding a provider by name could return
+  Windows' own uncertified copy. The library path is empty until the provider is readied.
+- **Windows App SDK 2.5.1, not 1.6.** With the 1.6 runtime loaded, readying failed with
+  0x80070015 in the app while working in every console tool — reproduced by loading its
+  `Microsoft.WindowsAppRuntime.dll` into a console test. 1.8 and 2.3 runtimes behave. 2.5.1
+  depends on the same Windows ML, where 1.8 would bring an older one with its own runtime. The
+  app's minimum OS moved to 19041, which Windows ML requires.
+- **fp16 on the CPU opens at the basic optimisation level.** 1.24 fuses the fp16 aligner's
+  GELUs into `com.microsoft.Gelu`, which its CPU provider has only in fp32, and then refuses the
+  model; naming the fusions in `optimization.disable_specified_optimizers` did not stop it.
+  Basic opens it, 14% slower (debate reference 89.8 s against 78.8). Only the doctor's reference
+  and x64 use fp16 on the CPU; the Snapdragon's CPU fallback is the 4-bit build, unaffected.
+- **Windows ML is used for every build made on Windows** (`'$(OS)' == 'Windows_NT'`). Keyed on
+  the runtime identifier, the ONNX project restored Windows ML and then compiled without
+  `WINDOWS_ML`, because .NET does not pass a runtime identifier on to a referenced library.
+- **Order of scans:** GPU, then NPU (paced, as above), then CPU. Where the GPU applies, the NPU
+  aligner is not compiled. `LOCALSCRIBE_GPU_ALIGNER=0` skips the GPU. On Windows the GPU uses the
+  NPU's 14 s windows (22 s for the podcast against 25 s with the Mac's 34 s).
 
 ## Several files as one recording (2026-11-26)
 

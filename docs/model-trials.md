@@ -159,7 +159,7 @@ zeros or noise in, timed after a warm-up:
 |---|---|---|
 | QNN EP, `QnnGpu.dll` backend (`LOCALSCRIBE_QNN_BACKEND=gpu localscribe-doctor --qnn-probe`) | 19.5 s, transformer only | **Rejected** |
 | CPU, fp16, for comparison | 11 s | — |
-| DirectML (`onnxruntime-directml` 1.24, Python) | 0.49 s; podcast 21 s, beside Whisper on the NPU without slowing it | **Promising, not wired** |
+| DirectML (`onnxruntime-directml` 1.24, Python) | 0.49 s; podcast 21 s, beside Whisper on the NPU without slowing it | **In use** since 2026-11-26, through Windows ML |
 
 The QNN GPU backend refuses the whole graph: ORT's layout transformer rewrites the feature
 extractor's first Conv to NHWC for it, the backend then declines that node (error 3110), and the
@@ -168,7 +168,7 @@ transformer alone runs and is slower than the CPU. DirectML took the whole graph
 the CPU on over 99% of frames' best token. That Python was an x64 build under emulation (PyPI
 ships no arm64 DirectML wheel), so a native build should be no slower.
 
-What stands in the way: the QNN and DirectML ONNX Runtime packages are separate builds of one
+What stood in the way: the QNN and DirectML ONNX Runtime packages are separate builds of one
 native library and cannot load into one process. Two ways round it, neither tried: a helper
 process for the scan, or Windows ML 2.x, whose single shared runtime lists DirectML and QNN (NPU
 and GPU) together. The gain would be the NPU left to Whisper alone; the "takes turns" pacing in
@@ -190,6 +190,11 @@ minute of NPU time for the podcast and is paced behind the text, the DirectML sc
 the first half-minute and leaves the NPU to Whisper. The price is CPU: 19–24 s of CPU time per
 scan, about one core while it runs. That was an x64 Python under emulation, so a native arm64
 build should cost less, but it needs measuring against the thread cap before it is adopted.
+
+**Adopted the same day through Windows ML**, one runtime for QNN and DirectML in the app's own
+process. Natively the scan used half a second of CPU for the podcast, not 20 s, so the thread
+cap is untouched; Whisper's decoder steps beside it stayed at 9 ms. In the app the podcast run
+finished in 48 s against 100. Details in `docs/handoff.md`, "ONNX Runtime from Windows ML".
 
 ## Speakers
 
