@@ -159,7 +159,7 @@ zeros or noise in, timed after a warm-up:
 |---|---|---|
 | QNN EP, `QnnGpu.dll` backend (`LOCALSCRIBE_QNN_BACKEND=gpu localscribe-doctor --qnn-probe`) | 19.5 s, transformer only | **Rejected** |
 | CPU, fp16, for comparison | 11 s | — |
-| DirectML (`onnxruntime-directml` 1.24, Python) | 0.49 s | **Promising, not wired** |
+| DirectML (`onnxruntime-directml` 1.24, Python) | 0.49 s; podcast 21 s, beside Whisper on the NPU without slowing it | **Promising, not wired** |
 
 The QNN GPU backend refuses the whole graph: ORT's layout transformer rewrites the feature
 extractor's first Conv to NHWC for it, the backend then declines that node (error 3110), and the
@@ -172,8 +172,24 @@ What stands in the way: the QNN and DirectML ONNX Runtime packages are separate 
 native library and cannot load into one process. Two ways round it, neither tried: a helper
 process for the scan, or Windows ML 2.x, whose single shared runtime lists DirectML and QNN (NPU
 and GPU) together. The gain would be the NPU left to Whisper alone; the "takes turns" pacing in
-`docs/handoff.md` exists only because the scan shares it. Not yet measured: whether a DirectML scan
-slows Whisper on the NPU the way the Mac's GPU scan slowed its Whisper.
+`docs/handoff.md` exists only because the scan shares it.
+
+**Measured 2026-11-26** (NPU healthy, 9–12 ms a decoder step): a whole-podcast DirectML scan, the
+app's 14 s windows at 10 s steps, 44 windows, in a separate process beside the doctor's Whisper
+on the NPU. It does not slow Whisper on the NPU, the opposite of the Mac's GPU scan:
+
+| Run | Whisper, podcast | DirectML scan |
+|---|---|---|
+| Whisper alone | 57.7 s, 59.4 s (48.4 s and 54.3 s earlier that day) | — |
+| Scan alone | — | 21.0 s (470 ms a window), three more runs 20.7–21.3 s |
+| Both at once | 45.8 s, 58.2 s | 21.2–24.9 s (470–544 ms a window) |
+
+Whisper's own spread that day (45–60 s, Windows' AI workloads bursting on the NPU) swamps any
+effect of the scan. The scan loses 5–15% beside it. Against the NPU scan, which needs about a
+minute of NPU time for the podcast and is paced behind the text, the DirectML scan finishes in
+the first half-minute and leaves the NPU to Whisper. The price is CPU: 19–24 s of CPU time per
+scan, about one core while it runs. That was an x64 Python under emulation, so a native arm64
+build should cost less, but it needs measuring against the thread cap before it is adopted.
 
 ## Speakers
 
