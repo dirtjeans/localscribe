@@ -246,7 +246,7 @@ internal static class Program
         var asrTrial = ArgumentValue(args, "--asr-trial");
         if (asrTrial is not null)
         {
-            return AsrTrialCommand.Run(asrTrial, modelDirectory, plan);
+            return AsrTrialCommand.Run(asrTrial, modelDirectory, capabilities, plan);
         }
 
         var geluModel = ArgumentValue(args, "--gelu-rewrite");
@@ -427,7 +427,7 @@ internal static class Program
         Console.WriteLine("  --aligner-trial <f>  Time candidate word aligners on a .scrb and grade them against the reference.");
         Console.WriteLine("  --order <f> <f>…   What each recording says about itself, and the order the app would propose.");
         Console.WriteLine("  --aligner-coreml <f>  Grade the fp16 aligner through Core ML on a .scrb; --units CPUAndGPU|CPUAndNeuralEngine|ALL; --app for the app's own GPU path.");
-        Console.WriteLine("  --asr-trial <f>  Transcribe a .scrb with Nemotron 3.5 ASR and Whisper; compare speed, words, timing.");
+        Console.WriteLine("  --asr-trial <f>  Transcribe a .scrb or WAV with Nemotron 3.5 ASR and Whisper; compare speed, words, timing.");
         Console.WriteLine("  --speaker-model [n]  Show or switch which voice model is used. No name lists them.");
         Console.WriteLine("  --segmentation-model [n]  Show or switch what decides where speakers change.");
         Console.WriteLine("  --diarizer [n]   Show or switch how speakers are worked out: tracking or voices.");

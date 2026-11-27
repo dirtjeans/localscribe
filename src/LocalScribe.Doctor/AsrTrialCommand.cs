@@ -3,6 +3,7 @@ using LocalScribe.Core.Archive;
 using LocalScribe.Core.Hardware;
 using LocalScribe.Core.Pipeline;
 using LocalScribe.Core.Transcription;
+using LocalScribe.Onnx;
 using LocalScribe.WhisperCpp;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -11,7 +12,7 @@ using Timed = LocalScribe.Doctor.AlignerTrialCommand.Timed;
 namespace LocalScribe.Doctor;
 
 /// <summary>
-/// Implements <c>--asr-trial &lt;file.scrb&gt;</c>: transcribes a saved recording with NVIDIA's
+/// Implements <c>--asr-trial &lt;file.scrb or .wav&gt;</c>: transcribes a saved recording with NVIDIA's
 /// Nemotron 3.5 ASR (streaming, 4-bit ONNX, in models/nemotron-asr) and with the app's Whisper,
 /// and reports speed, how far the two transcripts agree, and how well Nemotron's own word times
 /// match the MMS fp16 aligner.
@@ -25,10 +26,15 @@ namespace LocalScribe.Doctor;
 /// </summary>
 internal static class AsrTrialCommand
 {
-    public static int Run(string archivePath, string modelRoot, ExecutionPlan plan)
+    public static int Run(string archivePath, string modelRoot, DeviceCapabilities capabilities, ExecutionPlan plan)
     {
-        var contents = TranscriptArchive.Load(archivePath);
-        var audio = contents.Audio;
+        // A plain recording works too: Whisper's own lines then stand in for the archive's as
+        // the text the aligner times, which is what the app would have saved from them anyway.
+        var isArchive = TranscriptArchive.Extensions.Contains(
+            Path.GetExtension(archivePath), StringComparer.OrdinalIgnoreCase);
+        var contents = isArchive ? TranscriptArchive.Load(archivePath) : null;
+        var audio = contents?.Audio ?? Core.Audio.WavReader.Read(archivePath);
+        audio.EnsureWhisperFormat();
         var seconds = audio.DurationSeconds;
 
         Console.WriteLine();
@@ -50,10 +56,17 @@ internal static class AsrTrialCommand
         var (featureTime, encoderTime, decodeTime) = nemotron.LastTimings;
         Console.WriteLine($"  {"",-28} features {featureTime:F1} s, encoder {encoderTime:F1} s, decoding {decodeTime:F1} s");
 
-        // Whisper, exactly as the app runs it.
-        var ggml = Directory.EnumerateFiles(Path.Combine(modelRoot, "whisper-cpp"), "ggml-*.bin").First();
+        // Whisper, exactly as the app runs it: whisper.cpp on the Mac, the QNN export on the
+        // Snapdragon. whisper.cpp on Windows would be a CPU Whisper no user ever runs, and would
+        // make Nemotron look better than the choice it is actually up against.
         watch.Restart();
-        using var whisper = WhisperCppTranscriber.Load(ggml, plan);
+        using ITranscriber whisper = OperatingSystem.IsMacOS()
+            ? WhisperCppTranscriber.Load(
+                Directory.EnumerateFiles(Path.Combine(modelRoot, "whisper-cpp"), "ggml-*.bin").First(), plan)
+            : WhisperOnnxTranscriber.Load(
+                Core.Models.ModelLayout.Locate(modelRoot, capabilities.Family, plan.Encoder.Device, plan.WhisperModel)
+                    ?? throw new DirectoryNotFoundException($"No Whisper weights under {modelRoot}."),
+                plan);
         var whisperLoad = watch.Elapsed.TotalSeconds;
 
         watch.Restart();
@@ -63,7 +76,7 @@ internal static class AsrTrialCommand
         var whisperText = whisperTranscript.FullText;
 
         Console.WriteLine($"  {"Whisper turbo (app path)",-28} {whisperSeconds,6:F1} s  "
-            + $"{seconds / whisperSeconds,5:F1}x real time   (load {whisperLoad:F1} s)");
+            + $"{seconds / whisperSeconds,5:F1}x real time   (load {whisperLoad:F1} s, {whisper.Description})");
         Console.WriteLine();
 
         // Agreement. Neither is ground truth; the disagreements are printed so a person can
@@ -87,7 +100,8 @@ internal static class AsrTrialCommand
 
         // Word timing against the aligner, as --aligner-trial grades candidates.
         var reference = AlignerTrialCommand.RunMms(
-            Path.Combine(modelRoot, "alignment"), audio, contents.Segments, plan, out _, "model_fp16.onnx");
+            Path.Combine(modelRoot, "alignment"), audio, contents?.Segments ?? whisperTranscript.Segments,
+            plan, out _, "model_fp16.onnx");
 
         if (reference is not null)
         {
@@ -97,7 +111,10 @@ internal static class AsrTrialCommand
                 .Select(w => new Timed(AlignerTrialCommand.Fold(w.Text), w.StartSeconds))
                 .Where(w => w.Word.Length > 0)
                 .ToList();
-            AlignerTrialCommand.Report("Whisper heard words", whisperSeconds, heard, reference);
+            if (heard.Count > 0)
+            {
+                AlignerTrialCommand.Report("Whisper heard words", whisperSeconds, heard, reference);
+            }
         }
 
         File.WriteAllText(Path.ChangeExtension(archivePath, ".nemotron.txt"), nemotronText);

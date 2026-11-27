@@ -32,6 +32,7 @@ with the stage log in the temp folder (`localscribe-stages.txt`).
 | Whisper large-v3-turbo, whisper.cpp + Core ML | Mac | **In use** |
 | Whisper large-v3-turbo, QNN export | Snapdragon NPU | **In use** |
 | Nemotron 3.5 ASR streaming 0.6B, int4 ONNX | Mac CPU | Rejected 2026-10-05 |
+| Nemotron 3.5 ASR streaming 0.6B, int4 ONNX | Snapdragon CPU | Rejected 2026-11-26 |
 
 **Whisper on the Mac.** Encoder on the Neural Engine, decoder on the CPU. As the app runs it, at
 five threads: podcast 55.8 s (7.9× real time), debate 15.5 s (7.5×). On the Snapdragon the QNN
@@ -57,6 +58,18 @@ after onnxruntime-genai's reference implementation). Rejected on every count tha
 - The 4-bit build is itself less accurate than NVIDIA's original by its own published table
   (Spanish 7.28% WER against 4.11%, French 12.55% against 9.03%); the table has no English row.
   It has no translation and covers 40 languages to Whisper's ~99.
+
+**On the Snapdragon** (2026-11-26, NPU healthy at 10 ms a decoder step) the verdict held, by a
+wider margin, because here Whisper runs entirely on the NPU. At the app's two CPU threads:
+podcast 142.3 s (3.1×, 130 s of it the encoder) against Whisper's 48.4 s (9.2×); debate 34.6 s
+against 15.6 s. The words were the Mac's story again: Raghu Nandakumara three wrong ways,
+"medicineers", "funk two", and on the debate 81 of Whisper's 392 words missing, mostly the
+interjections under crosstalk. Its word times lag by +0.22 s and +0.28 s; with the lag removed,
+68% and 56% within 0.1 s of the aligner. Free word times would matter more here than on the Mac,
+since the Windows Whisper hears none of its own, but not at three times the time and the CPU it
+takes from everything else. The int4 graph is MatMulNBits throughout, which QNN does not take, so
+the NPU is no way out. `--asr-trial` now runs the platform's own Whisper (the QNN export here)
+and takes a WAV as well as a `.scrb`.
 
 Not tried, and what would reopen the question: the [Core ML INT8 build](https://huggingface.co/aoiandroid/Nemotron-3.5-ASR-Streaming-0.6B-CoreML-INT8)
 might run on the Neural Engine and change the speed picture, but carries the same model's
