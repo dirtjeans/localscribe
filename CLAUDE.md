@@ -50,7 +50,7 @@ Do not change these without reading the reasoning in `docs/handoff.md`:
 - **CPU threads are capped on purpose**, so the rest of Windows stays responsive. That is the
   product requirement, not a limitation to optimise away. The user can move the budget on the
   pace slider (`WorkPaces`); its default stop must stay exactly the planner's answer.
-- **On Windows, ONNX Runtime comes from Windows ML** (branch `windows-ml`, 2026-11-26): one
+- **On Windows, ONNX Runtime comes from Windows ML** (since 2026-11-26): one
   runtime with Qualcomm's provider (fetched once from Microsoft's catalog, `WindowsMl.cs`) and
   DirectML. The word scan runs on the GPU first, leaving the NPU to Whisper; the app needs
   Windows App SDK 2.x, whose runtime does not break Windows ML's provider readying as 1.6 did.
