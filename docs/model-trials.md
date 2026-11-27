@@ -67,8 +67,8 @@ against 15.6 s. The words were the Mac's story again: Raghu Nandakumara three wr
 interjections under crosstalk. Its word times lag by +0.22 s and +0.28 s; with the lag removed,
 68% and 56% within 0.1 s of the aligner. Free word times would matter more here than on the Mac,
 since the Windows Whisper hears none of its own, but not at three times the time and the CPU it
-takes from everything else. The int4 graph is MatMulNBits throughout, which QNN does not take, so
-the NPU is no way out. `--asr-trial` now runs the platform's own Whisper (the QNN export here)
+takes from everything else. All 219 of the encoder's matrix multiplies are MatMulNBits, an ONNX
+Runtime extension the QNN provider does not take, so the NPU is no way out (reasoned, not run). `--asr-trial` now runs the platform's own Whisper (the QNN export here)
 and takes a WAV as well as a `.scrb`.
 
 Not tried, and what would reopen the question: the [Core ML INT8 build](https://huggingface.co/aoiandroid/Nemotron-3.5-ASR-Streaming-0.6B-CoreML-INT8)
