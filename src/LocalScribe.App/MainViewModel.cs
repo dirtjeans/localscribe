@@ -1072,19 +1072,41 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
-    /// The aligner for this recording: on the NPU beside Whisper once it has been compiled for
-    /// it, on the CPU otherwise.
+    /// The aligner for this recording: on the GPU where DirectML takes it, else on the NPU beside
+    /// Whisper once it has been compiled for it, else on the CPU.
     /// <para>
     /// The NPU is shared, and sharing it was measured on the podcast: Whisper alone 48 s and
     /// beside the scan 93 s, the scan alone 58 s and beside Whisper 81 s — against about 110 s
     /// for the 4-bit scan on two CPU threads, which also contended with the speaker model for
-    /// cores. The transcript is clickable when the scan is done, so it is the scan's time that
-    /// counts. Shorter than one 14 s window, there is nothing to share, and the CPU is quicker
-    /// than opening the compiled graph.
+    /// cores. On the GPU, through Windows ML in this same process, the scan took 22–26 s and
+    /// Whisper's decoder steps beside it were no slower than alone, so the GPU comes first and
+    /// the NPU is the fallback. Shorter than one 14 s window, there is nothing to share, and the
+    /// CPU is quicker than opening a session for it.
     /// </para>
     /// </summary>
     private ForcedAligner OpenAligner(string directory, PcmAudio audio)
     {
+        if (_plan is { } gpuPlan
+            && GpuAligner.Applies
+            && GpuAligner.IsReady(directory)
+            && audio.DurationSeconds >= GpuAligner.ShortestSeconds)
+        {
+            try
+            {
+                var gpu = ForcedAligner.LoadGpu(directory, gpuPlan);
+                Stage("word scan on the GPU");
+                return gpu;
+            }
+            catch (Exception exception)
+            {
+                // Opened before and refused now: a macOS or driver update can change what the
+                // GPU accepts. Thrown away so the next launch prepares it again.
+                LogError(exception);
+                Stage("word scan: the GPU refused the aligner; forgetting it");
+                GpuAligner.Forget(directory);
+            }
+        }
+
         if (_plan is { } plan
             && NpuAligner.Applies(plan)
             && NpuAligner.IsReady(directory)
@@ -1106,27 +1128,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
         }
 
-        if (_plan is { } gpuPlan
-            && GpuAligner.Applies
-            && GpuAligner.IsReady(directory)
-            && audio.DurationSeconds >= GpuAligner.ShortestSeconds)
-        {
-            try
-            {
-                var gpu = ForcedAligner.LoadGpu(directory, gpuPlan);
-                Stage("word scan on the GPU");
-                return gpu;
-            }
-            catch (Exception exception)
-            {
-                // Opened before and refused now: a macOS update can change what Core ML
-                // accepts. Thrown away so the next launch prepares it again.
-                LogError(exception);
-                Stage("word scan: Core ML refused the compiled aligner; forgetting it");
-                GpuAligner.Forget(directory);
-            }
-        }
-
         return ForcedAligner.Load(directory, _plan);
     }
 
@@ -1136,10 +1137,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private Task? _gpuAlignerPreparing;
 
     /// <summary>
-    /// Rewrites and compiles the word aligner for the Mac's GPU, once per machine, in the
-    /// background: a minute or so, most of it writing the rewritten copy, and a 630 MB download
-    /// first where only the 4-bit build is installed. Nothing waits on it; scans stay on the CPU
-    /// until it is done.
+    /// Readies the word aligner for the GPU, once per machine, in the background. On the Mac a
+    /// rewrite and compile, a minute or so; on Windows only proving DirectML opens it. Either way
+    /// a 630 MB download first where only the 4-bit build is installed. Nothing waits on it;
+    /// scans stay on the CPU until it is done.
     /// </summary>
     private async Task PrepareGpuAlignerAsync()
     {
@@ -1179,7 +1180,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private async Task PrepareNpuAlignerAsync()
     {
+        // Where the GPU scans, the NPU aligner would be eight minutes of compile for a fallback.
         if (_plan is not { } plan
+            || GpuAligner.Applies
             || !NpuAligner.Applies(plan)
             || MemoryIsTight
             || ForcedAligner.Find(_modelRoot) is not { } directory
@@ -2829,6 +2832,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public async Task InitialiseAsync()
     {
         Status = "Checking hardware…";
+
+        // Qualcomm's provider comes from Windows ML's catalog, fetched once from Microsoft on the
+        // first run that finds it missing. After that this registers what is already installed
+        // and reaches no network.
+        if (WindowsMl.InUse)
+        {
+            var providers = await Task.Run(() => WindowsMl.Prepare());
+            if (providers.NpuMissing)
+            {
+                Status = "Fetching the NPU provider from Microsoft (once)…";
+                providers = await Task.Run(() => WindowsMl.Prepare(allowDownload: true, Stage));
+            }
+
+            // Whether the NPU is in the plan turns on this line, so it is in every launch's log.
+            Stage($"Windows ML: {providers.Detail}");
+        }
 
         var capabilities = await Task.Run(() => DeviceProbe.Probe(_modelRoot));
         _capabilities = capabilities;

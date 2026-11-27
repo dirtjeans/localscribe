@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using LocalScribe.Onnx;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -32,7 +33,7 @@ internal static class QnnProbeCommand
             options.AddSessionConfigEntry("session.disable_cpu_ep_fallback", "1");
         }
 
-        var provider = new Dictionary<string, string> { ["backend_path"] = gpu ? "QnnGpu.dll" : "QnnHtp.dll" };
+        var provider = new Dictionary<string, string>();
         if (!gpu)
         {
             provider["htp_performance_mode"] = "burst";
@@ -53,7 +54,7 @@ internal static class QnnProbeCommand
 
         if (Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_BACKEND") is not "cpu")
         {
-            options.AppendExecutionProvider("QNN", provider);
+            WindowsMl.AppendQnn(options, provider, gpu ? OrtHardwareDeviceType.GPU : OrtHardwareDeviceType.NPU);
         }
 
         Console.WriteLine($"Probe {Path.GetFileName(modelPath)} on {Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_BACKEND") ?? "htp"}");

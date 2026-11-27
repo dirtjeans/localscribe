@@ -31,6 +31,13 @@ internal static class Program
 
         Heading("Machine");
 
+        // Qualcomm's provider is fetched through Windows ML with the models, once; every other
+        // run registers what is installed and reaches no network.
+        if (fetch && WindowsMl.InUse)
+        {
+            Report("NPU provider", WindowsMl.Prepare(allowDownload: true, message => Console.WriteLine($"  {message}")).Detail);
+        }
+
         var capabilities = DeviceProbe.Probe(modelDirectory);
 
         Report("Processor", capabilities.SocName);
@@ -77,7 +84,9 @@ internal static class Program
         else
         {
             Check("QNN execution provider", capabilities.QnnProviderPresent,
-                "Install the Microsoft.ML.OnnxRuntime.QNN package and build for win-arm64.");
+                WindowsMl.InUse
+                    ? $"{WindowsMl.Prepare().Detail}. Run 'localscribe-doctor --fetch-models' to fetch it."
+                    : "Build for win-arm64, where ONNX Runtime comes from Windows ML with Qualcomm's provider.");
             Check("Hexagon NPU runtime driver", capabilities.HexagonDriverPresent,
                 "Install the Hexagon NPU Runtime Driver from Qualcomm Software Center. This is a "
                 + "separate download from the driver Windows ships with, and is the usual reason "

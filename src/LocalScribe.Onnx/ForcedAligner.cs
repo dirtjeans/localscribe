@@ -93,6 +93,15 @@ public sealed class ForcedAligner : IDisposable
             InterOpNumThreads = plan?.CpuBudget.InterOpThreads ?? 1,
         };
 
+        // ONNX Runtime 1.24, Windows ML's, fuses the fp16 build's GELUs into an operator its CPU
+        // provider has only in fp32, then refuses the model it has just made. Above the basic
+        // level it fuses them whatever is switched off by name; 1.22 did not fuse them at all.
+        // The 4-bit build computes in fp32 and is unaffected.
+        if (model.Contains("fp16", StringComparison.OrdinalIgnoreCase))
+        {
+            options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
+        }
+
         return new ForcedAligner(new InferenceSession(model, options), AlignmentAlphabet.Load(vocabulary));
     }
 

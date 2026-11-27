@@ -391,10 +391,10 @@ internal static class AlignerNpuCommand
     /// <c>LOCALSCRIBE_QNN_BACKEND=gpu</c> asks for the Adreno GPU, whose backend ships in the
     /// same package. Each gets its own compiled cache.
     /// </summary>
-    private static (string Library, string Tag) Backend =>
+    private static (OrtHardwareDeviceType Device, string Tag) Backend =>
         Environment.GetEnvironmentVariable("LOCALSCRIBE_QNN_BACKEND") is "gpu"
-            ? ("QnnGpu.dll", "qnngpu")
-            : ("QnnHtp.dll", "qnn");
+            ? (OrtHardwareDeviceType.GPU, "qnngpu")
+            : (OrtHardwareDeviceType.NPU, "qnn");
 
     private static InferenceSession OpenNpu(string modelPath, int length, string? writeCacheTo)
     {
@@ -427,14 +427,14 @@ internal static class AlignerNpuCommand
             options.AddSessionConfigEntry("ep.context_embed_mode", "0");
         }
 
-        var provider = new Dictionary<string, string> { ["backend_path"] = Backend.Library };
+        var provider = new Dictionary<string, string>();
         if (Backend.Tag == "qnn")
         {
             provider["htp_performance_mode"] = "burst";
             provider["enable_htp_fp16_precision"] = "1";
         }
 
-        options.AppendExecutionProvider("QNN", provider);
+        LocalScribe.Onnx.WindowsMl.AppendQnn(options, provider, Backend.Device);
 
         return new InferenceSession(modelPath, options);
     }

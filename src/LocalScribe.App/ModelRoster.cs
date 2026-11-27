@@ -48,8 +48,14 @@ public static class ModelRoster
             return null;
         }
 
-        // Compiled for the NPU only where the planner put Whisper there, so this is the build
-        // that scans every recording longer than one window.
+        // The scan's first choice is the GPU, then the NPU; whichever is ready is the build that
+        // scans every recording longer than one window.
+        if (GpuAligner.Applies && GpuAligner.IsReady(directory))
+        {
+            return "MMS word aligner, fp16 on the GPU";
+        }
+
+        // Compiled for the NPU only where the planner put Whisper there.
         if (NpuAligner.IsReady(directory))
         {
             return "MMS word aligner, fp16 on the NPU";
@@ -71,6 +77,14 @@ public static class ModelRoster
                 part.Replace(" on the NPU", string.Empty, StringComparison.Ordinal)
                 + " — on the Hexagon NPU, beside Whisper; places each word against the audio. "
                 + $"Recordings under {NpuAligner.ShortestSeconds:F0} seconds are timed on the CPU");
+        }
+
+        if (p.Contains("aligner") && p.Contains("on the gpu"))
+        {
+            return new(MainViewModel.ModelRoles.Words, "MMS aligner", "Word timing",
+                part.Replace(" on the GPU", string.Empty, StringComparison.Ordinal)
+                + " — on the Adreno GPU through DirectML, leaving the NPU to Whisper; places each "
+                + $"word against the audio. Recordings under {GpuAligner.ShortestSeconds:F0} seconds are timed on the CPU");
         }
 
         if (p.Contains("aligner"))

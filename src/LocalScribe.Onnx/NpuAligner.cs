@@ -215,9 +215,8 @@ public static class NpuAligner
             options.AddSessionConfigEntry("ep.context_embed_mode", "0");
         }
 
-        options.AppendExecutionProvider("QNN", new Dictionary<string, string>
+        WindowsMl.AppendQnn(options, new Dictionary<string, string>
         {
-            ["backend_path"] = "QnnHtp.dll",
             ["htp_performance_mode"] = plan.NpuPower == NpuPower.Balanced ? "balanced" : "burst",
             ["enable_htp_fp16_precision"] = "1",
         });

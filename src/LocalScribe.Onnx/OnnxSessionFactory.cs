@@ -56,7 +56,7 @@ public static class OnnxSessionFactory
                     break;
 
                 case ComputeDevice.Gpu:
-                    options.AppendExecutionProvider_DML(deviceId: 0);
+                    WindowsMl.AppendDirectMl(options);
                     break;
 
                 case ComputeDevice.Cpu:
@@ -79,12 +79,10 @@ public static class OnnxSessionFactory
     /// </summary>
     private static void ConfigureQnn(SessionOptions options, ExecutionPlan plan)
     {
+        // The NPU proper, the Hexagon Tensor Processor; the same provider can target the CPU or
+        // GPU instead, which would defeat the purpose.
         var providerOptions = new Dictionary<string, string>
         {
-            // HTP is the Hexagon Tensor Processor: the NPU proper. The alternatives target the
-            // CPU or GPU through the same provider, which would defeat the purpose.
-            ["backend_path"] = "QnnHtp.dll",
-
             // Burst gives the shortest time to first token. It also draws more power, which is
             // the right trade for a foreground transcription the user is waiting on — unless
             // they have said otherwise on the pace slider.
@@ -95,7 +93,7 @@ public static class OnnxSessionFactory
             ["enable_htp_fp16_precision"] = "1",
         };
 
-        options.AppendExecutionProvider("QNN", providerOptions);
+        WindowsMl.AppendQnn(options, providerOptions);
 
         if (plan.StrictProviderCheck)
         {
@@ -114,7 +112,17 @@ public static class OnnxSessionFactory
     {
         try
         {
-            return OrtEnv.Instance().GetAvailableProviders().ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var providers = OrtEnv.Instance().GetAvailableProviders().ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            // Windows ML's providers are registered libraries, not built in, so they show up as
+            // devices rather than in the built-in list.
+            if (WindowsMl.InUse)
+            {
+                WindowsMl.Prepare();
+                providers.UnionWith(OrtEnv.Instance().GetEpDevices().Select(d => d.EpName));
+            }
+
+            return providers;
         }
         catch (Exception exception) when (exception is OnnxRuntimeException or DllNotFoundException)
         {

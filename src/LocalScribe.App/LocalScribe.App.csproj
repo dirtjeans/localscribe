@@ -3,7 +3,11 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
-    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <!--
+      Windows ML, which supplies ONNX Runtime and the NPU and GPU providers, needs 19H1 at
+      least. Every Snapdragon X laptop ships with Windows 11, so the floor costs no one.
+    -->
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RootNamespace>LocalScribe.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
@@ -15,7 +19,7 @@
 
     <!--
       arm64 first: this app exists for Snapdragon laptops, and an x64 build running under
-      emulation cannot load the QNN provider at all. x64 stays available so the UI can be
+      emulation cannot load Qualcomm's provider at all. x64 stays available so the UI can be
       worked on from an ordinary desktop, where it falls back to the CPU.
     -->
     <Platforms>arm64;x64</Platforms>
@@ -37,8 +41,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.240923002" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <!--
+      2.5, not 1.6: the 1.6 runtime takes over the Windows calls that tie a package to a process,
+      and with it loaded Windows ML could not ready Qualcomm's provider (0x80070015, not ready).
+      1.8 and 2.3 runtimes leave those calls alone. 2.5 also depends on the same Windows ML the
+      ONNX layer uses, where 1.8 would bring an older one with its own ONNX Runtime.
+    -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
 
     <!-- WASAPI capture and audio file decoding. Ships arm64-compatible managed assemblies. -->
     <PackageReference Include="NAudio" Version="2.2.1" />

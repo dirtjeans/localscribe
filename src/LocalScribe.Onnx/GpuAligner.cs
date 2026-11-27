@@ -6,7 +6,8 @@ using Microsoft.ML.OnnxRuntime;
 namespace LocalScribe.Onnx;
 
 /// <summary>
-/// The word aligner on an Apple-silicon Mac's GPU, through ONNX Runtime's Core ML provider.
+/// The word aligner on the GPU: an Apple-silicon Mac's through ONNX Runtime's Core ML provider,
+/// a Snapdragon's Adreno through DirectML.
 /// <para>
 /// On the Mac's CPU the scan is the longest stage of a run, and it competes with everything else
 /// for the cores. On the GPU the full-precision model scanned the podcast in 47 s against the
@@ -25,14 +26,22 @@ namespace LocalScribe.Onnx;
 /// kept beside it. All of that happens once, in the background: until it is done, and whenever
 /// the GPU fails, the CPU scans exactly as before.
 /// </para>
+/// <para>
+/// On the Snapdragon the GPU takes the scan off the NPU, which is then Whisper's alone. The fp16
+/// model runs on DirectML as exported, so there is no rewrite and nothing to compile ahead:
+/// preparing it is fetching it and proving it opens. Through Windows ML, in the same process as
+/// Whisper on the NPU, the podcast scanned in 22 s using half a second of CPU, and Whisper's
+/// decoder steps took 9 ms beside it as alone (2026-11-26). The NPU's 14 s windows, not the
+/// Mac's 34 s: 22 s against 25 s on the podcast, with a third of the wait for each window.
+/// </para>
 /// </summary>
 public static class GpuAligner
 {
-    /// <summary>Samples per window: 34 s at 16 kHz, the one shape the compiled model accepts.</summary>
-    public const int WindowSamples = 544_000;
+    /// <summary>Samples per window at 16 kHz, the one shape the session is opened for: 14 s on Windows, 34 s on the Mac.</summary>
+    public static int WindowSamples => OperatingSystem.IsWindows() ? 224_000 : 544_000;
 
     /// <summary>Recordings shorter than one window are scanned on the CPU.</summary>
-    public const double ShortestSeconds = WindowSamples / 16_000.0;
+    public static double ShortestSeconds => WindowSamples / 16_000.0;
 
     private const string DirectoryName = "gpu";
     private const string ModelName = "aligner.onnx";
@@ -40,11 +49,19 @@ public static class GpuAligner
     private const string SourceName = "model_fp16.onnx";
     private const string CompleteMarker = "compiled";
 
-    /// <summary>Whether this machine should scan on the GPU: an Apple-silicon Mac, unless switched off.</summary>
+    /// <summary>
+    /// Whether this machine should scan on the GPU: an Apple-silicon Mac, or Windows on ARM with
+    /// DirectML from Windows ML, unless switched off.
+    /// </summary>
     public static bool Applies =>
-        OperatingSystem.IsMacOS()
-        && RuntimeInformation.ProcessArchitecture == Architecture.Arm64
-        && Environment.GetEnvironmentVariable("LOCALSCRIBE_GPU_ALIGNER") != "0";
+        RuntimeInformation.ProcessArchitecture == Architecture.Arm64
+        && Environment.GetEnvironmentVariable("LOCALSCRIBE_GPU_ALIGNER") != "0"
+        && (OperatingSystem.IsMacOS() || OnDirectMl);
+
+    private static bool OnDirectMl =>
+        OperatingSystem.IsWindows()
+        && WindowsMl.InUse
+        && WindowsMl.Devices(WindowsMl.DirectMlProvider, OrtHardwareDeviceType.GPU).Count > 0;
 
     /// <summary>Whether the rewritten model and Core ML's compile of it are on disk and complete.</summary>
     public static bool IsReady(string alignmentDirectory) =>
@@ -93,6 +110,20 @@ public static class GpuAligner
 
                 try
                 {
+                    if (OperatingSystem.IsWindows())
+                    {
+                        log?.Invoke("opening the aligner on the GPU");
+                        using (Open(alignmentDirectory, plan))
+                        {
+                            // DirectML takes the model as it is; opening it proves the GPU will.
+                        }
+
+                        File.WriteAllText(Path.Combine(directory, CompleteMarker), $"{WindowSamples}{Environment.NewLine}");
+                        finished = true;
+                        log?.Invoke("the aligner runs on the GPU");
+                        return true;
+                    }
+
                     log?.Invoke("rewriting the aligner for Core ML");
                     if (GemmRewrite.RewriteFile(source, model) == 0)
                     {
@@ -126,10 +157,15 @@ public static class GpuAligner
             TaskScheduler.Default).ConfigureAwait(false);
     }
 
-    /// <summary>Opens the rewritten aligner on the GPU, or throws when Core ML will not take it.</summary>
+    /// <summary>Opens the aligner on the GPU, or throws when Core ML or DirectML will not take it.</summary>
     public static InferenceSession Open(string alignmentDirectory, ExecutionPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+
+        if (OperatingSystem.IsWindows())
+        {
+            return OpenDirectMl(alignmentDirectory, plan);
+        }
 
         var directory = Path.Combine(alignmentDirectory, DirectoryName);
         var cache = Path.Combine(directory, CacheName);
@@ -154,6 +190,22 @@ public static class GpuAligner
         });
 
         return new InferenceSession(Path.Combine(directory, ModelName), options);
+    }
+
+    private static InferenceSession OpenDirectMl(string alignmentDirectory, ExecutionPlan plan)
+    {
+        using var options = new SessionOptions
+        {
+            // Nothing should fall to the CPU, but whatever does stays under the same cap.
+            IntraOpNumThreads = plan.CpuBudget.IntraOpThreads,
+            InterOpNumThreads = plan.CpuBudget.InterOpThreads,
+        };
+
+        options.AddFreeDimensionOverrideByName("batch_size", 1);
+        options.AddFreeDimensionOverrideByName("sequence_length", WindowSamples);
+        WindowsMl.AppendDirectMl(options);
+
+        return new InferenceSession(Path.Combine(alignmentDirectory, SourceName), options);
     }
 
     /// <summary>

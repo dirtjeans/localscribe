@@ -57,7 +57,8 @@ dotnet publish src/LocalScribe.App/LocalScribe.App.csproj -c Release -r win-arm6
 Then search the Start Menu for LocalScribe. Add `-Desktop` for a desktop shortcut too, or
 `-Remove` to take them away again. The shortcut is per-user and needs no administrator.
 
-Setup reaches the network, to Hugging Face. Audio never does.
+Setup reaches the network, to Hugging Face for models and, on Snapdragon, once to Microsoft
+for the NPU provider through Windows ML. Audio never does.
 
 ## Layout
 

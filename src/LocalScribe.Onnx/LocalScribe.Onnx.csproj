@@ -10,42 +10,49 @@
   </ItemGroup>
 
   <!--
-    The QNN package carries the Qualcomm AI Engine Direct libraries and only ships for
-    win-arm64. Referencing it unconditionally would break builds and CI on every other
-    platform, so it is brought in only when building for Windows on ARM. On other platforms
-    the QNN provider simply fails to register and the planner falls back, which is the
-    behaviour we want anyway.
+    Windows ML, which carries the Qualcomm provider, is used for every build made on Windows. It
+    ships win-x64 as well as win-arm64, and on x64 the Qualcomm provider simply never appears and
+    the planner falls back, which is the behaviour we want anyway. The switch is the build
+    host, not the runtime identifier, because .NET does not pass a runtime identifier on to a
+    referenced library: keyed on it, this project restored Windows ML and then compiled as if
+    it had not.
   -->
   <PropertyGroup>
-    <UseQnnRuntime Condition="'$(RuntimeIdentifier)' == 'win-arm64' Or '$(Platform)' == 'arm64'">true</UseQnnRuntime>
+    <UseQnnRuntime Condition="'$(OS)' == 'Windows_NT'">true</UseQnnRuntime>
     <UseQnnRuntime Condition="'$(UseQnnRuntime)' == ''">false</UseQnnRuntime>
   </PropertyGroup>
 
   <!--
-    These two are alternatives, never companions. Both ship their own
-    runtimes/win-arm64/native/onnxruntime.dll, and when both are referenced the base package's
-    copy wins the file conflict. That build looks correct — the Qnn*.dll helper libraries are
-    all present — but the runtime beside them was compiled without the QNN provider, so it
-    never registers and every session silently falls back to the CPU. The QNN package depends
-    on Microsoft.ML.OnnxRuntime.Managed, so it brings the managed assembly with it and nothing
-    is lost by dropping the base reference on arm64.
-  -->
-  <!--
-    Pinned deliberately. Precompiled QNN context binaries are tied to the QAIRT and ONNX Runtime
-    versions they were built against, and a mismatch fails at load with "Failed to create context
-    from binary" — which names neither version. 1.22.0 is what the published large-v3-turbo build
-    for X Elite asks for; 1.20.1 got as far as opening the file and no further.
+    On Windows on ARM, ONNX Runtime comes from Windows ML, not from the QNN package. One runtime
+    then serves the NPU (Qualcomm's provider, fetched once through Windows ML's catalog) and the
+    GPU (DirectML, built in), in one process. The QNN package and the DirectML package are
+    separate builds of one native library and never load together, so before this the word scan
+    could not leave the NPU for the GPU without a second process. See docs/model-trials.md.
+
+    Windows ML ships its managed ONNX Runtime only for Windows target frameworks. These
+    projects stay on plain net8.0, so the managed API comes from the ordinary package, at the
+    version Windows ML's native runtime was built from (1.24): the managed side asks the native
+    one for its own API version and a newer native runtime serves older callers. The catalog
+    is reached through Windows ML's flat C API (WindowsMl.cs), which needs no WinRT projection.
+
+    The precompiled Whisper build for X Elite was made for QNN 2.33 and ONNX Runtime 1.22, the
+    pin this replaces. Windows ML's Qualcomm provider (QNN 2.51) opens it: a decoder step 9 ms
+    against 10, the encoder 814 ms against 771 (2026-11-26).
   -->
   <ItemGroup Condition="'$(UseQnnRuntime)' == 'true'">
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.QNN" Version="1.22.0" />
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.1.74" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
   </ItemGroup>
 
+  <PropertyGroup Condition="'$(UseQnnRuntime)' == 'true'">
+    <DefineConstants>$(DefineConstants);WINDOWS_ML</DefineConstants>
+  </PropertyGroup>
+
   <!--
-    The non-QNN branch floats ahead of the QNN pin on purpose. Nothing here loads a context
-    binary, so the 1.22.0 compatibility reason above does not apply — and 1.22.0's macOS build
-    aborts in its native teardown at process exit (mutex lock failed in libc++), which 1.29
-    fixes. The two branches never meet in one process: a build is either win-arm64 with QNN or
-    everything-else without it. Any bump here is judged the project's way: the doctor's
+    The other branch floats ahead on purpose. ONNX Runtime 1.22's macOS build aborts in its
+    native teardown at process exit (mutex lock failed in libc++), which 1.29 fixes. The two
+    branches never meet in one process: a build is either made on Windows, with Windows ML, or
+    elsewhere without it. Any bump on either branch is judged the project's way: the doctor's
     diarize turn diff and align stride check before and after, because the diarization tuning
     is frozen and a runtime that moves a boundary by a hundredth of a second is a tuning
     change.
